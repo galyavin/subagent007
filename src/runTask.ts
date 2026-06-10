@@ -1,0 +1,252 @@
+import { randomBytes } from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { logFailure } from "./failureLog.js";
+import {
+  answerInputRequest,
+  defaultInputRequestsDir,
+  listInputRequests,
+  newRunId,
+  type InputRequestView,
+} from "./inputMailbox.js";
+import { runSubagent } from "./runSubagent.js";
+import type { HeartbeatNotify } from "./progress.js";
+import type { RunSubagentRequest, RunSubagentResult } from "./types.js";
+import { ValidationError } from "./types.js";
+import { loadConfig } from "./config.js";
+import { validateAndResolveRequest } from "./validate.js";
+import { defaultSubagentStatePath } from "./output.js";
+
+export type RunTaskStatus =
+  | "working"
+  | "input_required"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface RunTaskView extends Partial<RunSubagentResult> {
+  run_id: string;
+  task_id: string;
+  status: RunTaskStatus;
+  started_at: string;
+  finished_at?: string;
+  input_requests_dir: string;
+  input_requests: InputRequestView[];
+  error?: string;
+}
+
+interface RunTaskState {
+  runId: string;
+  startedAt: string;
+  finishedAt?: string;
+  mailboxRoot: string;
+  inputRequestsDir: string;
+  abortController: AbortController;
+  result?: RunSubagentResult;
+  error?: Error;
+  cancelRequested: boolean;
+  promise: Promise<void>;
+}
+
+const tasks = new Map<string, RunTaskState>();
+
+function defaultRunTasksDir(): string {
+  return defaultSubagentStatePath("SUBAGENT007_RUN_TASKS_DIR", "run-tasks");
+}
+
+function taskRecordPath(runId: string): string {
+  return path.join(defaultRunTasksDir(), `${runId}.json`);
+}
+
+async function writeTaskSnapshot(view: RunTaskView): Promise<void> {
+  await fs.mkdir(defaultRunTasksDir(), { recursive: true });
+  const recordPath = taskRecordPath(view.run_id);
+  const tmpPath = `${recordPath}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+  await fs.writeFile(tmpPath, `${JSON.stringify(view, null, 2)}\n`, "utf8");
+  await fs.rename(tmpPath, recordPath);
+}
+
+async function readTaskSnapshot(runId: string): Promise<RunTaskView | null> {
+  try {
+    return JSON.parse(await fs.readFile(taskRecordPath(runId), "utf8")) as RunTaskView;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function taskNotFound(runId: string): ValidationError {
+  return new ValidationError(`run not found: ${runId}`);
+}
+
+function terminalStatus(result: RunSubagentResult): RunTaskStatus {
+  if (result.status === "cancelled") {
+    return "cancelled";
+  }
+  return result.success ? "completed" : "failed";
+}
+
+async function taskInputRequests(state: RunTaskState): Promise<InputRequestView[]> {
+  return listInputRequests({ mailboxRoot: state.mailboxRoot, runId: state.runId });
+}
+
+export async function getRunTask(runId: string): Promise<RunTaskView> {
+  const state = tasks.get(runId);
+  if (!state) {
+    const snapshot = await readTaskSnapshot(runId);
+    if (!snapshot) {
+      throw taskNotFound(runId);
+    }
+    const mailboxRoot = path.dirname(snapshot.input_requests_dir);
+    const inputRequests = await listInputRequests({ mailboxRoot, runId });
+    if (snapshot.status === "working" || snapshot.status === "input_required") {
+      return {
+        ...snapshot,
+        status: "failed",
+        finished_at: snapshot.finished_at ?? new Date().toISOString(),
+        input_requests: inputRequests,
+        success: false,
+        error: "run is not active in this MCP server process; the server may have restarted",
+      };
+    }
+    return { ...snapshot, input_requests: inputRequests };
+  }
+  const inputRequests = await taskInputRequests(state);
+  if (state.result) {
+    return {
+      ...state.result,
+      status: terminalStatus(state.result),
+      started_at: state.startedAt,
+      finished_at: state.finishedAt,
+      input_requests: inputRequests,
+    };
+  }
+  if (state.error) {
+    return {
+      run_id: state.runId,
+      task_id: state.runId,
+      status: state.cancelRequested ? "cancelled" : "failed",
+      started_at: state.startedAt,
+      finished_at: state.finishedAt,
+      input_requests_dir: state.inputRequestsDir,
+      input_requests: inputRequests,
+      success: false,
+      error: state.error.message,
+    };
+  }
+  return {
+    run_id: state.runId,
+    task_id: state.runId,
+    status: state.cancelRequested
+      ? "cancelled"
+      : inputRequests.some((request) => request.status === "pending")
+        ? "input_required"
+        : "working",
+    started_at: state.startedAt,
+    input_requests_dir: state.inputRequestsDir,
+    input_requests: inputRequests,
+  };
+}
+
+export async function startRunTask(
+  request: RunSubagentRequest,
+  options: {
+    runsDir?: string;
+    heartbeat?: HeartbeatNotify;
+    heartbeatIntervalMs?: number;
+  } = {},
+): Promise<RunTaskView> {
+  const config = await loadConfig();
+  await validateAndResolveRequest(request, config);
+
+  const runId = newRunId();
+  const mailboxRoot = defaultInputRequestsDir();
+  const abortController = new AbortController();
+  const startedAt = new Date().toISOString();
+  const inputRequestsDir = path.join(mailboxRoot, runId);
+
+  const state: RunTaskState = {
+    runId,
+    startedAt,
+    mailboxRoot,
+    inputRequestsDir,
+    abortController,
+    cancelRequested: false,
+    promise: Promise.resolve(),
+  };
+  tasks.set(runId, state);
+  await writeTaskSnapshot(await getRunTask(runId));
+
+  state.promise = (async () => {
+    try {
+      state.result = await runSubagent(request, {
+        runId,
+        mailboxRoot,
+        runsDir: options.runsDir,
+        failureLogTool: "start_run",
+        allowTimeout: true,
+        heartbeat: options.heartbeat,
+        heartbeatIntervalMs: options.heartbeatIntervalMs,
+        abortSignal: abortController.signal,
+      });
+    } catch (error) {
+      state.error = error as Error;
+      if (!(error instanceof ValidationError)) {
+        await logFailure({
+          tool: "start_run",
+          failure_class: "unknown_error",
+          reason_code: "handler_error",
+          cwd: typeof request.cwd === "string" ? request.cwd : undefined,
+          success: false,
+        });
+      }
+    } finally {
+      state.finishedAt = new Date().toISOString();
+      await writeTaskSnapshot(await getRunTask(runId));
+    }
+  })();
+
+  return getRunTask(runId);
+}
+
+export async function cancelRunTask(runId: string): Promise<RunTaskView> {
+  const state = tasks.get(runId);
+  if (!state) {
+    throw taskNotFound(runId);
+  }
+  if (!state.result && !state.error) {
+    state.cancelRequested = true;
+    state.abortController.abort();
+  }
+  const view = await getRunTask(runId);
+  await writeTaskSnapshot(view);
+  return view;
+}
+
+export async function answerRunTaskInput(options: {
+  runId: string;
+  requestId: string;
+  answer: string;
+}): Promise<RunTaskView> {
+  const state = tasks.get(options.runId);
+  if (!state) {
+    throw taskNotFound(options.runId);
+  }
+  const requests = await listInputRequests({
+    mailboxRoot: state.mailboxRoot,
+    runId: state.runId,
+  });
+  if (!requests.some((request) => request.request_id === options.requestId)) {
+    throw new ValidationError(`input request is not part of run ${options.runId}: ${options.requestId}`);
+  }
+  await answerInputRequest({
+    mailboxRoot: state.mailboxRoot,
+    requestId: options.requestId,
+    answer: options.answer,
+  });
+  const view = await getRunTask(options.runId);
+  await writeTaskSnapshot(view);
+  return view;
+}

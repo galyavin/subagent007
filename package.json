@@ -1,0 +1,36 @@
+{
+  "name": "subagent007-pi",
+  "version": "0.1.0",
+  "description": "Private MCP server for one-shot and persistent Pi-backed subagent invocations.",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "subagent007-pi": "./dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "pretest:local": "npm run build",
+    "test:local": "node scripts/run-tests-with-ledger-guard.mjs tests/validation.test.ts tests/input-mailbox.test.ts tests/run-subagent.test.ts tests/session.test.ts tests/failure-log.test.ts tests/timeout-budget.test.ts",
+    "pretest": "npm run build",
+    "test": "node scripts/run-tests-with-ledger-guard.mjs tests/*.test.ts",
+    "premodels:reconcile": "npm run build",
+    "models:reconcile": "node scripts/reconcile-models.mjs",
+    "failure-log:archive": "node scripts/archive-failure-log.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "^0.78.1",
+    "@earendil-works/pi-coding-agent": "^0.78.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "typebox": "^1.1.38",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}
