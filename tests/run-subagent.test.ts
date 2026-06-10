@@ -110,7 +110,7 @@ test("runSubagent is ephemeral by default and invokes the Pi child request-file 
           prompt: "FAST",
           model: "openai-codex/gpt-5.4-mini",
           thinking_level: "medium",
-          skill: "pda-lite",
+          skill_name: "pda-lite",
         },
         { runsDir },
       );
@@ -127,6 +127,77 @@ test("runSubagent is ephemeral by default and invokes the Pi child request-file 
       assert.equal(logs[0].request.prompt, "FAST");
       assert.equal(logs[0].request.skill, "pda-lite");
       assert.equal(logs[0].request.cwd, projectDir);
+      assert.equal(logs[0].request.toolProfile, "inspect");
+    },
+  );
+});
+
+test("runSubagent accepts skill_name and passes a normalized skill to the Pi child", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-skill-name-"));
+  const projectDir = path.join(tmp, "project");
+  const runsDir = path.join(tmp, "runs");
+  const fake = await createFakePiChild();
+  await fs.mkdir(projectDir, { recursive: true });
+
+  await withEnv(
+    {
+      SUBAGENT007_PI_CHILD_PATH: fake.childPath,
+      FAKE_PI_LOG_PATH: fake.logPath,
+      SUBAGENT007_FAILURE_LOG: "off",
+    },
+    async () => {
+      const result = await runSubagent(
+        {
+          cwd: projectDir,
+          prompt: "FAST",
+          model: "openai-codex/gpt-5.4-mini",
+          thinking_level: "medium",
+          skill_name: "tension-hunter",
+        },
+        { runsDir },
+      );
+
+      assert.equal(result.success, true);
+      assert.equal(result.requested_skill, "tension-hunter");
+
+      const logs = await readJsonl<{ request: Record<string, unknown> }>(fake.logPath);
+      assert.equal(logs.length, 1);
+      assert.equal(logs[0].request.skill, "tension-hunter");
+    },
+  );
+});
+
+test("runSubagent passes explicit workspace write profile to the Pi child", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-tool-profile-"));
+  const projectDir = path.join(tmp, "project");
+  const runsDir = path.join(tmp, "runs");
+  const fake = await createFakePiChild();
+  await fs.mkdir(projectDir, { recursive: true });
+
+  await withEnv(
+    {
+      SUBAGENT007_PI_CHILD_PATH: fake.childPath,
+      FAKE_PI_LOG_PATH: fake.logPath,
+      SUBAGENT007_FAILURE_LOG: "off",
+    },
+    async () => {
+      const result = await runSubagent(
+        {
+          cwd: projectDir,
+          prompt: "FAST",
+          model: "openai-codex/gpt-5.4-mini",
+          thinking_level: "medium",
+          tool_profile: "workspace_write",
+        },
+        { runsDir },
+      );
+
+      assert.equal(result.success, true);
+      assert.equal(result.resolved_tool_profile, "workspace_write");
+
+      const logs = await readJsonl<{ request: Record<string, unknown> }>(fake.logPath);
+      assert.equal(logs.length, 1);
+      assert.equal(logs[0].request.toolProfile, "workspace_write");
     },
   );
 });
@@ -181,6 +252,41 @@ test("runSubagent creates and resumes raw Pi session files", async () => {
   );
 });
 
+test("runSubagent rejects missing resume session files before invoking Pi child", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-missing-resume-"));
+  const projectDir = path.join(tmp, "project");
+  const runsDir = path.join(tmp, "runs");
+  const missingSession = path.join(tmp, "missing-session.jsonl");
+  const fake = await createFakePiChild();
+  await fs.mkdir(projectDir, { recursive: true });
+
+  await withEnv(
+    {
+      SUBAGENT007_PI_CHILD_PATH: fake.childPath,
+      FAKE_PI_LOG_PATH: fake.logPath,
+      SUBAGENT007_FAILURE_LOG: "off",
+    },
+    async () => {
+      await assert.rejects(
+        runSubagent(
+          {
+            cwd: projectDir,
+            prompt: "FAST",
+            model: "openai-codex/gpt-5.4-mini",
+            thinking_level: "medium",
+            continuity: { mode: "resume", session_id: missingSession },
+          },
+          { runsDir },
+        ),
+        /resume session file does not exist/,
+      );
+
+      const logs = await readJsonl(fake.logPath).catch(() => []);
+      assert.equal(logs.length, 0);
+    },
+  );
+});
+
 test("runSubagent rejects timeout_ms unless internal callers opt into timed work", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-no-timeout-"));
   await assert.rejects(
@@ -220,6 +326,8 @@ test("MCP list_allowed_models exposes curated model choices", async () => {
     assert.notEqual(response.isError, true);
     const metadata = response.structuredContent as {
       allowed_models: string[];
+      exact_models: string[];
+      model_patterns: string[];
       default_model: string | null;
       default_model_resolved: string | null;
       default_model_allowed: boolean | null;
@@ -229,6 +337,9 @@ test("MCP list_allowed_models exposes curated model choices", async () => {
     const refs = metadata.allowed_models;
     assert.equal(refs.includes("openai-codex/gpt-5.4+"), true);
     assert.equal(refs.includes("openrouter/deepseek/deepseek-v4-pro"), true);
+    assert.equal(metadata.exact_models.includes("openrouter/deepseek/deepseek-v4-pro"), true);
+    assert.equal(metadata.exact_models.includes("openai-codex/gpt-5.4+"), false);
+    assert.deepEqual(metadata.model_patterns, ["openai-codex/gpt-5.4+"]);
     assert.equal(metadata.default_model, "openai-codex/gpt-5.4-mini");
     assert.equal(metadata.default_model_resolved, "openai-codex/gpt-5.4-mini");
     assert.equal(metadata.default_model_allowed, true);
@@ -244,6 +355,7 @@ test("MCP run_subagent uses the configured fake Pi child", async () => {
       arguments: {
         cwd: projectDir,
         prompt: "FAST",
+        skill_name: "pda-lite",
       },
     });
     assert.notEqual(response.isError, true);
@@ -255,6 +367,8 @@ test("MCP run_subagent uses the configured fake Pi child", async () => {
     const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
     assert.equal(logs[0].request.model, "openai-codex/gpt-5.4-mini");
     assert.equal(logs[0].request.thinkingLevel, "medium");
+    assert.equal(logs[0].request.skill, "pda-lite");
+    assert.equal(logs[0].request.toolProfile, "inspect");
   });
 });
 

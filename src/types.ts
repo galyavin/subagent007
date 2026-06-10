@@ -2,6 +2,8 @@ export const THINKING_LEVELS = ["low", "medium", "high", "xhigh"] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export const OUTPUT_MODES = ["final", "transcript"] as const;
 export type OutputMode = (typeof OUTPUT_MODES)[number];
+export const TOOL_PROFILES = ["inspect", "shell", "workspace_write"] as const;
+export type ToolProfile = (typeof TOOL_PROFILES)[number];
 export const RUN_CONTINUITY_MODES = ["ephemeral", "fresh", "resume"] as const;
 export const SESSION_PACKET_POLICIES = ["none", "required", "best_effort"] as const;
 export type SessionPacketPolicy = (typeof SESSION_PACKET_POLICIES)[number];
@@ -18,8 +20,10 @@ export interface SubagentRequestBase {
   model?: string;
   thinking_level?: ThinkingLevel;
   timeout_ms?: number;
-  skill?: string;
+  skill?: string | null;
+  skill_name?: string | null;
   output_mode?: OutputMode;
+  tool_profile?: ToolProfile;
 }
 
 export type RunContinuity =
@@ -45,6 +49,7 @@ export interface ResolvedRunSubagentRequest {
   continuity: RunContinuity;
   skill?: string;
   outputMode: OutputMode;
+  toolProfile: ToolProfile;
 }
 
 export interface SubagentRunResultBase {
@@ -68,6 +73,7 @@ export interface SubagentRunResultBase {
   requested_skill: string | null;
   requested_output_mode: OutputMode;
   written_output_mode: OutputMode;
+  resolved_tool_profile: ToolProfile;
   stop_reason: RunStopReason;
 }
 
@@ -117,6 +123,7 @@ export interface SessionRunRecord {
   requested_skill: string | null;
   requested_output_mode: OutputMode;
   written_output_mode: OutputMode;
+  resolved_tool_profile?: ToolProfile;
   stop_reason?: RunStopReason;
   error?: string;
 }

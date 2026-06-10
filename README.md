@@ -5,16 +5,16 @@ Subagent007 Pi is a private MCP server that delegates work to a separate Pi-back
 ## Use The Tools This Way
 
 - `run_subagent`: one synchronous, non-interactive invocation. No caller-supplied `timeout_ms`; no caller-input loop. It has an internal default deadline so a one-shot call cannot run forever.
-- `start_run`: asynchronous invocation for work that may need timeout, cancellation, polling, or caller input.
+- `start_run`: asynchronous invocation for polling, cancellation, caller input, or longer work. Pass `timeout_ms` when a hard deadline matters.
 - `get_run`: inspect a `start_run` task, including pending input requests and terminal result.
 - `answer_run_input`: answer one pending request from a `start_run` task.
 - `cancel_run`: request cancellation for an active `start_run` task.
 - `run_subagent_session`: named persistent sessions keyed by `session_key`, with manifest, ledger, locking, and optional contract-packet extraction.
-- `list_allowed_models`: list curated model choices and default-model health. Entries ending in `+` are patterns, not literal model IDs.
+- `list_allowed_models`: list curated exact model choices, model patterns, and default-model health. Entries ending in `+` are patterns, not literal model IDs.
 
 If the child may need more information from the caller, use `start_run`, then poll with `get_run` and answer with `answer_run_input`. Do not use `run_subagent` for caller input; a synchronous MCP call has no practical answer loop.
 
-Use `run_subagent_session` only when durable continuity by `session_key` matters. Use `run_subagent` or `start_run` for ordinary isolated delegation.
+Use `run_subagent_session` only when durable continuity by `session_key` matters. Use `run_subagent` or `start_run` for ordinary isolated delegation. The default `tool_profile` is `inspect`; set `workspace_write` before expecting the child to edit files.
 
 ## Requirements
 
@@ -56,9 +56,9 @@ Allowed model choices:
 - `openrouter/deepseek/deepseek-v4-pro`
 - `openrouter/~anthropic/claude-sonnet-latest`
 - `openrouter/nvidia/nemotron-3-super-120b-a12b:free`
-- `openrouter/moonshotai/kimi-k2.6:free`
+- `openrouter/moonshotai/kimi-k2.6`
 
-Equivalent unqualified Pi model ids such as `gpt-5.4-mini`, `gemma4:12b`, and `deepseek/deepseek-v4-pro` are accepted when Pi can resolve them.
+Equivalent unqualified Pi model ids such as `gpt-5.4-mini`, `gemma4:12b`, and `deepseek/deepseek-v4-pro` are accepted and canonicalized to provider-qualified refs before execution and session comparison.
 
 Run `npm run models:reconcile` to compare the curated list with fresh source data from `pi --list-models`, OpenRouter `GET /api/v1/models`, and local Ollama `GET /api/tags`. The command exits nonzero when a curated model is missing or has drifted from a source; unavailable sources are reported as unverified instead of drift.
 
@@ -97,10 +97,20 @@ Optional common fields:
 
 - `model`: curated exact Pi model id or accepted OpenAI Codex pattern member; falls back to `default_model`
 - `thinking_level`: `low`, `medium`, `high`, or `xhigh`; falls back to `default_thinking_level`
-- `skill`: bare skill name only, such as `pda-lite` or `google-drive:google-docs`
-- `output_mode`: `final` or `transcript`; default is `final`
+- `skill_name`: bare skill name only, such as `pda-lite` or `google-drive:google-docs`; null or omission means no skill
+- `skill`: legacy alias for `skill_name`; if both are provided, they must match
+- `output_mode`: `final` or `transcript`; default is `final`; use `transcript` for debugging or audit trails
+- `tool_profile`: child tool capability profile; default is `inspect`
 
-Do not pass `$skill`, markdown links, prose, or filesystem paths as `skill`.
+Tool profiles:
+
+- `inspect`: read-only Pi tools: `read`, `grep`, `find`, `ls`, and `request_input`
+- `shell`: `inspect` plus `bash`
+- `workspace_write`: `shell` plus `edit` and `write`
+
+Use `workspace_write` only when the child is expected to modify files. Use `shell` only when command execution is necessary. The default `inspect` profile is intended for review, research, and report-only delegation.
+
+Use `skill_name` for skill binding and keep `prompt` as task content. Put only the bare name in `skill_name`; do not put `$skill`, `/skill:name`, markdown skill links, prose, or filesystem paths there, and do not prefix `prompt` with skill syntax. Subagent007 Pi emits the correct Pi skill invocation.
 
 Successful and failed invocations return metadata plus an `output_path`. Read that file for the full final answer or public transcript. Transcript artifacts redact internal Pi event payloads such as streamed thinking deltas and partial tool-call JSON.
 
@@ -139,8 +149,9 @@ Resume raw Pi session:
 ```
 
 `continuity.mode` must be `ephemeral`, `fresh`, or `resume`. Top-level `session_id` is invalid; use `continuity.session_id` only with `mode: "resume"`.
+Resume session ids must point to an existing, readable, nonempty session file. A missing path fails before Pi is started.
 
-`run_subagent` rejects caller-provided `timeout_ms`. Its internal default deadline is 110 seconds and can be changed with `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`. Use `start_run` for longer work, explicit timeouts, cancellation, polling, or caller input.
+`run_subagent` rejects caller-provided `timeout_ms`. Its internal default deadline is 110 seconds and can be changed with `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`. Use `start_run` for longer work, explicit timeouts, cancellation, polling, caller input, or write-capable delegation.
 
 ## Async Runs And Caller Input
 
@@ -164,7 +175,7 @@ Flow:
 
 Input requests are stored under `~/.codex/subagent007-pi/input-requests` by default.
 
-`timeout_ms` is accepted by `start_run` and `run_subagent_session`. It is a hard response-budget cap: the child process is stopped before that budget is exhausted so the MCP tool can return timeout metadata and any public transcript. It is rejected by `run_subagent`.
+`timeout_ms` is optional for `start_run` and `run_subagent_session`; omit it only for deliberately unbounded work. When provided, it is a hard response-budget cap: the child process is stopped before that budget is exhausted so the MCP tool can return timeout metadata and any public transcript. Values must leave at least one millisecond of effective child runtime after configured response headroom and kill grace are reserved. It is rejected by `run_subagent`.
 
 `start_run` task snapshots are stored under `~/.codex/subagent007-pi/run-tasks` by default. Completed runs can still be inspected by `get_run` after an MCP server restart. A run that was active during a restart is reported as failed with a clear restart-state error because the new server process cannot safely reattach to the old child process.
 
@@ -190,7 +201,7 @@ Use `run_subagent_session` when the caller wants durable continuity by semantic 
 - `new`: fail if a session already exists
 - `require_existing`: fail if no session exists
 
-The first run locks in `cwd` and `skill`. Later runs with the same `session_key` must use the same real `cwd` and same `skill`.
+The first run locks in `cwd` and the normalized skill binding from `skill_name` or legacy `skill`. Later runs with the same `session_key` must use the same real `cwd` and same normalized skill binding.
 
 Use `packet_policy` only when the caller needs a structured handoff packet. Values:
 
@@ -210,22 +221,16 @@ Default state root:
 
 Environment overrides:
 
-- `SUBAGENT007_CONFIG_PATH`
-- `SUBAGENT007_RUNS_DIR`
-- `SUBAGENT007_RUN_TASKS_DIR`
-- `SUBAGENT007_PI_RAW_SESSIONS_DIR`
-- `SUBAGENT007_SESSIONS_DIR`
-- `SUBAGENT007_INPUT_REQUESTS_DIR`
-- `SUBAGENT007_FAILURE_LOG_PATH`
-- `SUBAGENT007_FAILURE_LOG=off`
-- `SUBAGENT007_INPUT_REQUEST_TIMEOUT_MS`
-- `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`
-- `SUBAGENT007_MAX_TRANSCRIPT_BYTES`
-- `SUBAGENT007_PI_AGENT_DIR`
-- `PI_CODING_AGENT_DIR`
-- `SUBAGENT007_PI_SKILL_PATHS`
+- Paths: `SUBAGENT007_CONFIG_PATH`, `SUBAGENT007_RUNS_DIR`, `SUBAGENT007_RUN_TASKS_DIR`, `SUBAGENT007_PI_RAW_SESSIONS_DIR`, `SUBAGENT007_SESSIONS_DIR`, `SUBAGENT007_INPUT_REQUESTS_DIR`, `SUBAGENT007_FAILURE_LOG_PATH`
+- Timeouts/progress: `SUBAGENT007_INPUT_REQUEST_TIMEOUT_MS`, `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`, `SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS`, `SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS`, `SUBAGENT007_TIMEOUT_KILL_GRACE_MS`, `SUBAGENT007_TIMEOUT_FORCE_GRACE_MS`, `SUBAGENT007_HEARTBEAT_INTERVAL_MS`, `SUBAGENT007_MAX_TRANSCRIPT_BYTES`
+- Pi/runtime: `SUBAGENT007_PI_AGENT_DIR`, `PI_CODING_AGENT_DIR`, `SUBAGENT007_PI_SKILL_PATHS`
+- Failure logging: `SUBAGENT007_FAILURE_LOG=off`, `SUBAGENT007_BUILD_SHA`, `GIT_COMMIT`, `SUBAGENT007_RECORD_SOURCE`
 
 `SUBAGENT007_PI_AGENT_DIR` wins over Pi's native `PI_CODING_AGENT_DIR`; otherwise the Pi agent directory defaults to `~/.pi/agent`. The resolved agent directory is used for Pi auth, custom models, settings/resources, and session behavior.
+
+`SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS`, `SUBAGENT007_TIMEOUT_KILL_GRACE_MS`, and `SUBAGENT007_TIMEOUT_FORCE_GRACE_MS` reserve time inside caller-provided `timeout_ms` so the MCP server can terminate the child process and return metadata before the caller deadline. `SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS` can raise the accepted floor for timed tools. `SUBAGENT007_HEARTBEAT_INTERVAL_MS` controls progress notification cadence when the MCP client provides a progress token.
+
+`SUBAGENT007_BUILD_SHA` or `GIT_COMMIT` is copied into failure-log records when present. `SUBAGENT007_RECORD_SOURCE` may be `production`, `test`, or `unknown`; invalid values default to `production`.
 
 ## Development
 

@@ -88,3 +88,9 @@ export function computeTimeoutBudget(
     forceGraceMs: resolved.forceGraceMs,
   };
 }
+
+export function minimumRequestedTimeoutMs(options: TimeoutBudgetOptions = {}): number {
+  const resolved = resolveOptions(options);
+  const reservedMs = resolved.responseHeadroomMs + resolved.killGraceMs + resolved.forceGraceMs;
+  return Math.max(resolved.minRequestedTimeoutMs, reservedMs + MIN_EFFECTIVE_TIMEOUT_MS);
+}

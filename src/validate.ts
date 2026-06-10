@@ -1,21 +1,32 @@
 import fs from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import {
   OUTPUT_MODES,
   RUN_CONTINUITY_MODES,
   THINKING_LEVELS,
+  TOOL_PROFILES,
   type OutputMode,
   type ResolvedRunSubagentRequest,
   type RunContinuity,
   type RunSubagentRequest,
   type RunnerConfig,
   type ThinkingLevel,
+  type ToolProfile,
 } from "./types.js";
 import { resolveAllowedModelRef } from "./modelAllowlist.js";
+import { minimumRequestedTimeoutMs } from "./timeoutBudget.js";
 import { ValidationError } from "./types.js";
 
 const SKILL_NAME_ERROR =
-  "skill must be a bare skill name such as pda-lite or plugin:skill-name; pass pda-lite, not $pda-lite, a path, markdown link, or prose";
+  "skill must be a bare skill name such as pda-lite or plugin:skill-name; pass pda-lite, not $pda-lite, /skill:pda-lite, a path, markdown link, or prose";
+const SKILL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*(?::[A-Za-z0-9][A-Za-z0-9_-]*)?$/;
+const PROMPT_SKILL_INVOCATION_PATTERNS = [
+  /^\/skill:[A-Za-z0-9][A-Za-z0-9_-]*(?::[A-Za-z0-9][A-Za-z0-9_-]*)?(?:\b|\s|$)/,
+  /^\$[A-Za-z0-9][A-Za-z0-9_-]*(?::[A-Za-z0-9][A-Za-z0-9_-]*)?(?:\b|\s|$)/,
+  /^\[\$[A-Za-z0-9][A-Za-z0-9_-]*(?::[A-Za-z0-9][A-Za-z0-9_-]*)?\]\([^)]+\)/,
+  /^(?:use|run|invoke)\s+\$[A-Za-z0-9][A-Za-z0-9_-]*(?::[A-Za-z0-9][A-Za-z0-9_-]*)?(?:\b|\s|$)/i,
+];
 
 function trimOptional(value: unknown, key: string): string | undefined {
   if (value === undefined) {
@@ -28,17 +39,40 @@ function trimOptional(value: unknown, key: string): string | undefined {
   return trimmed === "" ? undefined : trimmed;
 }
 
-export function validateSkillName(value: unknown): string | undefined {
-  if (value === undefined) {
+export function validateSkillName(value: unknown, key = "skill"): string | undefined {
+  if (value === undefined || value === null) {
     return undefined;
   }
   if (typeof value !== "string") {
-    throw new ValidationError("skill must be a string");
+    throw new ValidationError(`${key} must be a string or null`);
   }
-  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*(?::[A-Za-z0-9][A-Za-z0-9_-]*)?$/.test(value)) {
+  if (!SKILL_NAME_PATTERN.test(value)) {
     throw new ValidationError(SKILL_NAME_ERROR);
   }
   return value;
+}
+
+function assertNoUnstructuredSkillInvocation(prompt: string, resolvedSkill: string | undefined): void {
+  if (resolvedSkill) {
+    return;
+  }
+  const firstLine = prompt.trimStart().split(/\r?\n/, 1)[0]?.trimEnd() ?? "";
+  if (PROMPT_SKILL_INVOCATION_PATTERNS.some((pattern) => pattern.test(firstLine))) {
+    throw new ValidationError(
+      "Pass skill_name instead of putting skill invocation syntax in prompt.",
+    );
+  }
+}
+
+function resolveSkillName(request: RunSubagentRequest, prompt: string): string | undefined {
+  const legacySkill = validateSkillName(request.skill, "skill");
+  const canonicalSkill = validateSkillName(request.skill_name, "skill_name");
+  if (legacySkill && canonicalSkill && legacySkill !== canonicalSkill) {
+    throw new ValidationError("skill and skill_name must match when both are provided");
+  }
+  const resolvedSkill = canonicalSkill ?? legacySkill;
+  assertNoUnstructuredSkillInvocation(prompt, resolvedSkill);
+  return resolvedSkill;
 }
 
 function validateThinkingLevel(value: unknown, key: string): ThinkingLevel | undefined {
@@ -58,6 +92,14 @@ function validateOutputMode(value: unknown): OutputMode {
     throw new ValidationError(`output_mode must be one of: ${OUTPUT_MODES.join(", ")}`);
   }
   return mode as OutputMode;
+}
+
+function validateToolProfile(value: unknown): ToolProfile {
+  const profile = trimOptional(value, "tool_profile") ?? "inspect";
+  if (!TOOL_PROFILES.includes(profile as ToolProfile)) {
+    throw new ValidationError(`tool_profile must be one of: ${TOOL_PROFILES.join(", ")}`);
+  }
+  return profile as ToolProfile;
 }
 
 function validateContinuity(value: unknown, request: unknown): RunContinuity {
@@ -88,6 +130,9 @@ function validateContinuity(value: unknown, request: unknown): RunContinuity {
     if (!rawSessionId) {
       throw new ValidationError("continuity.session_id is required when continuity.mode is resume");
     }
+    if (!path.isAbsolute(rawSessionId)) {
+      throw new ValidationError("continuity.session_id must be an absolute path when continuity.mode is resume");
+    }
     return { mode, session_id: rawSessionId };
   }
   if (rawSessionId !== undefined) {
@@ -96,6 +141,37 @@ function validateContinuity(value: unknown, request: unknown): RunContinuity {
     );
   }
   return { mode: mode as "ephemeral" | "fresh" };
+}
+
+async function validateResumeSessionFile(continuity: RunContinuity): Promise<void> {
+  if (continuity.mode !== "resume") {
+    return;
+  }
+
+  let stat;
+  try {
+    stat = await fs.stat(continuity.session_id);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new ValidationError(`resume session file does not exist: ${continuity.session_id}`);
+    }
+    throw new ValidationError(
+      `resume session file is not accessible: ${continuity.session_id}: ${(error as Error).message}`,
+    );
+  }
+  if (!stat.isFile()) {
+    throw new ValidationError(`resume session path is not a file: ${continuity.session_id}`);
+  }
+  if (stat.size === 0) {
+    throw new ValidationError(`resume session file is empty: ${continuity.session_id}`);
+  }
+  try {
+    await fs.access(continuity.session_id, fsConstants.R_OK);
+  } catch (error) {
+    throw new ValidationError(
+      `resume session file is not readable: ${continuity.session_id}: ${(error as Error).message}`,
+    );
+  }
 }
 
 export async function validateCwd(value: unknown): Promise<string> {
@@ -152,8 +228,17 @@ export async function validateAndResolveRequest(
     ) {
       throw new ValidationError("timeout_ms must be a positive integer when provided");
     }
+    const minTimeoutMs = minimumRequestedTimeoutMs();
+    if (request.timeout_ms < minTimeoutMs) {
+      throw new ValidationError(
+        `timeout_ms must be at least ${minTimeoutMs} ms with the configured response headroom and kill grace`,
+      );
+    }
     timeoutMs = request.timeout_ms;
   }
+
+  const continuity = validateContinuity(request.continuity, request);
+  await validateResumeSessionFile(continuity);
 
   return {
     prompt,
@@ -161,8 +246,9 @@ export async function validateAndResolveRequest(
     model: resolvedModel,
     thinkingLevel,
     timeoutMs,
-    continuity: validateContinuity(request.continuity, request),
-    skill: validateSkillName(request.skill),
+    continuity,
+    skill: resolveSkillName(request, prompt),
     outputMode: validateOutputMode(request.output_mode),
+    toolProfile: validateToolProfile(request.tool_profile),
   };
 }

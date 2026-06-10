@@ -11,7 +11,7 @@ import {
   HEARTBEAT_INTERVAL_ENV,
   heartbeatIntervalMsFromEnv,
 } from "../src/progress.js";
-import { computeTimeoutBudget } from "../src/timeoutBudget.js";
+import { computeTimeoutBudget, minimumRequestedTimeoutMs } from "../src/timeoutBudget.js";
 import { createFakePiChild } from "./helpers/fakePiChild.js";
 
 type RunSubagentMetadata = {
@@ -314,6 +314,26 @@ test("heartbeat interval env accepts only positive safe integers", () => {
       process.env[HEARTBEAT_INTERVAL_ENV] = original;
     }
   }
+});
+
+test("minimum requested timeout preserves at least one millisecond of child runtime", () => {
+  assert.equal(
+    minimumRequestedTimeoutMs({
+      responseHeadroomMs: 500,
+      killGraceMs: 100,
+      forceGraceMs: 100,
+    }),
+    701,
+  );
+  assert.equal(
+    minimumRequestedTimeoutMs({
+      minRequestedTimeoutMs: 2000,
+      responseHeadroomMs: 500,
+      killGraceMs: 100,
+      forceGraceMs: 100,
+    }),
+    2000,
+  );
 });
 
 test("runChildProcess swallows heartbeat failures", async () => {

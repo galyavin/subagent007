@@ -66,45 +66,271 @@ test("resolves Pi agent directory from env with the Pi default fallback", async 
 
 test("resolves caller fields over config defaults", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-cwd-"));
+  const sessionFile = path.join(cwd, "session.jsonl");
+  await fs.writeFile(sessionFile, `${JSON.stringify({ type: "session" })}\n`);
   const resolved = await validateAndResolveRequest(
     {
       prompt: "  say hi  ",
       cwd,
-      continuity: { mode: "resume", session_id: "  /tmp/session.jsonl  " },
+      continuity: { mode: "resume", session_id: `  ${sessionFile}  ` },
       model: "openai-codex/gpt-5.4-mini",
       thinking_level: "high",
-      skill: "pda-lite",
+      skill_name: "pda-lite",
+      tool_profile: "workspace_write",
     },
     { default_model: "ignored", default_thinking_level: "low" },
   );
 
   assert.equal(resolved.prompt, "say hi");
-  assert.deepEqual(resolved.continuity, { mode: "resume", session_id: "/tmp/session.jsonl" });
+  assert.deepEqual(resolved.continuity, { mode: "resume", session_id: sessionFile });
   assert.equal(resolved.model, "openai-codex/gpt-5.4-mini");
   assert.equal(resolved.thinkingLevel, "high");
   assert.equal(resolved.skill, "pda-lite");
   assert.equal(resolved.outputMode, "final");
+  assert.equal(resolved.toolProfile, "workspace_write");
+});
+
+test("resolves canonical skill_name and legacy skill alias", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-skill-name-"));
+
+  const canonical = await validateAndResolveRequest(
+    {
+      prompt: "x",
+      cwd,
+      model: "openai-codex/gpt-5.4-mini",
+      thinking_level: "medium",
+      skill_name: "pda-lite",
+    },
+    {},
+  );
+  assert.equal(canonical.skill, "pda-lite");
+
+  const legacy = await validateAndResolveRequest(
+    {
+      prompt: "x",
+      cwd,
+      model: "openai-codex/gpt-5.4-mini",
+      thinking_level: "medium",
+      skill: "pda-lite",
+    },
+    {},
+  );
+  assert.equal(legacy.skill, "pda-lite");
+
+  const bothSame = await validateAndResolveRequest(
+    {
+      prompt: "x",
+      cwd,
+      model: "openai-codex/gpt-5.4-mini",
+      thinking_level: "medium",
+      skill_name: "pda-lite",
+      skill: "pda-lite",
+    },
+    {},
+  );
+  assert.equal(bothSame.skill, "pda-lite");
+
+  const nullSkill = await validateAndResolveRequest(
+    {
+      prompt: "x",
+      cwd,
+      model: "openai-codex/gpt-5.4-mini",
+      thinking_level: "medium",
+      skill_name: null,
+      skill: null,
+    },
+    {},
+  );
+  assert.equal(nullSkill.skill, undefined);
+
+  await assert.rejects(
+    validateAndResolveRequest(
+      {
+        prompt: "x",
+        cwd,
+        model: "openai-codex/gpt-5.4-mini",
+        thinking_level: "medium",
+        skill_name: "pda-lite",
+        skill: "tension-hunter",
+      },
+      {},
+    ),
+    /skill and skill_name must match/,
+  );
+});
+
+test("rejects leading skill invocation syntax in unbound prompts", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-prompt-skill-"));
+  const base = {
+    cwd,
+    model: "openai-codex/gpt-5.4-mini",
+    thinking_level: "medium" as const,
+  };
+
+  for (const prompt of [
+    "/skill:tension-hunter\nFind the load-bearing tension.",
+    "$tension-hunter\nFind the load-bearing tension.",
+    "[$tension-hunter](/Users/rgalyavin/.codex/skills/tension-hunter/SKILL.md)\nFind it.",
+    "use $tension-hunter on this plan",
+    "run $google-drive:google-docs on this doc",
+    "invoke $compound-engineering:ce-work now",
+  ]) {
+    await assert.rejects(
+      validateAndResolveRequest({ ...base, prompt }, {}),
+      /Pass skill_name instead of putting skill invocation syntax in prompt/,
+      prompt,
+    );
+  }
+
+  const ordinary = await validateAndResolveRequest(
+    {
+      ...base,
+      prompt: "Analyze this literal example: /skill:tension-hunter is not the requested invocation.",
+    },
+    {},
+  );
+  assert.equal(ordinary.skill, undefined);
+
+  const bound = await validateAndResolveRequest(
+    {
+      ...base,
+      prompt: "$tension-hunter\nFind the load-bearing tension.",
+      skill_name: "tension-hunter",
+    },
+    {},
+  );
+  assert.equal(bound.skill, "tension-hunter");
+});
+
+test("validates resume session files before spawning Pi work", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-resume-file-"));
+  const validSession = path.join(cwd, "session.jsonl");
+  await fs.writeFile(validSession, `${JSON.stringify({ type: "session" })}\n`);
+  const valid = await validateAndResolveRequest(
+    {
+      prompt: "x",
+      cwd,
+      continuity: { mode: "resume", session_id: validSession },
+      model: "openai-codex/gpt-5.4-mini",
+      thinking_level: "medium",
+    },
+    {},
+  );
+  assert.deepEqual(valid.continuity, { mode: "resume", session_id: validSession });
+
+  await assert.rejects(
+    validateAndResolveRequest(
+      {
+        prompt: "x",
+        cwd,
+        continuity: { mode: "resume", session_id: "relative-session.jsonl" },
+        model: "openai-codex/gpt-5.4-mini",
+        thinking_level: "medium",
+      },
+      {},
+    ),
+    /continuity.session_id must be an absolute path/,
+  );
+  await assert.rejects(
+    validateAndResolveRequest(
+      {
+        prompt: "x",
+        cwd,
+        continuity: { mode: "resume", session_id: path.join(cwd, "missing.jsonl") },
+        model: "openai-codex/gpt-5.4-mini",
+        thinking_level: "medium",
+      },
+      {},
+    ),
+    /resume session file does not exist/,
+  );
+  await assert.rejects(
+    validateAndResolveRequest(
+      {
+        prompt: "x",
+        cwd,
+        continuity: { mode: "resume", session_id: cwd },
+        model: "openai-codex/gpt-5.4-mini",
+        thinking_level: "medium",
+      },
+      {},
+    ),
+    /resume session path is not a file/,
+  );
+
+  const emptySession = path.join(cwd, "empty.jsonl");
+  await fs.writeFile(emptySession, "");
+  await assert.rejects(
+    validateAndResolveRequest(
+      {
+        prompt: "x",
+        cwd,
+        continuity: { mode: "resume", session_id: emptySession },
+        model: "openai-codex/gpt-5.4-mini",
+        thinking_level: "medium",
+      },
+      {},
+    ),
+    /resume session file is empty/,
+  );
+});
+
+test("defaults tool profile to inspect and validates explicit profiles", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-tool-profile-"));
+  const defaulted = await validateAndResolveRequest(
+    { prompt: "x", cwd, model: "openai-codex/gpt-5.4-mini", thinking_level: "medium" },
+    {},
+  );
+  assert.equal(defaulted.toolProfile, "inspect");
+
+  for (const toolProfile of ["inspect", "shell", "workspace_write"] as const) {
+    const resolved = await validateAndResolveRequest(
+      {
+        prompt: "x",
+        cwd,
+        model: "openai-codex/gpt-5.4-mini",
+        thinking_level: "medium",
+        tool_profile: toolProfile,
+      },
+      {},
+    );
+    assert.equal(resolved.toolProfile, toolProfile);
+  }
+
+  await assert.rejects(
+    validateAndResolveRequest(
+      {
+        prompt: "x",
+        cwd,
+        model: "openai-codex/gpt-5.4-mini",
+        thinking_level: "medium",
+        tool_profile: "write_only" as never,
+      },
+      {},
+    ),
+    /tool_profile must be one of: inspect, shell, workspace_write/,
+  );
 });
 
 test("accepts curated model refs and compatible unqualified aliases", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-model-"));
-  for (const model of [
-    "gpt-5.4",
-    "openai-codex/gpt-5.4-mini",
-    "openai-codex/gpt-5.5",
-    "gemma4:12b",
-    "ollama/gemma4:12b",
-    "deepseek/deepseek-v4-flash",
-    "deepseek/deepseek-v4-pro",
-    "openrouter/deepseek/deepseek-v4-pro",
-    "~anthropic/claude-sonnet-latest",
-    "openrouter/~anthropic/claude-sonnet-latest",
-  ]) {
+  for (const [model, canonical] of [
+    ["gpt-5.4", "openai-codex/gpt-5.4"],
+    ["openai-codex/gpt-5.4-mini", "openai-codex/gpt-5.4-mini"],
+    ["openai-codex/gpt-5.5", "openai-codex/gpt-5.5"],
+    ["gemma4:12b", "ollama/gemma4:12b"],
+    ["ollama/gemma4:12b", "ollama/gemma4:12b"],
+    ["deepseek/deepseek-v4-flash", "openrouter/deepseek/deepseek-v4-flash"],
+    ["deepseek/deepseek-v4-pro", "openrouter/deepseek/deepseek-v4-pro"],
+    ["openrouter/deepseek/deepseek-v4-pro", "openrouter/deepseek/deepseek-v4-pro"],
+    ["~anthropic/claude-sonnet-latest", "openrouter/~anthropic/claude-sonnet-latest"],
+    ["openrouter/~anthropic/claude-sonnet-latest", "openrouter/~anthropic/claude-sonnet-latest"],
+  ] as const) {
     const resolved = await validateAndResolveRequest(
       { prompt: "x", cwd, model, thinking_level: "medium" },
       {},
     );
-    assert.equal(resolved.model, model);
+    assert.equal(resolved.model, canonical);
   }
 });
 
@@ -137,6 +363,13 @@ test("rejects models outside the curated allowlist", async () => {
       {},
     ),
     /curated Subagent007 Pi allowlist/,
+  );
+  await assert.rejects(
+    validateAndResolveRequest(
+      { prompt: "x", cwd, model: "openai-codex/gpt-5.4+", thinking_level: "medium" },
+      {},
+    ),
+    /pass a matching literal model, not the pattern/,
   );
   await assert.rejects(
     validateAndResolveRequest(
@@ -193,6 +426,30 @@ test("rejects invalid preflight input before any child spawn is possible", async
     /thinking_level must be one of: low, medium, high, xhigh/,
   );
 
+  await withEnv(
+    {
+      SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS: undefined,
+      SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS: undefined,
+      SUBAGENT007_TIMEOUT_KILL_GRACE_MS: undefined,
+      SUBAGENT007_TIMEOUT_FORCE_GRACE_MS: undefined,
+    },
+    async () => {
+      await assert.rejects(
+        validateAndResolveRequest(
+          {
+            prompt: "x",
+            cwd,
+            model: "openai-codex/gpt-5.4-mini",
+            thinking_level: "medium",
+            timeout_ms: 7000,
+          },
+          {},
+        ),
+        /timeout_ms must be at least 7001 ms/,
+      );
+    },
+  );
+
   await assert.rejects(
     validateAndResolveRequest(
       {
@@ -226,6 +483,7 @@ test("validates bare skill identifiers only", () => {
   for (const skill of ["pda-lite", "google-drive:google-docs", "compound-engineering:ce-work"]) {
     assert.equal(validateSkillName(skill), skill);
   }
+  assert.equal(validateSkillName(null), undefined);
 
   for (const skill of [
     "$pda-lite",

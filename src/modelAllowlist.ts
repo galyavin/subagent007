@@ -4,6 +4,7 @@ export const KNOWN_MODEL_PROVIDERS = ["openai-codex", "ollama", "openrouter"] as
 export type KnownModelProvider = (typeof KNOWN_MODEL_PROVIDERS)[number];
 
 export const OPENAI_CODEX_GPT54_PLUS_REF = "openai-codex/gpt-5.4+";
+export const SUGGESTED_DEFAULT_MODEL_REF = "openai-codex/gpt-5.4-mini";
 export const OPENAI_CODEX_MIN_GPT5_MINOR = 4;
 
 export const CURATED_EXACT_MODEL_REFS = [
@@ -12,15 +13,26 @@ export const CURATED_EXACT_MODEL_REFS = [
   "openrouter/deepseek/deepseek-v4-pro",
   "openrouter/~anthropic/claude-sonnet-latest",
   "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
-  "openrouter/moonshotai/kimi-k2.6:free",
+  "openrouter/moonshotai/kimi-k2.6",
 ] as const;
 
+export function modelPatternChoices(): string[] {
+  return [OPENAI_CODEX_GPT54_PLUS_REF];
+}
+
+export function exactModelChoices(): string[] {
+  return [...CURATED_EXACT_MODEL_REFS];
+}
+
 export function allowedModelChoices(): string[] {
-  return [OPENAI_CODEX_GPT54_PLUS_REF, ...CURATED_EXACT_MODEL_REFS];
+  return [...modelPatternChoices(), ...exactModelChoices()];
 }
 
 export function formatAllowedModelChoices(): string {
-  return allowedModelChoices().join(", ");
+  return [
+    `exact models: ${exactModelChoices().join(", ")}`,
+    `patterns: ${modelPatternChoices().join(", ")} (pass a matching literal model, not the pattern)`,
+  ].join("; ");
 }
 
 function normalizeModelRef(modelRef: string): string {
@@ -46,16 +58,24 @@ export function isOpenAICodexGpt54OrNewerModelId(modelId: string): boolean {
   return Boolean(match && Number.parseInt(match[1], 10) >= OPENAI_CODEX_MIN_GPT5_MINOR);
 }
 
-export function isAllowedModelRef(modelRef: string): boolean {
+function canonicalAllowedModelRef(modelRef: string): string | null {
   const { provider, model } = splitKnownProviderModelRef(repairKnownModelAlias(modelRef));
   if ((provider === undefined || provider === "openai-codex") && isOpenAICodexGpt54OrNewerModelId(model)) {
-    return true;
+    return `openai-codex/${model}`;
   }
 
-  return CURATED_EXACT_MODEL_REFS.some((allowedRef) => {
+  for (const allowedRef of CURATED_EXACT_MODEL_REFS) {
     const allowed = splitKnownProviderModelRef(allowedRef);
-    return allowed.model === model && (provider === undefined || provider === allowed.provider);
-  });
+    if (allowed.model === model && (provider === undefined || provider === allowed.provider)) {
+      return allowedRef;
+    }
+  }
+
+  return null;
+}
+
+export function isAllowedModelRef(modelRef: string): boolean {
+  return canonicalAllowedModelRef(modelRef) !== null;
 }
 
 export function repairKnownModelAlias(modelRef: string): string {
@@ -70,9 +90,9 @@ export function repairKnownModelAlias(modelRef: string): string {
 }
 
 export function resolveAllowedModelRef(modelRef: string): string {
-  const repaired = repairKnownModelAlias(modelRef);
-  if (isAllowedModelRef(repaired)) {
-    return repaired;
+  const resolved = canonicalAllowedModelRef(modelRef);
+  if (resolved) {
+    return resolved;
   }
   throw new ValidationError(
     `model ${JSON.stringify(modelRef)} is not in the curated Subagent007 Pi allowlist; allowed models: ${

@@ -40,6 +40,7 @@ export type FailureReasonCode =
   | "invalid_session_key"
   | "invalid_skill"
   | "invalid_thinking_level"
+  | "invalid_tool_profile"
   | "invalid_timeout_ms"
   | "missing_session_id"
   | "nonzero_exit"
@@ -91,6 +92,7 @@ export interface FailureLogRecord {
   thinking_level?: string;
   skill?: string | null;
   output_mode?: string;
+  tool_profile?: string;
 }
 
 function defaultFailureLogPath(): string {
@@ -211,14 +213,19 @@ export function failureReasonCodeForError(error: unknown): FailureReasonCode {
   if (message.includes("default_thinking_level is not configured")) {
     return "config_missing_default_thinking_level";
   }
+  if (message.includes("timeout_ms must be at least")) return "invalid_timeout_ms";
   if (message.includes("timeout_ms must be a positive integer")) return "invalid_timeout_ms";
   if (message.includes("timeout_ms is not supported by run_subagent")) {
     return "run_subagent_timeout_unsupported";
   }
-  if (message.includes("skill must")) return "invalid_skill";
+  if (message.includes("skill must") || message.includes("skill_name") || message.includes("skill invocation syntax")) {
+    return "invalid_skill";
+  }
   if (message.includes("curated Subagent007 Pi allowlist")) return "invalid_model";
   if (message.includes("thinking_level must")) return "invalid_thinking_level";
+  if (message.includes("tool_profile must")) return "invalid_tool_profile";
   if (message.includes("output_mode must")) return "invalid_output_mode";
+  if (message.includes("resume session ")) return "invalid_session_id";
   if (message.includes("session_id is not supported")) return "raw_session_id_unsupported";
   if (message.includes("session_id")) return "invalid_session_id";
   if (message.includes("session_key must")) return "invalid_session_key";

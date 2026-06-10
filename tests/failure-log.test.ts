@@ -5,6 +5,8 @@ import path from "node:path";
 import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { failureReasonCodeForError } from "../src/failureLog.js";
+import { ValidationError } from "../src/types.js";
 import { createFakePiChild } from "./helpers/fakePiChild.js";
 import { readJsonl } from "./helpers/testUtils.js";
 
@@ -30,6 +32,13 @@ type FailureRecord = {
   thinking_level?: string;
   output_mode?: string;
 };
+
+test("failure reason mapping classifies tool profile validation precisely", () => {
+  assert.equal(
+    failureReasonCodeForError(new ValidationError("tool_profile must be one of: inspect, shell, workspace_write")),
+    "invalid_tool_profile",
+  );
+});
 
 async function withFakeClient<T>(
   run: (client: Client, dirs: { projectDir: string; failureLogPath: string }) => Promise<T>,
@@ -198,7 +207,7 @@ test("cancelled start_run tasks do not append unknown failure records", async ()
         arguments: {
           cwd: projectDir,
           prompt: "CANCEL_WAIT",
-          timeout_ms: 5000,
+          timeout_ms: 6000,
         },
       });
       assert.notEqual(startedResponse.isError, true);

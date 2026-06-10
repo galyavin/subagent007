@@ -9,6 +9,7 @@ import {
   failureReasonCodeForSessionResult,
   logFailure,
 } from "./failureLog.js";
+import { resolveAllowedModelRef } from "./modelAllowlist.js";
 import { defaultSessionsDir } from "./output.js";
 import { appendContractPacketInstruction, extractContractPacket } from "./packet.js";
 import type { HeartbeatNotify } from "./progress.js";
@@ -19,6 +20,7 @@ import {
   RESUME_MODES,
   RUN_STOP_REASONS,
   SESSION_PACKET_POLICIES,
+  TOOL_PROFILES,
   type PacketParseStatus,
   type ResumeMode,
   type RunSubagentRequest,
@@ -79,6 +81,7 @@ const sessionRunRecordSchema = z.object({
   requested_skill: z.string().nullable(),
   requested_output_mode: z.enum(OUTPUT_MODES),
   written_output_mode: z.enum(OUTPUT_MODES),
+  resolved_tool_profile: z.enum(TOOL_PROFILES).optional(),
   stop_reason: z.enum(RUN_STOP_REASONS).optional(),
   error: z.string().optional(),
 });
@@ -376,10 +379,19 @@ function sessionRunRequest(
     timeout_ms: resolved.timeoutMs,
     skill: resolved.skill,
     output_mode: resolved.outputMode,
+    tool_profile: resolved.toolProfile,
     continuity: manifest
       ? { mode: "resume", session_id: manifest.subagent_session_id }
       : { mode: "fresh" },
   };
+}
+
+function modelRefForComparison(modelRef: string): string {
+  try {
+    return resolveAllowedModelRef(modelRef);
+  } catch {
+    return modelRef;
+  }
 }
 
 async function copyDirectoryContents(sourceDir: string, targetDir: string): Promise<void> {
@@ -542,6 +554,7 @@ export async function runSubagentSession(
       requested_skill: runResult.requested_skill,
       requested_output_mode: runResult.requested_output_mode,
       written_output_mode: runResult.written_output_mode,
+      resolved_tool_profile: runResult.resolved_tool_profile,
       stop_reason: runResult.stop_reason,
       error: missingSessionIdError,
     };
@@ -587,6 +600,7 @@ export async function runSubagentSession(
       requested_skill: runResult.requested_skill,
       requested_output_mode: runResult.requested_output_mode,
       written_output_mode: runResult.written_output_mode,
+      resolved_tool_profile: runResult.resolved_tool_profile,
       stop_reason: runResult.stop_reason,
       session_key: sessionKey,
       session_dir: sessionDir,
@@ -603,7 +617,9 @@ export async function runSubagentSession(
       packet_error: packet.packetError,
       claimed_packet: packet.claimedPacket,
       run_record: runRecord,
-      model_changed_from_manifest: Boolean(manifest && manifest.initial_model !== resolved.model),
+      model_changed_from_manifest: Boolean(
+        manifest && modelRefForComparison(manifest.initial_model) !== resolved.model,
+      ),
       thinking_level_changed_from_manifest: Boolean(
         manifest && manifest.initial_thinking_level !== resolved.thinkingLevel,
       ),
@@ -641,6 +657,7 @@ export async function runSubagentSession(
         thinking_level: result.resolved_thinking_level,
         skill: result.requested_skill,
         output_mode: result.requested_output_mode,
+        tool_profile: result.resolved_tool_profile,
       });
     }
     return result;

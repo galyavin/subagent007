@@ -20,7 +20,7 @@ import {
 import { runChildProcess } from "./processRunner.js";
 import type { HeartbeatNotify } from "./progress.js";
 import { computeTimeoutBudget } from "./timeoutBudget.js";
-import type { OutputMode, RunContinuity, RunSubagentRequest, RunSubagentResult } from "./types.js";
+import type { OutputMode, RunContinuity, RunSubagentRequest, RunSubagentResult, ToolProfile } from "./types.js";
 import { ValidationError } from "./types.js";
 import { validateAndResolveRequest } from "./validate.js";
 
@@ -38,6 +38,7 @@ interface PiChildRequestFile {
   thinkingLevel: string;
   skill?: string;
   outputMode: OutputMode;
+  toolProfile: ToolProfile;
   outputLastMessagePath?: string;
   mailboxRoot: string;
   runId: string;
@@ -195,6 +196,7 @@ export async function runSubagent(
       thinkingLevel: resolved.thinkingLevel,
       skill: resolved.skill,
       outputMode: resolved.outputMode,
+      toolProfile: resolved.toolProfile,
       outputLastMessagePath: finalMessageTarget.outputLastMessagePath,
       mailboxRoot,
       runId,
@@ -271,6 +273,7 @@ export async function runSubagent(
       requested_skill: resolved.skill ?? null,
       requested_output_mode: resolved.outputMode,
       written_output_mode: writtenOutputMode,
+      resolved_tool_profile: resolved.toolProfile,
       stop_reason: processResult.stopReason,
       session_id: sessionId,
       session_established: sessionEstablished,
@@ -314,6 +317,7 @@ export async function runSubagent(
         thinking_level: result.resolved_thinking_level,
         skill: result.requested_skill,
         output_mode: result.requested_output_mode,
+        tool_profile: result.resolved_tool_profile,
       });
     }
     return result;

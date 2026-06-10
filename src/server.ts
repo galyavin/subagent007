@@ -11,9 +11,13 @@ import {
 } from "./failureLog.js";
 import {
   allowedModelChoices,
+  exactModelChoices,
   formatAllowedModelChoices,
   isAllowedModelRef,
+  modelPatternChoices,
   repairKnownModelAlias,
+  resolveAllowedModelRef,
+  SUGGESTED_DEFAULT_MODEL_REF,
 } from "./modelAllowlist.js";
 import { loadConfig } from "./config.js";
 import { heartbeatFromExtra, heartbeatIntervalMsFromEnv, type ServerExtra } from "./progress.js";
@@ -26,6 +30,7 @@ import {
   RESUME_MODES,
   SESSION_PACKET_POLICIES,
   THINKING_LEVELS,
+  TOOL_PROFILES,
 } from "./types.js";
 
 const server = new McpServer({
@@ -85,14 +90,22 @@ const modelSchema = z
   })
   .optional();
 
+const skillInputSchema = z
+  .string()
+  .nullable()
+  .optional()
+  .describe("Bare skill name only, such as pda-lite or plugin:skill-name; null means no skill.");
+
 const runInputSchema = {
   prompt: z.string().min(1),
   cwd: z.string().min(1),
   continuity: continuitySchema.optional(),
   model: modelSchema,
   thinking_level: z.enum(THINKING_LEVELS).optional(),
-  skill: z.string().optional(),
+  skill_name: skillInputSchema,
+  skill: skillInputSchema,
   output_mode: z.enum(OUTPUT_MODES).optional(),
+  tool_profile: z.enum(TOOL_PROFILES).optional(),
   timeout_ms: z
     .never({
       error: "timeout_ms is not supported by run_subagent; use start_run for timed work",
@@ -116,15 +129,20 @@ server.registerTool(
     const config = await loadConfig();
     const repairedDefaultModel = config.default_model ? repairKnownModelAlias(config.default_model) : null;
     const defaultModelAllowed = repairedDefaultModel ? isAllowedModelRef(repairedDefaultModel) : null;
+    const defaultModelResolved = repairedDefaultModel && defaultModelAllowed
+      ? resolveAllowedModelRef(repairedDefaultModel)
+      : repairedDefaultModel;
     const result = {
       allowed_models: allowedModelChoices(),
+      exact_models: exactModelChoices(),
+      model_patterns: modelPatternChoices(),
       default_model: config.default_model ?? null,
-      default_model_resolved: repairedDefaultModel,
+      default_model_resolved: defaultModelResolved,
       default_model_allowed: defaultModelAllowed,
       default_model_repaired: Boolean(config.default_model && repairedDefaultModel !== config.default_model),
       default_thinking_level: config.default_thinking_level ?? null,
       suggested_default_model:
-        defaultModelAllowed === false ? allowedModelChoices()[0] : null,
+        defaultModelAllowed === false ? SUGGESTED_DEFAULT_MODEL_REF : null,
     };
     return jsonToolResult(result, result);
   }),
@@ -231,8 +249,10 @@ server.registerTool(
       model: modelSchema,
       thinking_level: z.enum(THINKING_LEVELS).optional(),
       timeout_ms: z.number().int().positive().optional(),
-      skill: z.string().optional(),
+      skill_name: skillInputSchema,
+      skill: skillInputSchema,
       output_mode: z.enum(OUTPUT_MODES).optional(),
+      tool_profile: z.enum(TOOL_PROFILES).optional(),
       packet_policy: z.enum(SESSION_PACKET_POLICIES).optional(),
     },
   },

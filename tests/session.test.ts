@@ -87,13 +87,17 @@ test("run_subagent_session creates, resumes, and appends an auditable Pi ledger"
       assert.equal(manifest.session_key, "coherent-execution:T001");
       assert.equal(manifest.subagent_session_id, created.subagent_session_id);
       assert.equal(manifest.run_count, 1);
+      await fs.writeFile(
+        created.manifest_path,
+        `${JSON.stringify({ ...manifest, initial_model: "gpt-5.4-mini" }, null, 2)}\n`,
+      );
 
       const resumed = await runSubagentSession(
         {
           cwd: fixture.projectDir,
           prompt: "FAST",
           session_key: "coherent-execution:T001",
-          model: "openai-codex/gpt-5.4-mini",
+          model: "gpt-5.4-mini",
           thinking_level: "high",
         },
         { sessionsDir: fixture.sessionsDir },
@@ -113,7 +117,9 @@ test("run_subagent_session creates, resumes, and appends an auditable Pi ledger"
 
       const childLogs = await readJsonl<{ request: Record<string, unknown> }>(fixture.fakeLogPath);
       assert.equal(childLogs[0].request.sessionMode, "fresh");
+      assert.equal(childLogs[0].request.toolProfile, "inspect");
       assert.equal(childLogs[1].request.sessionMode, "resume");
+      assert.equal(childLogs[1].request.toolProfile, "inspect");
       assert.match(String(childLogs[1].request.sessionFile), /attempt-pi-sessions\/0002-/);
       assert.match(String(childLogs[1].request.sessionFile), /fake-pi-session\.jsonl$/);
     },
@@ -218,7 +224,7 @@ test("run_subagent_session enforces cwd identity and immutable skill binding", a
           cwd: fixture.projectDir,
           prompt: "FAST",
           session_key: "coherent-execution:T004",
-          skill: "pda-lite",
+          skill_name: "pda-lite",
           model: "openai-codex/gpt-5.4-mini",
           thinking_level: "medium",
         },
@@ -232,7 +238,7 @@ test("run_subagent_session enforces cwd identity and immutable skill binding", a
             prompt: "FAST",
             session_key: "coherent-execution:T004",
             resume_mode: "require_existing",
-            skill: "pda-lite",
+            skill_name: "pda-lite",
             model: "openai-codex/gpt-5.4-mini",
             thinking_level: "medium",
           },

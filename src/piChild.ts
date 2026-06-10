@@ -16,7 +16,8 @@ import { Type } from "typebox";
 import { createInputRequest, waitForInputAnswer } from "./inputMailbox.js";
 import { resolvePiAgentDir } from "./piAgentDir.js";
 import { composePrompt } from "./prompt.js";
-import type { OutputMode, ThinkingLevel } from "./types.js";
+import { toolsForProfile } from "./toolProfile.js";
+import type { OutputMode, ThinkingLevel, ToolProfile } from "./types.js";
 
 interface PiChildRequest {
   prompt: string;
@@ -25,6 +26,7 @@ interface PiChildRequest {
   thinkingLevel: ThinkingLevel;
   skill?: string;
   outputMode: OutputMode;
+  toolProfile?: ToolProfile;
   outputLastMessagePath?: string;
   mailboxRoot: string;
   runId: string;
@@ -198,7 +200,7 @@ async function main(): Promise<void> {
     sessionManager,
     resourceLoader,
     customTools: [createRequestInputTool(request)],
-    tools: ["read", "bash", "edit", "write", "grep", "find", "ls", "request_input"],
+    tools: toolsForProfile(request.toolProfile ?? "inspect"),
   });
   if (modelFallbackMessage) {
     writeEvent({ type: "subagent007.warning", message: modelFallbackMessage });
