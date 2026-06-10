@@ -57,6 +57,33 @@ test("run_subagent_session rejects raw session_id", async () => {
   );
 });
 
+test("run_subagent_session rejects raw continuity", async () => {
+  const fixture = await createSessionFixture();
+  await withEnv(
+    {
+      SUBAGENT007_PI_CHILD_PATH: fixture.fakeChildPath,
+      FAKE_PI_LOG_PATH: fixture.fakeLogPath,
+      SUBAGENT007_FAILURE_LOG: "off",
+    },
+    async () => {
+      await assert.rejects(
+        runSubagentSession(
+          {
+            cwd: fixture.projectDir,
+            prompt: "FAST",
+            session_key: "coherent-execution:T000-continuity",
+            model: "openai-codex/gpt-5.4-mini",
+            thinking_level: "medium",
+            continuity: { mode: "fresh" },
+          } as Parameters<typeof runSubagentSession>[0] & { continuity: { mode: "fresh" } },
+          { sessionsDir: fixture.sessionsDir },
+        ),
+        /continuity is not supported by run_subagent_session/,
+      );
+    },
+  );
+});
+
 test("run_subagent_session creates, resumes, and appends an auditable Pi ledger", async () => {
   const fixture = await createSessionFixture();
   await withEnv(
@@ -365,6 +392,53 @@ test("run_subagent_session can require packets without making packet logic part 
       assert.equal(valid.packet_parse_status, "valid");
       assert.equal(valid.claimed_packet?.verdict, "ready");
       assert.equal(typeof valid.packet_path, "string");
+
+      const nonReadyCases = [
+        {
+          prompt: "PACKET_INCONCLUSIVE",
+          sessionKey: "coherent-execution:T006-inconclusive",
+          verdict: "inconclusive",
+        },
+        {
+          prompt: "PACKET_NEEDS_REPAIR",
+          sessionKey: "coherent-execution:T006-needs-repair",
+          verdict: "needs_repair",
+        },
+        {
+          prompt: "PACKET_BLOCKED",
+          sessionKey: "coherent-execution:T006-blocked",
+          verdict: "blocked",
+        },
+        {
+          prompt: "PACKET_READY_WITH_BLOCKER",
+          sessionKey: "coherent-execution:T006-ready-with-blocker",
+          verdict: "ready",
+        },
+      ];
+
+      for (const packetCase of nonReadyCases) {
+        const failed = await runSubagentSession(
+          {
+            cwd: fixture.projectDir,
+            prompt: packetCase.prompt,
+            session_key: packetCase.sessionKey,
+            packet_policy: "required",
+            model: "openai-codex/gpt-5.4-mini",
+            thinking_level: "medium",
+          },
+          { sessionsDir: fixture.sessionsDir },
+        );
+        assert.equal(failed.success, false);
+        assert.equal(failed.created_or_resumed, "not_created");
+        assert.equal(failed.packet_parse_status, "valid");
+        assert.equal(failed.claimed_packet?.verdict, packetCase.verdict);
+        assert.equal(typeof failed.packet_path, "string");
+        await assert.rejects(fs.stat(failed.manifest_path), /ENOENT/);
+        const caseAttempts = await readJsonl<SessionRunRecord>(failed.attempts_path);
+        assert.equal(caseAttempts.length, 1);
+        assert.equal(caseAttempts[0].success, false);
+        assert.equal(caseAttempts[0].action, "not_created");
+      }
     },
   );
 });
@@ -404,6 +478,61 @@ test("run_subagent_session does not commit failed packet resumes", async () => {
 
       assert.equal(failed.success, false);
       assert.equal(failed.packet_parse_status, "missing");
+      assert.equal(failed.created_or_resumed, "not_created");
+
+      const manifest = JSON.parse(await fs.readFile(created.manifest_path, "utf8")) as SessionManifest;
+      assert.equal(manifest.run_count, 1);
+      assert.equal(manifest.last_output_path, created.output_path);
+
+      const ledger = await readJsonl<SessionRunRecord>(created.ledger_path);
+      assert.equal(ledger.length, 1);
+      assert.equal(ledger[0].success, true);
+
+      const attempts = await readJsonl<SessionRunRecord>(created.attempts_path);
+      assert.equal(attempts.length, 1);
+      assert.equal(attempts[0].success, false);
+      assert.equal(attempts[0].action, "not_created");
+    },
+  );
+});
+
+test("run_subagent_session does not commit non-ready required packet resumes", async () => {
+  const fixture = await createSessionFixture();
+  await withEnv(
+    {
+      SUBAGENT007_PI_CHILD_PATH: fixture.fakeChildPath,
+      FAKE_PI_LOG_PATH: fixture.fakeLogPath,
+      SUBAGENT007_FAILURE_LOG: "off",
+    },
+    async () => {
+      const created = await runSubagentSession(
+        {
+          cwd: fixture.projectDir,
+          prompt: "PACKET_VALID",
+          session_key: "coherent-execution:T008",
+          packet_policy: "required",
+          model: "openai-codex/gpt-5.4-mini",
+          thinking_level: "medium",
+        },
+        { sessionsDir: fixture.sessionsDir },
+      );
+      assert.equal(created.success, true);
+
+      const failed = await runSubagentSession(
+        {
+          cwd: fixture.projectDir,
+          prompt: "PACKET_INCONCLUSIVE",
+          session_key: "coherent-execution:T008",
+          packet_policy: "required",
+          model: "openai-codex/gpt-5.4-mini",
+          thinking_level: "medium",
+        },
+        { sessionsDir: fixture.sessionsDir },
+      );
+
+      assert.equal(failed.success, false);
+      assert.equal(failed.packet_parse_status, "valid");
+      assert.equal(failed.claimed_packet?.verdict, "inconclusive");
       assert.equal(failed.created_or_resumed, "not_created");
 
       const manifest = JSON.parse(await fs.readFile(created.manifest_path, "utf8")) as SessionManifest;

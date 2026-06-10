@@ -24,7 +24,49 @@ function textPartsFromContent(content: unknown): string[] {
     .filter((text) => text.trim() !== "");
 }
 
-function eventMessageText(event: Record<string, unknown>): string | null {
+type PublicLineKind = "user" | "assistant" | "warning" | "error" | "marker";
+
+interface PublicLine {
+  text: string;
+  kind: PublicLineKind;
+}
+
+export interface PublicTranscript {
+  text: string;
+  hasAssistantText: boolean;
+  hasSubagentWarning: boolean;
+  hasSubagentError: boolean;
+}
+
+function removeTrailingTruncationMarker(value: string): string {
+  return value.replace(/\n\n\[subagent007 transcript truncated at \d+ bytes\]\n$/, "");
+}
+
+function renderedHasLabeledContent(text: string, label: string): boolean {
+  let offset = 0;
+  while (offset < text.length) {
+    const index = text.indexOf(label, offset);
+    if (index === -1) {
+      return false;
+    }
+    const remainder = removeTrailingTruncationMarker(text.slice(index + label.length));
+    if (remainder.trim() !== "") {
+      return true;
+    }
+    offset = index + label.length;
+  }
+  return false;
+}
+
+export function publicTranscriptContentFlags(text: string): Omit<PublicTranscript, "text"> {
+  return {
+    hasAssistantText: renderedHasLabeledContent(text, "[assistant]\n"),
+    hasSubagentWarning: renderedHasLabeledContent(text, "[subagent007 warning] "),
+    hasSubagentError: renderedHasLabeledContent(text, "[subagent007 error] "),
+  };
+}
+
+function eventMessageLine(event: Record<string, unknown>): PublicLine | null {
   const message = event.message;
   if (typeof message !== "object" || message === null) {
     return null;
@@ -37,30 +79,33 @@ function eventMessageText(event: Record<string, unknown>): string | null {
   if (text.trim() === "") {
     return null;
   }
-  return role === "user" ? `[user]\n${text}` : `[assistant]\n${text}`;
+  return {
+    text: role === "user" ? `[user]\n${text}` : `[assistant]\n${text}`,
+    kind: role,
+  };
 }
 
-function publicLineForEvent(event: Record<string, unknown>): string | null {
+function publicLineForEvent(event: Record<string, unknown>): PublicLine | null {
   switch (event.type) {
     case "subagent007.error": {
       const error = typeof event.error === "string" ? event.error : "unknown error";
-      return `[subagent007 error] ${error}`;
+      return { text: `[subagent007 error] ${error}`, kind: "error" };
     }
     case "subagent007.warning": {
       const message = typeof event.message === "string" ? event.message : "warning";
-      return `[subagent007 warning] ${message}`;
+      return { text: `[subagent007 warning] ${message}`, kind: "warning" };
     }
     case "message_end":
-      return eventMessageText(event);
+      return eventMessageLine(event);
     default:
       return null;
   }
 }
 
-function publicMarkerLine(line: string): string | null {
+function publicMarkerLine(line: string): PublicLine | null {
   const trimmed = line.trim();
   return trimmed.startsWith("[subagent007 timeout]") || trimmed === "[subagent007 cancelled]"
-    ? trimmed
+    ? { text: trimmed, kind: "marker" }
     : null;
 }
 
@@ -74,8 +119,8 @@ function truncateUtf8(value: string, maxBytes: number): string {
   return `${buffer.subarray(0, Math.max(0, maxBytes - markerBytes)).toString("utf8")}${marker}`;
 }
 
-export function publicTranscriptFromProcessOutput(rawOutput: string): string {
-  const publicLines: string[] = [];
+export function preparePublicTranscriptFromProcessOutput(rawOutput: string): PublicTranscript {
+  const publicLines: PublicLine[] = [];
   const rawLines: string[] = [];
   let sawStructuredEvent = false;
 
@@ -84,7 +129,7 @@ export function publicTranscriptFromProcessOutput(rawOutput: string): string {
     const markerLine = publicMarkerLine(line);
     if (markerLine) {
       publicLines.push(markerLine);
-      rawLines.push(markerLine);
+      rawLines.push(markerLine.text);
       continue;
     }
     if (trimmed.startsWith("{")) {
@@ -108,10 +153,18 @@ export function publicTranscriptFromProcessOutput(rawOutput: string): string {
   }
 
   const text = sawStructuredEvent
-    ? publicLines.join("\n\n")
+    ? publicLines.map((line) => line.text).join("\n\n")
     : rawLines.join("\n");
   const fallback = sawStructuredEvent && text.trim() === ""
     ? "[subagent007 transcript unavailable: no public events captured]"
     : text;
-  return truncateUtf8(fallback, maxTranscriptBytes());
+  const renderedText = truncateUtf8(fallback, maxTranscriptBytes());
+  return {
+    text: renderedText,
+    ...publicTranscriptContentFlags(renderedText),
+  };
+}
+
+export function publicTranscriptFromProcessOutput(rawOutput: string): string {
+  return preparePublicTranscriptFromProcessOutput(rawOutput).text;
 }

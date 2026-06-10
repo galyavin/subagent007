@@ -96,27 +96,59 @@ const skillInputSchema = z
   .optional()
   .describe("Bare skill name only, such as pda-lite or plugin:skill-name; null means no skill.");
 
-const runInputSchema = {
+const baseRunInputSchema = {
   prompt: z.string().min(1),
   cwd: z.string().min(1),
-  continuity: continuitySchema.optional(),
   model: modelSchema,
   thinking_level: z.enum(THINKING_LEVELS).optional(),
   skill_name: skillInputSchema,
   skill: skillInputSchema,
   output_mode: z.enum(OUTPUT_MODES).optional(),
   tool_profile: z.enum(TOOL_PROFILES).optional(),
+};
+
+const runInputSchema = z.strictObject({
+  ...baseRunInputSchema,
+  continuity: continuitySchema.optional(),
+}, {
+  error: (issue) =>
+    issue.code === "unrecognized_keys" && issue.keys.includes("timeout_ms")
+      ? "timeout_ms is not supported by run_subagent; use start_run for timed work"
+      : undefined,
+});
+
+const timedRunInputSchema = {
+  ...baseRunInputSchema,
+  continuity: continuitySchema.optional(),
   timeout_ms: z
-    .never({
-      error: "timeout_ms is not supported by run_subagent; use start_run for timed work",
-    })
+    .number()
+    .int()
+    .positive()
     .optional(),
 };
 
-const startRunInputSchema = {
-  ...runInputSchema,
-  timeout_ms: z.number().int().positive().optional(),
+const timedSessionInputSchema = {
+  ...baseRunInputSchema,
+  timeout_ms: z
+    .number()
+    .int()
+    .positive()
+    .optional(),
 };
+
+const startRunInputSchema = timedRunInputSchema;
+
+const runSessionInputSchema = z.strictObject({
+  ...timedSessionInputSchema,
+  session_key: z.string().min(1),
+  resume_mode: z.enum(RESUME_MODES).optional(),
+  packet_policy: z.enum(SESSION_PACKET_POLICIES).optional(),
+}, {
+  error: (issue) =>
+    issue.code === "unrecognized_keys" && issue.keys.includes("continuity")
+      ? "continuity is not supported by run_subagent_session; use session_key and resume_mode"
+      : undefined,
+});
 
 server.registerTool(
   "list_allowed_models",
@@ -241,20 +273,7 @@ server.registerTool(
     title: "Run Subagent Session",
     description:
       "Run or resume a named persistent Pi-backed subagent session in an absolute cwd, write output and append an auditable session ledger.",
-    inputSchema: {
-      prompt: z.string().min(1),
-      cwd: z.string().min(1),
-      session_key: z.string().min(1),
-      resume_mode: z.enum(RESUME_MODES).optional(),
-      model: modelSchema,
-      thinking_level: z.enum(THINKING_LEVELS).optional(),
-      timeout_ms: z.number().int().positive().optional(),
-      skill_name: skillInputSchema,
-      skill: skillInputSchema,
-      output_mode: z.enum(OUTPUT_MODES).optional(),
-      tool_profile: z.enum(TOOL_PROFILES).optional(),
-      packet_policy: z.enum(SESSION_PACKET_POLICIES).optional(),
-    },
+    inputSchema: runSessionInputSchema,
   },
   withFailureLogging("run_subagent_session", async (request, extra) => {
     const result = await runSubagentSession(request, {

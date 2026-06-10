@@ -199,6 +199,31 @@ test("run_subagent_session logs missing Pi session establishment failures", asyn
   });
 });
 
+test("run_subagent_session logs non-ready required packets as packet failures", async () => {
+  await withFakeClient(async (client, { projectDir, failureLogPath }) => {
+    const response = await client.callTool({
+      name: "run_subagent_session",
+      arguments: {
+        cwd: projectDir,
+        session_key: "coherent-execution:T000-packet-not-ready",
+        resume_mode: "new",
+        prompt: "PACKET_INCONCLUSIVE",
+        packet_policy: "required",
+      },
+    });
+
+    assert.notEqual(response.isError, true);
+    const metadata = response.structuredContent as { success: boolean; packet_parse_status: string };
+    assert.equal(metadata.success, false);
+    assert.equal(metadata.packet_parse_status, "valid");
+    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].tool, "run_subagent_session");
+    assert.equal(failures[0].failure_class, "packet_failed");
+    assert.equal(failures[0].reason_code, "packet_required_invalid");
+  });
+});
+
 test("cancelled start_run tasks do not append unknown failure records", async () => {
   await withFakeClient(
     async (client, { projectDir, failureLogPath }) => {

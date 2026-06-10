@@ -3,7 +3,10 @@ import { randomBytes } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import type { OutputMode } from "./types.js";
-import { publicTranscriptFromProcessOutput } from "./transcript.js";
+import {
+  preparePublicTranscriptFromProcessOutput,
+  publicTranscriptContentFlags,
+} from "./transcript.js";
 
 export function defaultSubagentStatePath(envKey: string, leaf: string): string {
   return process.env[envKey]
@@ -69,14 +72,24 @@ export async function writeRunOutput(
 ): Promise<{
   outputPath: string;
   sizeBytes: number;
+  hasPublicAssistantText: boolean;
+  hasPublicSubagentWarning: boolean;
+  hasPublicSubagentError: boolean;
 }> {
   await fs.mkdir(runsDir, { recursive: true });
   const outputPath = uniqueRunPath(runsDir);
-  const prepared = options.processTranscript ? publicTranscriptFromProcessOutput(rawOutput) : rawOutput;
+  const transcript = options.processTranscript
+    ? preparePublicTranscriptFromProcessOutput(rawOutput)
+    : null;
+  const prepared = transcript ? transcript.text : rawOutput;
   const cleaned = stripAnsiAndControls(prepared);
+  const transcriptFlags = transcript ? publicTranscriptContentFlags(cleaned) : null;
   await fs.writeFile(outputPath, cleaned, { encoding: "utf8", flag: "wx" });
   return {
     outputPath: path.resolve(outputPath),
     sizeBytes: Buffer.byteLength(cleaned, "utf8"),
+    hasPublicAssistantText: transcriptFlags?.hasAssistantText ?? false,
+    hasPublicSubagentWarning: transcriptFlags?.hasSubagentWarning ?? false,
+    hasPublicSubagentError: transcriptFlags?.hasSubagentError ?? false,
   };
 }

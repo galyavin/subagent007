@@ -104,15 +104,15 @@ Optional common fields:
 
 Tool profiles:
 
-- `inspect`: read-only Pi tools: `read`, `grep`, `find`, `ls`, and `request_input`
+- `inspect`: workspace non-mutating Pi tools: `read`, `grep`, `find`, `ls`, and `request_input`
 - `shell`: `inspect` plus `bash`
 - `workspace_write`: `shell` plus `edit` and `write`
 
 Use `workspace_write` only when the child is expected to modify files. Use `shell` only when command execution is necessary. The default `inspect` profile is intended for review, research, and report-only delegation.
 
-Use `skill_name` for skill binding and keep `prompt` as task content. Put only the bare name in `skill_name`; do not put `$skill`, `/skill:name`, markdown skill links, prose, or filesystem paths there, and do not prefix `prompt` with skill syntax. Subagent007 Pi emits the correct Pi skill invocation.
+Bind skills with `skill_name`, not prompt syntax. It must be a bare name such as `pda-lite` or `google-drive:google-docs`, not `$skill`, `/skill:name`, markdown, prose, or a path.
 
-Successful and failed invocations return metadata plus an `output_path`. Read that file for the full final answer or public transcript. Transcript artifacts redact internal Pi event payloads such as streamed thinking deltas and partial tool-call JSON.
+Successful and failed invocations return `output_path`; read it for the final answer or public transcript. Transcript output redacts internal Pi events. On timeout, `partial_output_available` is true only when the artifact includes child assistant text, a warning/error, or a captured final message; user prompts, markers, and raw process bytes do not count.
 
 ## One-Shot Runs
 
@@ -151,7 +151,7 @@ Resume raw Pi session:
 `continuity.mode` must be `ephemeral`, `fresh`, or `resume`. Top-level `session_id` is invalid; use `continuity.session_id` only with `mode: "resume"`.
 Resume session ids must point to an existing, readable, nonempty session file. A missing path fails before Pi is started.
 
-`run_subagent` rejects caller-provided `timeout_ms`. Its internal default deadline is 110 seconds and can be changed with `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`. Use `start_run` for longer work, explicit timeouts, cancellation, polling, caller input, or write-capable delegation.
+`run_subagent` rejects caller-provided `timeout_ms`. Its internal default deadline is 110 seconds and can be changed with `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`. Use `start_run` for longer work, explicit timeouts, cancellation, polling, caller input, or write work that may need observation or recovery.
 
 ## Async Runs And Caller Input
 
@@ -175,7 +175,7 @@ Flow:
 
 Input requests are stored under `~/.codex/subagent007-pi/input-requests` by default.
 
-`timeout_ms` is optional for `start_run` and `run_subagent_session`; omit it only for deliberately unbounded work. When provided, it is a hard response-budget cap: the child process is stopped before that budget is exhausted so the MCP tool can return timeout metadata and any public transcript. Values must leave at least one millisecond of effective child runtime after configured response headroom and kill grace are reserved. It is rejected by `run_subagent`.
+`timeout_ms` is optional for `start_run` and `run_subagent_session`; omit it only for deliberately unbounded work. When provided, it is a hard response-budget cap: the child process is stopped before that budget is exhausted so the MCP tool can return timeout metadata and any public transcript. Values must leave at least one millisecond of effective child runtime after configured response headroom and kill grace are reserved. It is not a `run_subagent` input, and `run_subagent` rejects calls that provide it.
 
 `start_run` task snapshots are stored under `~/.codex/subagent007-pi/run-tasks` by default. Completed runs can still be inspected by `get_run` after an MCP server restart. A run that was active during a restart is reported as failed with a clear restart-state error because the new server process cannot safely reattach to the old child process.
 
@@ -201,13 +201,13 @@ Use `run_subagent_session` when the caller wants durable continuity by semantic 
 - `new`: fail if a session already exists
 - `require_existing`: fail if no session exists
 
-The first run locks in `cwd` and the normalized skill binding from `skill_name` or legacy `skill`. Later runs with the same `session_key` must use the same real `cwd` and same normalized skill binding.
+The first successful run locks in `cwd` and the normalized skill binding from `skill_name` or legacy `skill`. Later runs with the same `session_key` must use the same real `cwd` and same normalized skill binding. Do not pass raw `continuity` or top-level `session_id` to `run_subagent_session`; named sessions derive Pi continuity from the manifest.
 
 Use `packet_policy` only when the caller needs a structured handoff packet. Values:
 
 - `none`: default; no packet instruction or extraction
-- `best_effort`: ask for a `contract_packet_v1` block and parse it when present
-- `required`: fail the session run unless a valid `contract_packet_v1` block is present
+- `best_effort`: ask for a `contract_packet_v1` block and parse it when present; parse status is metadata only
+- `required`: fail the session run unless a valid `contract_packet_v1` block claims `verdict: "ready"` with an empty `blockers` array
 
 Session turns execute against a candidate Pi session first. The manifest and ledger advance only when the process succeeds, a Pi session is available, and the packet policy is satisfied. Failed candidate turns are recorded in `attempts.jsonl` instead of mutating the committed session manifest.
 

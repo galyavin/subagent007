@@ -1,6 +1,8 @@
 node_modules/
 src/
 tests/
+docs/plans/
+reports/
 tsconfig.json
 tsconfig.test.json
 *.log

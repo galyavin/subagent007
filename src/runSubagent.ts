@@ -243,7 +243,13 @@ export async function runSubagent(
         ? processSuccess
         : false;
     const success = processSuccess && (sessionMode.kind !== "fresh" || sessionEstablished);
-    const partialOutputAvailable = processResult.timedOut && output.sizeBytes > 0;
+    const childPublicOutputAvailable = Boolean(
+      finalMessage ||
+        output.hasPublicAssistantText ||
+        output.hasPublicSubagentWarning ||
+        output.hasPublicSubagentError,
+    );
+    const partialOutputAvailable = processResult.timedOut && childPublicOutputAvailable;
     const resumePossible = Boolean(
       processResult.timedOut &&
         (sessionMode.kind === "resume" || (sessionMode.kind === "fresh" && parsedSessionId)),

@@ -11,8 +11,10 @@ import {
   HEARTBEAT_INTERVAL_ENV,
   heartbeatIntervalMsFromEnv,
 } from "../src/progress.js";
+import { runSubagent } from "../src/runSubagent.js";
 import { computeTimeoutBudget, minimumRequestedTimeoutMs } from "../src/timeoutBudget.js";
 import { createFakePiChild } from "./helpers/fakePiChild.js";
+import { withEnv } from "./helpers/testUtils.js";
 
 type RunSubagentMetadata = {
   run_id: string;
@@ -169,7 +171,7 @@ test("start_run returns timeout metadata and transcript before caller deadline",
 
     assert.equal(metadata.success, false);
     assert.equal(metadata.timed_out, true);
-    assert.equal(metadata.partial_output_available, true);
+    assert.equal(metadata.partial_output_available, false);
     assert.equal(metadata.resume_possible, false);
     assert.equal(metadata.requested_timeout_ms, 2500);
     assert.equal(metadata.resolved_timeout_ms, 2500);
@@ -196,6 +198,51 @@ test("start_run returns timeout metadata and transcript before caller deadline",
   } finally {
     await client.close();
   }
+});
+
+test("timeout partial output reflects public child-generated content", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-partial-output-"));
+  const projectDir = path.join(tmp, "project");
+  const runsDir = path.join(tmp, "runs");
+  const fake = await createFakePiChild();
+  await fs.mkdir(projectDir, { recursive: true });
+
+  await withEnv(
+    {
+      SUBAGENT007_PI_CHILD_PATH: fake.childPath,
+      FAKE_PI_LOG_PATH: fake.logPath,
+      SUBAGENT007_FAILURE_LOG: "off",
+      SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS: "0",
+      SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS: "20",
+      SUBAGENT007_TIMEOUT_KILL_GRACE_MS: "10",
+      SUBAGENT007_TIMEOUT_FORCE_GRACE_MS: "10",
+    },
+    async () => {
+      const cases = [
+        { prompt: "TIMEOUT_RAW_TEXT", outputMode: "transcript" as const, partial: false },
+        { prompt: "TIMEOUT_ASSISTANT_EVENT", outputMode: "final" as const, partial: true },
+        { prompt: "TIMEOUT_WARNING_EVENT", outputMode: "final" as const, partial: true },
+        { prompt: "TIMEOUT_ERROR_EVENT", outputMode: "final" as const, partial: true },
+        { prompt: "TIMEOUT_FINAL_MESSAGE", outputMode: "final" as const, partial: true },
+      ];
+
+      for (const testCase of cases) {
+        const result = await runSubagent(
+          {
+            cwd: projectDir,
+            prompt: testCase.prompt,
+            model: "openai-codex/gpt-5.4-mini",
+            thinking_level: "medium",
+            output_mode: testCase.outputMode,
+            timeout_ms: 120,
+          },
+          { runsDir, allowTimeout: true },
+        );
+        assert.equal(result.timed_out, true);
+        assert.equal(result.partial_output_available, testCase.partial, testCase.prompt);
+      }
+    },
+  );
 });
 
 test("start_run treats timeout_ms as a hard caller cap", async () => {

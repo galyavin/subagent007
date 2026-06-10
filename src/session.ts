@@ -20,6 +20,7 @@ import {
   RESUME_MODES,
   RUN_STOP_REASONS,
   SESSION_PACKET_POLICIES,
+  type ContractPacketV1,
   TOOL_PROFILES,
   type PacketParseStatus,
   type ResumeMode,
@@ -138,6 +139,9 @@ function assertNoRawSessionId(request: RunSubagentSessionRequest): void {
   if ((request as { session_id?: unknown }).session_id !== undefined) {
     throw new ValidationError("session_id is not supported by run_subagent_session; use session_key");
   }
+  if ((request as { continuity?: unknown }).continuity !== undefined) {
+    throw new ValidationError("continuity is not supported by run_subagent_session; use session_key and resume_mode");
+  }
 }
 
 function identityHash(cwd: string, sessionKey: string): string {
@@ -252,11 +256,15 @@ async function writePacket(sessionDir: string, runId: string, output: string): P
   };
 }
 
-function packetSatisfied(policy: SessionPacketPolicy, status: PacketParseStatus): boolean {
+function packetSatisfied(
+  policy: SessionPacketPolicy,
+  status: PacketParseStatus,
+  packet: ContractPacketV1 | null,
+): boolean {
   if (policy === "none" || policy === "best_effort") {
     return true;
   }
-  return status === "valid";
+  return status === "valid" && packet?.verdict === "ready" && packet.blockers.length === 0;
 }
 
 function assertExistingSession(
@@ -514,7 +522,7 @@ export async function runSubagentSession(
     const success =
       processSuccess &&
       attemptSessionEstablished &&
-      packetSatisfied(packetPolicy, packet.packetParseStatus);
+      packetSatisfied(packetPolicy, packet.packetParseStatus, packet.claimedPacket);
     const committedSubagentSessionId = success && attemptSubagentSessionId
       ? await promoteAttemptSession({
           sessionDir,
@@ -625,7 +633,11 @@ export async function runSubagentSession(
       ),
     };
     if (!result.success && result.run_record.stop_reason !== "cancelled") {
-      const isPacketSatisfied = packetSatisfied(packetPolicy, result.packet_parse_status);
+      const isPacketSatisfied = packetSatisfied(
+        packetPolicy,
+        result.packet_parse_status,
+        result.claimed_packet,
+      );
       await logFailure({
         tool: "run_subagent_session",
         failure_class: failureClassForSessionResult(

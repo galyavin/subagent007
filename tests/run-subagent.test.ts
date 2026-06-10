@@ -7,6 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { listInputRequests } from "../src/inputMailbox.js";
 import { extractSubagentSessionId, runSubagent } from "../src/runSubagent.js";
+import { preparePublicTranscriptFromProcessOutput } from "../src/transcript.js";
 import { createFakePiChild } from "./helpers/fakePiChild.js";
 import { readJsonl, withEnv } from "./helpers/testUtils.js";
 
@@ -301,6 +302,29 @@ test("runSubagent rejects timeout_ms unless internal callers opt into timed work
   );
 });
 
+test("public transcript flags describe persisted rendered content", async () => {
+  const assistantEvent = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "PUBLIC ASSISTANT TEXT" }],
+    },
+  });
+
+  await withEnv({ SUBAGENT007_MAX_TRANSCRIPT_BYTES: undefined }, async () => {
+    const transcript = preparePublicTranscriptFromProcessOutput(assistantEvent);
+    assert.equal(transcript.hasAssistantText, true);
+    assert.match(transcript.text, /PUBLIC ASSISTANT TEXT/);
+  });
+
+  await withEnv({ SUBAGENT007_MAX_TRANSCRIPT_BYTES: "20" }, async () => {
+    const transcript = preparePublicTranscriptFromProcessOutput(assistantEvent);
+    assert.equal(transcript.hasAssistantText, false);
+    assert.match(transcript.text, /\[subagent007 transcript truncated at 20 bytes\]/);
+    assert.doesNotMatch(transcript.text, /PUBLIC ASSISTANT TEXT/);
+  });
+});
+
 test("MCP server exposes run_subagent names and not old run_codex names", async () => {
   await connectFakeClient(async (client) => {
     const response = await client.listTools();
@@ -314,6 +338,18 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.equal(names.includes("list_allowed_models"), true);
     assert.equal(names.includes("run_codex"), false);
     assert.equal(names.includes("run_codex_session"), false);
+    const runSubagentTool = response.tools.find((tool) => tool.name === "run_subagent");
+    assert.ok(runSubagentTool);
+    assert.equal(
+      Object.hasOwn(runSubagentTool.inputSchema.properties ?? {}, "timeout_ms"),
+      false,
+    );
+    const runSubagentSessionTool = response.tools.find((tool) => tool.name === "run_subagent_session");
+    assert.ok(runSubagentSessionTool);
+    assert.equal(
+      Object.hasOwn(runSubagentSessionTool.inputSchema.properties ?? {}, "continuity"),
+      false,
+    );
   });
 });
 
