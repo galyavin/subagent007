@@ -4,7 +4,7 @@ import path from "node:path";
 import { THINKING_LEVELS, type RunnerConfig, type ThinkingLevel } from "./types.js";
 import { ValidationError } from "./types.js";
 
-function defaultConfigPath(): string {
+export function defaultConfigPath(): string {
   return process.env.SUBAGENT007_CONFIG_PATH
     ? path.resolve(process.env.SUBAGENT007_CONFIG_PATH)
     : path.join(os.homedir(), ".codex", "subagent007-pi", "config.json");

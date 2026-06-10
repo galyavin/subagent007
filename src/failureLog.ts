@@ -67,6 +67,7 @@ export interface FailureLogRecord {
   server_version: string;
   build_sha?: string;
   record_source: FailureRecordSource;
+  campaign_id?: string;
   tool: FailureLogTool;
   failure_class: FailureClass;
   reason_code: FailureReasonCode;
@@ -112,6 +113,14 @@ function eventId(): string {
 function recordSourceFromEnv(): FailureRecordSource {
   const source = process.env.SUBAGENT007_RECORD_SOURCE;
   return source === "production" || source === "test" || source === "unknown" ? source : "production";
+}
+
+export function campaignIdFromEnv(): string | undefined {
+  const value = process.env.SUBAGENT007_CAMPAIGN_ID?.trim();
+  if (!value) {
+    return undefined;
+  }
+  return /^[A-Za-z0-9_.:-]{1,128}$/.test(value) ? value : undefined;
 }
 
 function classifyFailureCwd(cwd: string | undefined): FailureCwdClass {
@@ -166,6 +175,7 @@ export async function logFailure(
     const logPath = defaultFailureLogPath();
     await fs.mkdir(path.dirname(logPath), { recursive: true });
     const buildSha = serverBuildSha();
+    const campaignId = campaignIdFromEnv();
     const fullRecord: FailureLogRecord = {
       schema_version: 2,
       event_id: eventId(),
@@ -173,6 +183,7 @@ export async function logFailure(
       server_version: SERVER_VERSION,
       ...(buildSha ? { build_sha: buildSha } : {}),
       record_source: recordSourceFromEnv(),
+      ...(campaignId ? { campaign_id: campaignId } : {}),
       cwd_class: classifyFailureCwd(record.cwd),
       ...record,
       reason_code: record.reason_code ?? defaultReasonCode(record.failure_class),

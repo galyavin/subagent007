@@ -15,6 +15,7 @@ type FailureRecord = {
   timestamp: string;
   server_version: string;
   record_source: "production" | "test" | "unknown";
+  campaign_id?: string;
   tool: string;
   failure_class: string;
   reason_code: string;
@@ -87,6 +88,7 @@ test("run_subagent appends one central record for a nonzero child failure", asyn
       arguments: {
         cwd: projectDir,
         prompt: "FAIL_EXIT do not log this prompt",
+        run_kind: "quick_noninteractive",
         output_mode: "transcript",
       },
     });
@@ -115,6 +117,48 @@ test("run_subagent appends one central record for a nonzero child failure", asyn
   });
 });
 
+test("failure records include a valid campaign id from environment", async () => {
+  await withFakeClient(
+    async (client, { projectDir, failureLogPath }) => {
+      const response = await client.callTool({
+        name: "run_subagent",
+        arguments: {
+          cwd: projectDir,
+          prompt: "FAIL_EXIT",
+          run_kind: "quick_noninteractive",
+        },
+      });
+
+      assert.notEqual(response.isError, true);
+      const failures = await readJsonl<FailureRecord>(failureLogPath);
+      assert.equal(failures.length, 1);
+      assert.equal(failures[0].campaign_id, "campaign.test-1");
+    },
+    { SUBAGENT007_CAMPAIGN_ID: "campaign.test-1" },
+  );
+});
+
+test("failure records omit invalid campaign ids from environment", async () => {
+  await withFakeClient(
+    async (client, { projectDir, failureLogPath }) => {
+      const response = await client.callTool({
+        name: "run_subagent",
+        arguments: {
+          cwd: projectDir,
+          prompt: "FAIL_EXIT",
+          run_kind: "quick_noninteractive",
+        },
+      });
+
+      assert.notEqual(response.isError, true);
+      const failures = await readJsonl<FailureRecord>(failureLogPath);
+      assert.equal(failures.length, 1);
+      assert.equal(failures[0].campaign_id, undefined);
+    },
+    { SUBAGENT007_CAMPAIGN_ID: "invalid id with spaces" },
+  );
+});
+
 test("handler-level validation failures are logged without prompt text", async () => {
   await withFakeClient(async (client, { failureLogPath }) => {
     const response = await client.callTool({
@@ -122,6 +166,7 @@ test("handler-level validation failures are logged without prompt text", async (
       arguments: {
         cwd: "relative-path",
         prompt: "SECRET_PROMPT_SHOULD_NOT_BE_LOGGED",
+        run_kind: "quick_noninteractive",
       },
     });
 
@@ -160,6 +205,7 @@ test("run_subagent rejects timeout_ms at the MCP schema boundary", async () => {
       arguments: {
         cwd: projectDir,
         prompt: "FAST",
+        run_kind: "quick_noninteractive",
         timeout_ms: 1000,
       },
     });
@@ -273,6 +319,7 @@ test("failure logging can be disabled", async () => {
         arguments: {
           cwd: projectDir,
           prompt: "FAIL_EXIT",
+          run_kind: "quick_noninteractive",
         },
       });
       await assert.rejects(fs.stat(failureLogPath), /ENOENT/);

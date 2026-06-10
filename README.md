@@ -4,7 +4,7 @@ Subagent007 Pi is a private MCP server that delegates work to a separate Pi-back
 
 ## Use The Tools This Way
 
-- `run_subagent`: one synchronous, non-interactive invocation. No caller-supplied `timeout_ms`; no caller-input loop. It has an internal default deadline so a one-shot call cannot run forever.
+- `run_subagent`: one synchronous, quick, non-interactive invocation. Requires `run_kind: "quick_noninteractive"`. No caller-supplied `timeout_ms`; no caller-input loop. It has an internal default deadline so a one-shot call cannot run forever.
 - `start_run`: asynchronous invocation for polling, cancellation, caller input, or longer work. Pass `timeout_ms` when a hard deadline matters.
 - `get_run`: inspect a `start_run` task, including pending input requests and terminal result.
 - `answer_run_input`: answer one pending request from a `start_run` task.
@@ -62,7 +62,9 @@ Equivalent unqualified Pi model ids such as `gpt-5.4-mini`, `gemma4:12b`, and `d
 
 Run `npm run models:reconcile` to compare the curated list with fresh source data from `pi --list-models`, OpenRouter `GET /api/v1/models`, and local Ollama `GET /api/tags`. The command exits nonzero when a curated model is missing or has drifted from a source; unavailable sources are reported as unverified instead of drift.
 
-`list_allowed_models` also reports the configured default model, the resolved effective model after known-alias repair, whether it is allowed, and a suggested replacement when the default is stale.
+Run `npm run config:migrate` to rewrite a noncanonical but allowed `default_model` to its canonical provider-qualified ref. This includes known stale aliases, unqualified model ids, and whitespace-padded values. The command honors `SUBAGENT007_CONFIG_PATH`, writes atomically, preserves unknown fields, and is not run automatically by server startup or `list_allowed_models`.
+
+`list_allowed_models` also reports the configured default model, the effective model after canonicalization, whether it is allowed, whether migration is needed, the exact migration command, and a suggested replacement when the default is stale.
 
 `thinking_level` and `default_thinking_level` must be one of `low`, `medium`, `high`, or `xhigh`.
 
@@ -93,6 +95,10 @@ Child-invocation tools require:
 - `cwd`: absolute directory path
 - `prompt`: nonempty string
 
+`run_subagent` also requires `run_kind: "quick_noninteractive"`. `start_run` and `run_subagent_session` do not use this field.
+
+`run_subagent` and `start_run` may use `continuity`; `run_subagent_session` does not. `continuity.mode` must be `ephemeral`, `fresh`, or `resume`. Top-level `session_id` is invalid; use `continuity.session_id` only with `mode: "resume"`.
+
 Optional common fields:
 
 - `model`: curated exact Pi model id or accepted OpenAI Codex pattern member; falls back to `default_model`
@@ -121,6 +127,7 @@ Ephemeral run:
 ```json
 {
   "cwd": "/absolute/project/path",
+  "run_kind": "quick_noninteractive",
   "prompt": "Review this plan for the highest-risk flaw."
 }
 ```
@@ -130,6 +137,7 @@ Fresh raw Pi session:
 ```json
 {
   "cwd": "/absolute/project/path",
+  "run_kind": "quick_noninteractive",
   "prompt": "Start by mapping the codebase.",
   "continuity": { "mode": "fresh" }
 }
@@ -140,6 +148,7 @@ Resume raw Pi session:
 ```json
 {
   "cwd": "/absolute/project/path",
+  "run_kind": "quick_noninteractive",
   "prompt": "Continue from the previous analysis.",
   "continuity": {
     "mode": "resume",
@@ -148,10 +157,10 @@ Resume raw Pi session:
 }
 ```
 
-`continuity.mode` must be `ephemeral`, `fresh`, or `resume`. Top-level `session_id` is invalid; use `continuity.session_id` only with `mode: "resume"`.
+`run_kind` is an explicit caller contract that the work is bounded, non-interactive, and compatible with the one-shot deadline. Use `start_run` instead for longer, cancellable, polling, caller-input, exploratory, or write-heavy work.
 Resume session ids must point to an existing, readable, nonempty session file. A missing path fails before Pi is started.
 
-`run_subagent` rejects caller-provided `timeout_ms`. Its internal default deadline is 110 seconds and can be changed with `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`. Use `start_run` for longer work, explicit timeouts, cancellation, polling, caller input, or write work that may need observation or recovery.
+`run_subagent` rejects caller-provided `timeout_ms`. Its internal default deadline is 110 seconds and can be changed with `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`.
 
 ## Async Runs And Caller Input
 
@@ -172,6 +181,8 @@ Flow:
 3. If status is `input_required`, read `input_requests`.
 4. Call `answer_run_input` with `run_id`, `request_id`, and `answer`.
 5. Keep polling until status is `completed`, `failed`, or `cancelled`.
+
+`start_run` accepts the same `continuity` object as `run_subagent` when async raw Pi continuity is needed.
 
 Input requests are stored under `~/.codex/subagent007-pi/input-requests` by default.
 
@@ -224,13 +235,23 @@ Environment overrides:
 - Paths: `SUBAGENT007_CONFIG_PATH`, `SUBAGENT007_RUNS_DIR`, `SUBAGENT007_RUN_TASKS_DIR`, `SUBAGENT007_PI_RAW_SESSIONS_DIR`, `SUBAGENT007_SESSIONS_DIR`, `SUBAGENT007_INPUT_REQUESTS_DIR`, `SUBAGENT007_FAILURE_LOG_PATH`
 - Timeouts/progress: `SUBAGENT007_INPUT_REQUEST_TIMEOUT_MS`, `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`, `SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS`, `SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS`, `SUBAGENT007_TIMEOUT_KILL_GRACE_MS`, `SUBAGENT007_TIMEOUT_FORCE_GRACE_MS`, `SUBAGENT007_HEARTBEAT_INTERVAL_MS`, `SUBAGENT007_MAX_TRANSCRIPT_BYTES`
 - Pi/runtime: `SUBAGENT007_PI_AGENT_DIR`, `PI_CODING_AGENT_DIR`, `SUBAGENT007_PI_SKILL_PATHS`
-- Failure logging: `SUBAGENT007_FAILURE_LOG=off`, `SUBAGENT007_BUILD_SHA`, `GIT_COMMIT`, `SUBAGENT007_RECORD_SOURCE`
+- Failure logging: `SUBAGENT007_FAILURE_LOG=off`, `SUBAGENT007_BUILD_SHA`, `GIT_COMMIT`, `SUBAGENT007_RECORD_SOURCE`, `SUBAGENT007_CAMPAIGN_ID`
 
 `SUBAGENT007_PI_AGENT_DIR` wins over Pi's native `PI_CODING_AGENT_DIR`; otherwise the Pi agent directory defaults to `~/.pi/agent`. The resolved agent directory is used for Pi auth, custom models, settings/resources, and session behavior.
 
 `SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS`, `SUBAGENT007_TIMEOUT_KILL_GRACE_MS`, and `SUBAGENT007_TIMEOUT_FORCE_GRACE_MS` reserve time inside caller-provided `timeout_ms` so the MCP server can terminate the child process and return metadata before the caller deadline. `SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS` can raise the accepted floor for timed tools. `SUBAGENT007_HEARTBEAT_INTERVAL_MS` controls progress notification cadence when the MCP client provides a progress token.
 
-`SUBAGENT007_BUILD_SHA` or `GIT_COMMIT` is copied into failure-log records when present. `SUBAGENT007_RECORD_SOURCE` may be `production`, `test`, or `unknown`; invalid values default to `production`.
+`SUBAGENT007_BUILD_SHA` or `GIT_COMMIT` is copied into failure-log records when present. `SUBAGENT007_RECORD_SOURCE` may be `production`, `test`, or `unknown`; invalid values default to `production`. `SUBAGENT007_CAMPAIGN_ID` is copied into failure-log records when it is a short token containing only letters, digits, `_`, `-`, `.`, or `:`.
+
+## Observed Trial Campaigns
+
+Use the campaign harness for scripted real-use probes so trial activity does not write to production state by default:
+
+```sh
+npm run observed-campaign -- --campaign-id campaign.example-1 -- node ./your-probe.mjs
+```
+
+When `--state-root` is omitted, the harness creates a temp campaign state root and sets `SUBAGENT007_FAILURE_LOG_PATH`, `SUBAGENT007_RUNS_DIR`, `SUBAGENT007_RUN_TASKS_DIR`, `SUBAGENT007_INPUT_REQUESTS_DIR`, `SUBAGENT007_SESSIONS_DIR`, `SUBAGENT007_PI_RAW_SESSIONS_DIR`, and `SUBAGENT007_CAMPAIGN_ID` for the probe command. Reports should record the campaign ID, state root, and ledger path printed by the harness.
 
 ## Development
 

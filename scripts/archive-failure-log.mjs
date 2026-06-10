@@ -9,6 +9,27 @@ function defaultFailureLogPath() {
     : path.join(os.homedir(), ".codex", "subagent007-pi", "failures.jsonl");
 }
 
+function usage() {
+  return [
+    "usage: node scripts/archive-failure-log.mjs",
+    "",
+    "Archives the configured Subagent007 failure log.",
+    "",
+    "Options:",
+    "  -h, --help  Show this help without mutating archive state.",
+  ].join("\n");
+}
+
+function parseArgs(argv) {
+  if (argv.length === 0) {
+    return { mode: "archive" };
+  }
+  if (argv.length === 1 && (argv[0] === "--help" || argv[0] === "-h")) {
+    return { mode: "help" };
+  }
+  return { mode: "invalid", error: `unknown argument: ${argv.join(" ")}` };
+}
+
 function timestampSlug() {
   return new Date().toISOString().replace(/[:.]/g, "").replace(/Z$/, "Z");
 }
@@ -41,6 +62,7 @@ function summarize(text) {
     by_tool: {},
     by_failure_class: {},
     by_cwd_class: {},
+    by_campaign_id: {},
     by_day: {},
     parse_errors: 0,
   };
@@ -58,9 +80,22 @@ function summarize(text) {
     increment(summary.by_tool, String(record.tool ?? "missing"));
     increment(summary.by_failure_class, String(record.failure_class ?? "missing"));
     increment(summary.by_cwd_class, String(record.cwd_class ?? classifyCwd(record.cwd)));
+    increment(summary.by_campaign_id, String(record.campaign_id ?? "uncategorized"));
     increment(summary.by_day, String(record.timestamp ?? "missing").slice(0, 10));
   }
   return summary;
+}
+
+const invocation = parseArgs(process.argv.slice(2));
+if (invocation.mode === "help") {
+  console.log(usage());
+  process.exit(0);
+}
+if (invocation.mode === "invalid") {
+  console.error(invocation.error);
+  console.error("");
+  console.error(usage());
+  process.exit(2);
 }
 
 const logPath = defaultFailureLogPath();

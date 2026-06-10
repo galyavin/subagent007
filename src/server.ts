@@ -28,6 +28,7 @@ import { runSubagentSession } from "./session.js";
 import {
   OUTPUT_MODES,
   RESUME_MODES,
+  RUN_KINDS,
   SESSION_PACKET_POLICIES,
   THINKING_LEVELS,
   TOOL_PROFILES,
@@ -77,9 +78,9 @@ function jsonToolResult<TStructured extends Record<string, unknown>>(
 }
 
 const continuitySchema = z.discriminatedUnion("mode", [
-  z.object({ mode: z.literal("ephemeral") }),
-  z.object({ mode: z.literal("fresh") }),
-  z.object({ mode: z.literal("resume"), session_id: z.string().min(1) }),
+  z.strictObject({ mode: z.literal("ephemeral") }),
+  z.strictObject({ mode: z.literal("fresh") }),
+  z.strictObject({ mode: z.literal("resume"), session_id: z.string().min(1) }),
 ]);
 
 const modelSchema = z
@@ -96,6 +97,12 @@ const skillInputSchema = z
   .optional()
   .describe("Bare skill name only, such as pda-lite or plugin:skill-name; null means no skill.");
 
+const runKindSchema = z
+  .enum(RUN_KINDS, {
+    error: "run_kind must be quick_noninteractive; use start_run for longer, cancellable, polling, or caller-input work",
+  })
+  .describe("Required contract for run_subagent: this call is quick, non-interactive, and deadline-compatible.");
+
 const baseRunInputSchema = {
   prompt: z.string().min(1),
   cwd: z.string().min(1),
@@ -109,6 +116,7 @@ const baseRunInputSchema = {
 
 const runInputSchema = z.strictObject({
   ...baseRunInputSchema,
+  run_kind: runKindSchema,
   continuity: continuitySchema.optional(),
 }, {
   error: (issue) =>
@@ -136,7 +144,12 @@ const timedSessionInputSchema = {
     .optional(),
 };
 
-const startRunInputSchema = timedRunInputSchema;
+const startRunInputSchema = z.strictObject(timedRunInputSchema, {
+  error: (issue) =>
+    issue.code === "unrecognized_keys" && issue.keys.includes("session_id")
+      ? "session_id is not a start_run input; use continuity.mode fresh or continuity.mode resume with continuity.session_id"
+      : undefined,
+});
 
 const runSessionInputSchema = z.strictObject({
   ...timedSessionInputSchema,
@@ -159,19 +172,37 @@ server.registerTool(
   },
   withFailureLogging("list_allowed_models", async () => {
     const config = await loadConfig();
-    const repairedDefaultModel = config.default_model ? repairKnownModelAlias(config.default_model) : null;
-    const defaultModelAllowed = repairedDefaultModel ? isAllowedModelRef(repairedDefaultModel) : null;
-    const defaultModelResolved = repairedDefaultModel && defaultModelAllowed
-      ? resolveAllowedModelRef(repairedDefaultModel)
+    const defaultModelConfigured = config.default_model ?? null;
+    const repairedDefaultModel = defaultModelConfigured ? repairKnownModelAlias(defaultModelConfigured) : null;
+    const defaultModelAllowed = defaultModelConfigured ? isAllowedModelRef(defaultModelConfigured) : null;
+    const defaultModelEffective = defaultModelConfigured && defaultModelAllowed
+      ? resolveAllowedModelRef(defaultModelConfigured)
       : repairedDefaultModel;
+    const defaultModelRepaired = Boolean(
+      defaultModelConfigured &&
+        defaultModelEffective &&
+        defaultModelEffective !== defaultModelConfigured.trim(),
+    );
+    const configMigration = defaultModelRepaired && defaultModelAllowed
+      ? {
+          needed: true,
+          field: "default_model",
+          from: defaultModelConfigured,
+          to: defaultModelEffective,
+          command: "npm run config:migrate",
+        }
+      : null;
     const result = {
       allowed_models: allowedModelChoices(),
       exact_models: exactModelChoices(),
       model_patterns: modelPatternChoices(),
-      default_model: config.default_model ?? null,
-      default_model_resolved: defaultModelResolved,
+      default_model: defaultModelConfigured,
+      default_model_configured: defaultModelConfigured,
+      default_model_resolved: defaultModelEffective,
+      default_model_effective: defaultModelEffective,
       default_model_allowed: defaultModelAllowed,
-      default_model_repaired: Boolean(config.default_model && repairedDefaultModel !== config.default_model),
+      default_model_repaired: defaultModelRepaired,
+      config_migration: configMigration,
       default_thinking_level: config.default_thinking_level ?? null,
       suggested_default_model:
         defaultModelAllowed === false ? SUGGESTED_DEFAULT_MODEL_REF : null,
@@ -255,7 +286,7 @@ server.registerTool(
   {
     title: "Run Subagent",
     description:
-      "Run one non-interactive Pi-backed subagent invocation in an absolute cwd, write cleaned final or transcript output to Markdown, and return metadata.",
+      "Run one quick, non-interactive Pi-backed subagent invocation in an absolute cwd, write cleaned final or transcript output to Markdown, and return metadata.",
     inputSchema: runInputSchema,
   },
   withFailureLogging("run_subagent", async (request, extra) => {

@@ -157,6 +157,22 @@ export function extractSubagentSessionId(output: string): string | null {
   return null;
 }
 
+export function partialOutputAvailableForRun(input: {
+  timedOut: boolean;
+  finalMessage?: string;
+  hasPublicAssistantText: boolean;
+  hasPublicSubagentWarning: boolean;
+  hasPublicSubagentError: boolean;
+}): boolean {
+  return Boolean(
+    input.timedOut &&
+      (input.finalMessage ||
+        input.hasPublicAssistantText ||
+        input.hasPublicSubagentWarning ||
+        input.hasPublicSubagentError),
+  );
+}
+
 export async function runSubagent(
   request: RunSubagentRequest,
   options: {
@@ -243,13 +259,13 @@ export async function runSubagent(
         ? processSuccess
         : false;
     const success = processSuccess && (sessionMode.kind !== "fresh" || sessionEstablished);
-    const childPublicOutputAvailable = Boolean(
-      finalMessage ||
-        output.hasPublicAssistantText ||
-        output.hasPublicSubagentWarning ||
-        output.hasPublicSubagentError,
-    );
-    const partialOutputAvailable = processResult.timedOut && childPublicOutputAvailable;
+    const partialOutputAvailable = partialOutputAvailableForRun({
+      timedOut: processResult.timedOut,
+      finalMessage,
+      hasPublicAssistantText: output.hasPublicAssistantText,
+      hasPublicSubagentWarning: output.hasPublicSubagentWarning,
+      hasPublicSubagentError: output.hasPublicSubagentError,
+    });
     const resumePossible = Boolean(
       processResult.timedOut &&
         (sessionMode.kind === "resume" || (sessionMode.kind === "fresh" && parsedSessionId)),

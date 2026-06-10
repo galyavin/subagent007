@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { listInputRequests } from "../src/inputMailbox.js";
-import { extractSubagentSessionId, runSubagent } from "../src/runSubagent.js";
+import { extractSubagentSessionId, partialOutputAvailableForRun, runSubagent } from "../src/runSubagent.js";
 import { preparePublicTranscriptFromProcessOutput } from "../src/transcript.js";
 import { createFakePiChild } from "./helpers/fakePiChild.js";
 import { readJsonl, withEnv } from "./helpers/testUtils.js";
@@ -26,6 +26,7 @@ type RunSubagentMetadata = {
 
 async function connectFakeClient<T>(
   run: (client: Client, dirs: { projectDir: string; configPath: string; fakeLogPath: string }) => Promise<T>,
+  options: { config?: Record<string, unknown> } = {},
 ): Promise<T> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-mcp-"));
   const projectDir = path.join(tmp, "project");
@@ -36,7 +37,9 @@ async function connectFakeClient<T>(
   await fs.mkdir(stateDir, { recursive: true });
   await fs.writeFile(
     configPath,
-    JSON.stringify({ default_model: "openai-codex/gpt-5.4-mini", default_thinking_level: "medium" }),
+    JSON.stringify(
+      options.config ?? { default_model: "openai-codex/gpt-5.4-mini", default_thinking_level: "medium" },
+    ),
   );
 
   const transport = new StdioClientTransport({
@@ -325,6 +328,80 @@ test("public transcript flags describe persisted rendered content", async () => 
   });
 });
 
+test("public transcript flags classify deterministic public content classes", async () => {
+  const assistantEvent = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "assistant text" }],
+    },
+  });
+  const warningEvent = JSON.stringify({ type: "subagent007.warning", message: "watch this" });
+  const errorEvent = JSON.stringify({ type: "subagent007.error", error: "failed cleanly" });
+  const userEvent = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "user",
+      content: [{ type: "text", text: "user-only text" }],
+    },
+  });
+
+  await withEnv({ SUBAGENT007_MAX_TRANSCRIPT_BYTES: undefined }, async () => {
+    const assistant = preparePublicTranscriptFromProcessOutput(assistantEvent);
+    assert.equal(assistant.hasAssistantText, true);
+    assert.equal(assistant.hasSubagentWarning, false);
+    assert.equal(assistant.hasSubagentError, false);
+
+    const warning = preparePublicTranscriptFromProcessOutput(warningEvent);
+    assert.equal(warning.hasAssistantText, false);
+    assert.equal(warning.hasSubagentWarning, true);
+    assert.equal(warning.hasSubagentError, false);
+
+    const error = preparePublicTranscriptFromProcessOutput(errorEvent);
+    assert.equal(error.hasAssistantText, false);
+    assert.equal(error.hasSubagentWarning, false);
+    assert.equal(error.hasSubagentError, true);
+
+    for (const rawOutput of [
+      "raw child text",
+      userEvent,
+      "[subagent007 timeout] requested_timeout_ms=120 resolved_timeout_ms=120",
+      "[subagent007 cancelled]",
+    ]) {
+      const transcript = preparePublicTranscriptFromProcessOutput(rawOutput);
+      assert.equal(transcript.hasAssistantText, false, rawOutput);
+      assert.equal(transcript.hasSubagentWarning, false, rawOutput);
+      assert.equal(transcript.hasSubagentError, false, rawOutput);
+    }
+  });
+});
+
+test("partial output availability is pure timeout plus public child content", () => {
+  const base = {
+    timedOut: true,
+    hasPublicAssistantText: false,
+    hasPublicSubagentWarning: false,
+    hasPublicSubagentError: false,
+  };
+
+  assert.equal(partialOutputAvailableForRun({ ...base, finalMessage: "final answer" }), true);
+  assert.equal(partialOutputAvailableForRun({ ...base, hasPublicAssistantText: true }), true);
+  assert.equal(partialOutputAvailableForRun({ ...base, hasPublicSubagentWarning: true }), true);
+  assert.equal(partialOutputAvailableForRun({ ...base, hasPublicSubagentError: true }), true);
+  assert.equal(partialOutputAvailableForRun(base), false);
+  assert.equal(
+    partialOutputAvailableForRun({
+      ...base,
+      timedOut: false,
+      finalMessage: "final answer",
+      hasPublicAssistantText: true,
+      hasPublicSubagentWarning: true,
+      hasPublicSubagentError: true,
+    }),
+    false,
+  );
+});
+
 test("MCP server exposes run_subagent names and not old run_codex names", async () => {
   await connectFakeClient(async (client) => {
     const response = await client.listTools();
@@ -344,12 +421,100 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       Object.hasOwn(runSubagentTool.inputSchema.properties ?? {}, "timeout_ms"),
       false,
     );
+    assert.equal(
+      Object.hasOwn(runSubagentTool.inputSchema.properties ?? {}, "run_kind"),
+      true,
+    );
+    assert.deepEqual(runSubagentTool.inputSchema.required, ["prompt", "cwd", "run_kind"]);
     const runSubagentSessionTool = response.tools.find((tool) => tool.name === "run_subagent_session");
     assert.ok(runSubagentSessionTool);
     assert.equal(
       Object.hasOwn(runSubagentSessionTool.inputSchema.properties ?? {}, "continuity"),
       false,
     );
+  });
+});
+
+test("MCP run_subagent rejects missing or invalid run_kind before invoking the child", async () => {
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    const missingResponse = await client.callTool({
+      name: "run_subagent",
+      arguments: {
+        cwd: projectDir,
+        prompt: "FAST",
+      },
+    });
+    assert.equal(missingResponse.isError, true);
+    const missingContent = missingResponse.content as Array<{ type: string; text?: string }>;
+    assert.match(missingContent[0]?.type === "text" ? (missingContent[0].text ?? "") : "", /run_kind/);
+
+    const invalidResponse = await client.callTool({
+      name: "run_subagent",
+      arguments: {
+        cwd: projectDir,
+        prompt: "FAST",
+        run_kind: "long_running",
+      },
+    });
+    assert.equal(invalidResponse.isError, true);
+    const invalidContent = invalidResponse.content as Array<{ type: string; text?: string }>;
+    assert.match(
+      invalidContent[0]?.type === "text" ? (invalidContent[0].text ?? "") : "",
+      /use start_run for longer/,
+    );
+    await assert.rejects(fs.stat(fakeLogPath), /ENOENT/);
+  });
+});
+
+test("MCP run_subagent and start_run reject unsupported session fields before invoking the child", async () => {
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    const rawSessionResponse = await client.callTool({
+      name: "start_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "FAST",
+        session_id: "raw",
+      },
+    });
+    assert.equal(rawSessionResponse.isError, true);
+    const rawSessionContent = rawSessionResponse.content as Array<{ type: string; text?: string }>;
+    assert.match(
+      rawSessionContent[0]?.type === "text" ? (rawSessionContent[0].text ?? "") : "",
+      /session_id is not a start_run input/,
+    );
+
+    const startRunFreshWithSessionResponse = await client.callTool({
+      name: "start_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "FAST",
+        continuity: { mode: "fresh", session_id: "/tmp/session.jsonl" },
+      },
+    });
+    assert.equal(startRunFreshWithSessionResponse.isError, true);
+    const startRunFreshContent = startRunFreshWithSessionResponse.content as Array<{ type: string; text?: string }>;
+    assert.match(
+      startRunFreshContent[0]?.type === "text" ? (startRunFreshContent[0].text ?? "") : "",
+      /session_id/,
+    );
+
+    const runSubagentFreshWithSessionResponse = await client.callTool({
+      name: "run_subagent",
+      arguments: {
+        cwd: projectDir,
+        prompt: "FAST",
+        run_kind: "quick_noninteractive",
+        continuity: { mode: "fresh", session_id: "/tmp/session.jsonl" },
+      },
+    });
+    assert.equal(runSubagentFreshWithSessionResponse.isError, true);
+    const runSubagentFreshContent = runSubagentFreshWithSessionResponse.content as Array<{ type: string; text?: string }>;
+    assert.match(
+      runSubagentFreshContent[0]?.type === "text" ? (runSubagentFreshContent[0].text ?? "") : "",
+      /session_id/,
+    );
+
+    await assert.rejects(fs.stat(fakeLogPath), /ENOENT/);
   });
 });
 
@@ -365,9 +530,18 @@ test("MCP list_allowed_models exposes curated model choices", async () => {
       exact_models: string[];
       model_patterns: string[];
       default_model: string | null;
+      default_model_configured: string | null;
       default_model_resolved: string | null;
+      default_model_effective: string | null;
       default_model_allowed: boolean | null;
       default_model_repaired: boolean;
+      config_migration: null | {
+        needed: true;
+        field: string;
+        from: string;
+        to: string;
+        command: string;
+      };
       suggested_default_model: string | null;
     };
     const refs = metadata.allowed_models;
@@ -377,11 +551,56 @@ test("MCP list_allowed_models exposes curated model choices", async () => {
     assert.equal(metadata.exact_models.includes("openai-codex/gpt-5.4+"), false);
     assert.deepEqual(metadata.model_patterns, ["openai-codex/gpt-5.4+"]);
     assert.equal(metadata.default_model, "openai-codex/gpt-5.4-mini");
+    assert.equal(metadata.default_model_configured, "openai-codex/gpt-5.4-mini");
     assert.equal(metadata.default_model_resolved, "openai-codex/gpt-5.4-mini");
+    assert.equal(metadata.default_model_effective, "openai-codex/gpt-5.4-mini");
     assert.equal(metadata.default_model_allowed, true);
     assert.equal(metadata.default_model_repaired, false);
+    assert.equal(metadata.config_migration, null);
     assert.equal(metadata.suggested_default_model, null);
   });
+});
+
+test("MCP list_allowed_models exposes config migration guidance for stale defaults", async () => {
+  await connectFakeClient(
+    async (client) => {
+      const response = await client.callTool({
+        name: "list_allowed_models",
+        arguments: {},
+      });
+      assert.notEqual(response.isError, true);
+      const metadata = response.structuredContent as {
+        default_model_configured: string | null;
+        default_model_effective: string | null;
+        default_model_allowed: boolean | null;
+        default_model_repaired: boolean;
+        config_migration: null | {
+          needed: true;
+          field: string;
+          from: string;
+          to: string;
+          command: string;
+        };
+      };
+      assert.equal(metadata.default_model_configured, "anthropic/claude-sonnet-4.5");
+      assert.equal(metadata.default_model_effective, "openrouter/~anthropic/claude-sonnet-latest");
+      assert.equal(metadata.default_model_allowed, true);
+      assert.equal(metadata.default_model_repaired, true);
+      assert.deepEqual(metadata.config_migration, {
+        needed: true,
+        field: "default_model",
+        from: "anthropic/claude-sonnet-4.5",
+        to: "openrouter/~anthropic/claude-sonnet-latest",
+        command: "npm run config:migrate",
+      });
+    },
+    {
+      config: {
+        default_model: "anthropic/claude-sonnet-4.5",
+        default_thinking_level: "medium",
+      },
+    },
+  );
 });
 
 test("MCP run_subagent uses the configured fake Pi child", async () => {
@@ -391,6 +610,7 @@ test("MCP run_subagent uses the configured fake Pi child", async () => {
       arguments: {
         cwd: projectDir,
         prompt: "FAST",
+        run_kind: "quick_noninteractive",
         skill_name: "pda-lite",
       },
     });
@@ -415,6 +635,7 @@ test("run_subagent writes public transcripts without thinking event payloads", a
       arguments: {
         cwd: projectDir,
         prompt: "RAW_THINKING_TRANSCRIPT",
+        run_kind: "quick_noninteractive",
       },
     });
     assert.notEqual(response.isError, true);
