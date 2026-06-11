@@ -1,5 +1,7 @@
 export const THINKING_LEVELS = ["low", "medium", "high", "xhigh"] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+export const MODEL_CLASSES = ["A", "B", "C", "D", "E"] as const;
+export type ModelClass = (typeof MODEL_CLASSES)[number];
 export const OUTPUT_MODES = ["final", "transcript"] as const;
 export type OutputMode = (typeof OUTPUT_MODES)[number];
 export const TOOL_PROFILES = ["inspect", "shell", "workspace_write"] as const;
@@ -19,8 +21,7 @@ export type RunStopReason = (typeof RUN_STOP_REASONS)[number];
 export interface SubagentRequestBase {
   prompt: string;
   cwd: string;
-  model?: string;
-  thinking_level?: ThinkingLevel;
+  model_class?: ModelClass;
   timeout_ms?: number;
   skill?: string | null;
   skill_name?: string | null;
@@ -39,13 +40,13 @@ export interface RunSubagentRequest extends SubagentRequestBase {
 }
 
 export interface RunnerConfig {
-  default_model?: string;
-  default_thinking_level?: ThinkingLevel;
+  default_model_class?: ModelClass;
 }
 
 export interface ResolvedRunSubagentRequest {
   prompt: string;
   cwd: string;
+  modelClass: ModelClass;
   model: string;
   thinkingLevel: ThinkingLevel;
   timeoutMs?: number;
@@ -73,6 +74,7 @@ export interface SubagentRunResultBase {
   size_bytes: number;
   resolved_model: string;
   resolved_thinking_level: string;
+  resolved_model_class: ModelClass;
   requested_skill: string | null;
   requested_output_mode: OutputMode;
   written_output_mode: OutputMode;
@@ -84,6 +86,7 @@ export interface RunSubagentResult extends SubagentRunResultBase {
   run_id: string;
   task_id: string;
   status: "completed" | "failed" | "cancelled" | "input_required" | "working";
+  timeout_recovery_hint?: string;
   session_id: string | null;
   session_established: boolean;
   input_requests_dir: string;
@@ -102,6 +105,8 @@ export interface SessionRunRecord {
   finished_at: string;
   action: "created" | "resumed" | "not_created";
   subagent_session_id: string | null;
+  attempt_subagent_session_id?: string | null;
+  attempt_session_established?: boolean;
   resume_mode: ResumeMode;
   output_path: string;
   packet_path: string | null;
@@ -123,6 +128,7 @@ export interface SessionRunRecord {
   force_grace_ms?: number;
   resolved_model: string;
   resolved_thinking_level: string;
+  resolved_model_class?: ModelClass;
   requested_skill: string | null;
   requested_output_mode: OutputMode;
   written_output_mode: OutputMode;
@@ -138,6 +144,7 @@ export interface SessionManifest {
   skill: string | null;
   initial_model: string;
   initial_thinking_level: string;
+  initial_model_class?: ModelClass;
   subagent_session_id: string;
   created_at: string;
   last_run_at: string;
@@ -153,6 +160,8 @@ export interface RunSubagentSessionResult extends SubagentRunResultBase {
   ledger_path: string;
   attempts_path: string;
   subagent_session_id: string | null;
+  attempt_subagent_session_id?: string | null;
+  attempt_session_established?: boolean;
   session_established: boolean;
   created_or_resumed: "created" | "resumed" | "not_created";
   resume_mode: ResumeMode;

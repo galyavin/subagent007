@@ -1,8 +1,15 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { THINKING_LEVELS, type RunnerConfig, type ThinkingLevel } from "./types.js";
+import {
+  MODEL_CLASSES,
+  THINKING_LEVELS,
+  type ModelClass,
+  type RunnerConfig,
+  type ThinkingLevel,
+} from "./types.js";
 import { ValidationError } from "./types.js";
+import { modelClassForResolvedPair } from "./modelAllowlist.js";
 
 export function defaultConfigPath(): string {
   return process.env.SUBAGENT007_CONFIG_PATH
@@ -20,18 +27,47 @@ function nonEmptyString(value: unknown, key: string): string | undefined {
   return value.trim();
 }
 
-function thinkingLevel(value: unknown, key: string): ThinkingLevel | undefined {
-  const level = nonEmptyString(value, key);
-  if (level === undefined) {
-    return undefined;
-  }
-  if (!THINKING_LEVELS.includes(level as ThinkingLevel)) {
-    throw new ValidationError(`${key} must be one of: ${THINKING_LEVELS.join(", ")}`);
-  }
-  return level as ThinkingLevel;
+function legacyNonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
 }
 
-export async function loadConfig(configPath = defaultConfigPath()): Promise<RunnerConfig> {
+function legacyThinkingLevel(value: unknown): ThinkingLevel | undefined {
+  const level = legacyNonEmptyString(value);
+  return level && THINKING_LEVELS.includes(level as ThinkingLevel) ? level as ThinkingLevel : undefined;
+}
+
+function modelClass(value: unknown, key: string): ModelClass | undefined {
+  const modelClassValue = nonEmptyString(value, key);
+  if (modelClassValue === undefined) {
+    return undefined;
+  }
+  if (!MODEL_CLASSES.includes(modelClassValue as ModelClass)) {
+    throw new ValidationError(`${key} must be one of: ${MODEL_CLASSES.join(", ")}`);
+  }
+  return modelClassValue as ModelClass;
+}
+
+export function normalizeConfigRecord(record: Record<string, unknown>): RunnerConfig {
+  const config: RunnerConfig = {};
+  const configuredModelClass = modelClass(record.default_model_class, "default_model_class");
+  if (configuredModelClass !== undefined) {
+    config.default_model_class = configuredModelClass;
+    return config;
+  }
+
+  const legacyDefaultModel = legacyNonEmptyString(record.default_model);
+  const legacyDefaultThinkingLevel = legacyThinkingLevel(record.default_thinking_level);
+  if (legacyDefaultModel !== undefined && legacyDefaultThinkingLevel !== undefined) {
+    const migratedModelClass = modelClassForResolvedPair(legacyDefaultModel, legacyDefaultThinkingLevel);
+    if (migratedModelClass !== null) {
+      config.default_model_class = migratedModelClass;
+    }
+  }
+
+  return config;
+}
+
+export async function loadConfigRecord(configPath = defaultConfigPath()): Promise<Record<string, unknown>> {
   let raw: string;
   try {
     raw = await fs.readFile(configPath, "utf8");
@@ -53,8 +89,9 @@ export async function loadConfig(configPath = defaultConfigPath()): Promise<Runn
   }
 
   const record = parsed as Record<string, unknown>;
-  return {
-    default_model: nonEmptyString(record.default_model, "default_model"),
-    default_thinking_level: thinkingLevel(record.default_thinking_level, "default_thinking_level"),
-  };
+  return record;
+}
+
+export async function loadConfig(configPath = defaultConfigPath()): Promise<RunnerConfig> {
+  return normalizeConfigRecord(await loadConfigRecord(configPath));
 }

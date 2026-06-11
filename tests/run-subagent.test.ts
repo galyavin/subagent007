@@ -5,8 +5,13 @@ import path from "node:path";
 import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { listInputRequests } from "../src/inputMailbox.js";
-import { extractSubagentSessionId, partialOutputAvailableForRun, runSubagent } from "../src/runSubagent.js";
+import { createInputRequest, listInputRequests } from "../src/inputMailbox.js";
+import {
+  extractSubagentSessionId,
+  partialOutputAvailableForRun,
+  runSubagent,
+  RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT,
+} from "../src/runSubagent.js";
 import { preparePublicTranscriptFromProcessOutput } from "../src/transcript.js";
 import { createFakePiChild } from "./helpers/fakePiChild.js";
 import { readJsonl, withEnv } from "./helpers/testUtils.js";
@@ -18,15 +23,21 @@ type RunSubagentMetadata = {
   success: boolean;
   exit_code: number | null;
   timed_out: boolean;
+  timeout_recovery_hint?: string;
   session_id: string | null;
   session_established: boolean;
   input_requests_dir: string;
+  input_requests: Array<{ request_id: string; status: string }>;
   written_output_mode: "final" | "transcript";
+  elapsed_ms?: number;
+  last_progress_at?: string;
+  last_progress_message?: string;
+  heartbeat_count?: number;
 };
 
 async function connectFakeClient<T>(
   run: (client: Client, dirs: { projectDir: string; configPath: string; fakeLogPath: string }) => Promise<T>,
-  options: { config?: Record<string, unknown> } = {},
+  options: { config?: Record<string, unknown>; env?: NodeJS.ProcessEnv } = {},
 ): Promise<T> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-mcp-"));
   const projectDir = path.join(tmp, "project");
@@ -38,7 +49,7 @@ async function connectFakeClient<T>(
   await fs.writeFile(
     configPath,
     JSON.stringify(
-      options.config ?? { default_model: "openai-codex/gpt-5.4-mini", default_thinking_level: "medium" },
+      options.config ?? { default_model_class: "C" },
     ),
   );
 
@@ -52,6 +63,7 @@ async function connectFakeClient<T>(
       FAKE_PI_LOG_PATH: fake.logPath,
       SUBAGENT007_FAILURE_LOG: "off",
       SUBAGENT007_RECORD_SOURCE: "test",
+      ...options.env,
     },
   });
   const client = new Client({ name: "subagent007-pi-runner-test", version: "0.1.0" });
@@ -79,6 +91,26 @@ async function waitForTerminalRun(client: Client, runId: string): Promise<RunSub
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error(`timed out waiting for terminal run ${runId}`);
+}
+
+async function waitForActiveHeartbeat(client: Client, runId: string): Promise<RunSubagentMetadata> {
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    const response = await client.callTool({
+      name: "get_run",
+      arguments: { run_id: runId },
+    });
+    assert.notEqual(response.isError, true);
+    const metadata = response.structuredContent as RunSubagentMetadata;
+    if ((metadata.heartbeat_count ?? 0) > 0) {
+      return metadata;
+    }
+    if (metadata.status === "completed" || metadata.status === "failed" || metadata.status === "cancelled") {
+      throw new Error(`run reached terminal state before heartbeat metadata appeared: ${metadata.status}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`timed out waiting for heartbeat metadata on run ${runId}`);
 }
 
 test("extracts only Subagent007 Pi session events from child output", () => {
@@ -112,8 +144,7 @@ test("runSubagent is ephemeral by default and invokes the Pi child request-file 
         {
           cwd: projectDir,
           prompt: "FAST",
-          model: "openai-codex/gpt-5.4-mini",
-          thinking_level: "medium",
+          model_class: "C",
           skill_name: "pda-lite",
         },
         { runsDir },
@@ -154,8 +185,7 @@ test("runSubagent accepts skill_name and passes a normalized skill to the Pi chi
         {
           cwd: projectDir,
           prompt: "FAST",
-          model: "openai-codex/gpt-5.4-mini",
-          thinking_level: "medium",
+          model_class: "C",
           skill_name: "tension-hunter",
         },
         { runsDir },
@@ -189,8 +219,7 @@ test("runSubagent passes explicit workspace write profile to the Pi child", asyn
         {
           cwd: projectDir,
           prompt: "FAST",
-          model: "openai-codex/gpt-5.4-mini",
-          thinking_level: "medium",
+          model_class: "C",
           tool_profile: "workspace_write",
         },
         { runsDir },
@@ -225,8 +254,7 @@ test("runSubagent creates and resumes raw Pi session files", async () => {
         {
           cwd: projectDir,
           prompt: "FAST",
-          model: "openai-codex/gpt-5.4-mini",
-          thinking_level: "medium",
+          model_class: "C",
           continuity: { mode: "fresh" },
         },
         { runsDir },
@@ -239,8 +267,7 @@ test("runSubagent creates and resumes raw Pi session files", async () => {
         {
           cwd: projectDir,
           prompt: "FAST",
-          model: "openai-codex/gpt-5.4-mini",
-          thinking_level: "medium",
+          model_class: "C",
           continuity: { mode: "resume", session_id: created.session_id! },
         },
         { runsDir },
@@ -276,8 +303,7 @@ test("runSubagent rejects missing resume session files before invoking Pi child"
           {
             cwd: projectDir,
             prompt: "FAST",
-            model: "openai-codex/gpt-5.4-mini",
-            thinking_level: "medium",
+            model_class: "C",
             continuity: { mode: "resume", session_id: missingSession },
           },
           { runsDir },
@@ -297,8 +323,7 @@ test("runSubagent rejects timeout_ms unless internal callers opt into timed work
     runSubagent({
       cwd,
       prompt: "FAST",
-      model: "openai-codex/gpt-5.4-mini",
-      thinking_level: "medium",
+      model_class: "C",
       timeout_ms: 1000,
     }),
     /timeout_ms is not supported by run_subagent; use start_run for timed work/,
@@ -412,6 +437,7 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       ),
       true,
     );
+    assert.equal(names.includes("list_model_classes"), true);
     assert.equal(names.includes("list_allowed_models"), true);
     assert.equal(names.includes("run_codex"), false);
     assert.equal(names.includes("run_codex_session"), false);
@@ -518,81 +544,77 @@ test("MCP run_subagent and start_run reject unsupported session fields before in
   });
 });
 
-test("MCP list_allowed_models exposes curated model choices", async () => {
+test("MCP list_model_classes exposes curated model classes", async () => {
   await connectFakeClient(async (client) => {
     const response = await client.callTool({
-      name: "list_allowed_models",
+      name: "list_model_classes",
       arguments: {},
     });
     assert.notEqual(response.isError, true);
     const metadata = response.structuredContent as {
-      allowed_models: string[];
-      exact_models: string[];
-      model_patterns: string[];
-      default_model: string | null;
-      default_model_configured: string | null;
-      default_model_resolved: string | null;
-      default_model_effective: string | null;
-      default_model_allowed: boolean | null;
-      default_model_repaired: boolean;
+      model_classes: Array<{ class: string; description: string }>;
+      default_model_class: string;
+      default_model_class_configured: string | null;
+      default_model_class_effective: string;
+      default_model_class_repaired: boolean;
       config_migration: null | {
         needed: true;
         field: string;
-        from: string;
+        from: string | null;
         to: string;
         command: string;
       };
-      suggested_default_model: string | null;
+      resolved_default_model: string;
+      resolved_default_thinking_level: string;
     };
-    const refs = metadata.allowed_models;
-    assert.equal(refs.includes("openai-codex/gpt-5.4+"), true);
-    assert.equal(refs.includes("openrouter/deepseek/deepseek-v4-pro"), true);
-    assert.equal(metadata.exact_models.includes("openrouter/deepseek/deepseek-v4-pro"), true);
-    assert.equal(metadata.exact_models.includes("openai-codex/gpt-5.4+"), false);
-    assert.deepEqual(metadata.model_patterns, ["openai-codex/gpt-5.4+"]);
-    assert.equal(metadata.default_model, "openai-codex/gpt-5.4-mini");
-    assert.equal(metadata.default_model_configured, "openai-codex/gpt-5.4-mini");
-    assert.equal(metadata.default_model_resolved, "openai-codex/gpt-5.4-mini");
-    assert.equal(metadata.default_model_effective, "openai-codex/gpt-5.4-mini");
-    assert.equal(metadata.default_model_allowed, true);
-    assert.equal(metadata.default_model_repaired, false);
+    assert.deepEqual(metadata.model_classes.map((entry) => entry.class), ["A", "B", "C", "D", "E"]);
+    assert.equal(metadata.model_classes.every((entry) => entry.description.length > 0), true);
+    assert.equal(metadata.default_model_class, "C");
+    assert.equal(metadata.default_model_class_configured, "C");
+    assert.equal(metadata.default_model_class_effective, "C");
+    assert.equal(metadata.default_model_class_repaired, false);
     assert.equal(metadata.config_migration, null);
-    assert.equal(metadata.suggested_default_model, null);
+    assert.equal(metadata.resolved_default_model, "openrouter/deepseek/deepseek-v4-pro");
+    assert.equal(metadata.resolved_default_thinking_level, "high");
   });
 });
 
-test("MCP list_allowed_models exposes config migration guidance for stale defaults", async () => {
+test("MCP list_model_classes falls back to class C for unsupported legacy defaults", async () => {
   await connectFakeClient(
     async (client) => {
       const response = await client.callTool({
-        name: "list_allowed_models",
+        name: "list_model_classes",
         arguments: {},
       });
       assert.notEqual(response.isError, true);
       const metadata = response.structuredContent as {
-        default_model_configured: string | null;
-        default_model_effective: string | null;
-        default_model_allowed: boolean | null;
-        default_model_repaired: boolean;
+        default_model_class: string;
+        default_model_class_configured: string | null;
+        default_model_class_effective: string;
+        default_model_class_repaired: boolean;
         config_migration: null | {
           needed: true;
           field: string;
-          from: string;
+          from: string | null;
           to: string;
           command: string;
         };
+        resolved_default_model: string;
+        resolved_default_thinking_level: string;
       };
-      assert.equal(metadata.default_model_configured, "anthropic/claude-sonnet-4.5");
-      assert.equal(metadata.default_model_effective, "openrouter/~anthropic/claude-sonnet-latest");
-      assert.equal(metadata.default_model_allowed, true);
-      assert.equal(metadata.default_model_repaired, true);
+      assert.equal(metadata.default_model_class, "C");
+      assert.equal(metadata.default_model_class_configured, null);
+      assert.equal(metadata.default_model_class_effective, "C");
+      assert.equal(metadata.default_model_class_repaired, false);
       assert.deepEqual(metadata.config_migration, {
         needed: true,
-        field: "default_model",
-        from: "anthropic/claude-sonnet-4.5",
-        to: "openrouter/~anthropic/claude-sonnet-latest",
+        field: "default_model_class",
+        from: null,
+        to: "C",
         command: "npm run config:migrate",
       });
+      assert.equal(metadata.resolved_default_model, "openrouter/deepseek/deepseek-v4-pro");
+      assert.equal(metadata.resolved_default_thinking_level, "high");
     },
     {
       config: {
@@ -601,6 +623,61 @@ test("MCP list_allowed_models exposes config migration guidance for stale defaul
       },
     },
   );
+});
+
+test("MCP list_model_classes exposes config migration guidance for whitespace-padded model classes", async () => {
+  await connectFakeClient(
+    async (client) => {
+      const response = await client.callTool({
+        name: "list_model_classes",
+        arguments: {},
+      });
+      assert.notEqual(response.isError, true);
+      const metadata = response.structuredContent as {
+        default_model_class_configured: string | null;
+        default_model_class_effective: string;
+        default_model_class_repaired: boolean;
+        config_migration: null | {
+          needed: true;
+          field: string;
+          from: string;
+          to: string;
+          command: string;
+        };
+      };
+      assert.equal(metadata.default_model_class_configured, " C ");
+      assert.equal(metadata.default_model_class_effective, "C");
+      assert.equal(metadata.default_model_class_repaired, true);
+      assert.deepEqual(metadata.config_migration, {
+        needed: true,
+        field: "default_model_class",
+        from: " C ",
+        to: "C",
+        command: "npm run config:migrate",
+      });
+    },
+    {
+      config: {
+        default_model_class: " C ",
+      },
+    },
+  );
+});
+
+test("MCP list_allowed_models remains a compatibility alias for model classes", async () => {
+  await connectFakeClient(async (client) => {
+    const canonical = await client.callTool({
+      name: "list_model_classes",
+      arguments: {},
+    });
+    const alias = await client.callTool({
+      name: "list_allowed_models",
+      arguments: {},
+    });
+    assert.notEqual(canonical.isError, true);
+    assert.notEqual(alias.isError, true);
+    assert.deepEqual(alias.structuredContent, canonical.structuredContent);
+  });
 });
 
 test("MCP run_subagent uses the configured fake Pi child", async () => {
@@ -621,11 +698,40 @@ test("MCP run_subagent uses the configured fake Pi child", async () => {
     assert.equal(await fs.readFile(metadata.output_path, "utf8"), "FAST FINAL");
 
     const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
-    assert.equal(logs[0].request.model, "openai-codex/gpt-5.4-mini");
-    assert.equal(logs[0].request.thinkingLevel, "medium");
+    assert.equal(logs[0].request.model, "openrouter/deepseek/deepseek-v4-pro");
+    assert.equal(logs[0].request.thinkingLevel, "high");
     assert.equal(logs[0].request.skill, "pda-lite");
     assert.equal(logs[0].request.toolProfile, "inspect");
   });
+});
+
+test("MCP run_subagent timeout returns async recovery guidance", async () => {
+  await connectFakeClient(
+    async (client, { projectDir }) => {
+      const response = await client.callTool({
+        name: "run_subagent",
+        arguments: {
+          cwd: projectDir,
+          prompt: "TIMEOUT_ASSISTANT_EVENT",
+          run_kind: "quick_noninteractive",
+        },
+      });
+      assert.notEqual(response.isError, true);
+      const metadata = response.structuredContent as RunSubagentMetadata;
+      assert.equal(metadata.success, false);
+      assert.equal(metadata.timed_out, true);
+      assert.equal(metadata.timeout_recovery_hint, RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT);
+    },
+    {
+      env: {
+        SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS: "260",
+        SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS: "0",
+        SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS: "100",
+        SUBAGENT007_TIMEOUT_KILL_GRACE_MS: "50",
+        SUBAGENT007_TIMEOUT_FORCE_GRACE_MS: "50",
+      },
+    },
+  );
 });
 
 test("run_subagent writes public transcripts without thinking event payloads", async () => {
@@ -671,6 +777,81 @@ test("MCP start_run/get_run completes asynchronously with the same child contrac
   });
 });
 
+test("MCP start_run/get_run exposes active liveness and pending-input progress", async () => {
+  await connectFakeClient(
+    async (client, { projectDir }) => {
+      const startedResponse = await client.callTool({
+        name: "start_run",
+        arguments: {
+          cwd: projectDir,
+          prompt: "HEARTBEAT_LONG_WAIT",
+        },
+      });
+      assert.notEqual(startedResponse.isError, true);
+      const started = startedResponse.structuredContent as RunSubagentMetadata;
+      assert.equal(["working", "completed"].includes(started.status), true);
+      assert.equal(started.heartbeat_count, 0);
+      assert.equal(typeof started.elapsed_ms, "number");
+
+      const heartbeat = await waitForActiveHeartbeat(client, started.run_id);
+      assert.equal(heartbeat.status, "working");
+      assert.equal((heartbeat.heartbeat_count ?? 0) > 0, true);
+      assert.equal(typeof heartbeat.elapsed_ms, "number");
+      assert.equal(typeof heartbeat.last_progress_at, "string");
+      assert.equal(heartbeat.last_progress_message, "running");
+
+      const mailboxRoot = path.dirname(started.input_requests_dir);
+      const request = await createInputRequest({
+        mailboxRoot,
+        runId: started.run_id,
+        question: "Which follow-up path should the child take?",
+      });
+
+      const pendingDeadline = Date.now() + 2000;
+      let pendingView: RunSubagentMetadata | undefined;
+      while (Date.now() < pendingDeadline) {
+        const response = await client.callTool({
+          name: "get_run",
+          arguments: { run_id: started.run_id },
+        });
+        assert.notEqual(response.isError, true);
+        const metadata = response.structuredContent as RunSubagentMetadata;
+        if (metadata.last_progress_message?.includes("pending input request")) {
+          pendingView = metadata;
+          break;
+        }
+        if (metadata.status === "completed" || metadata.status === "failed" || metadata.status === "cancelled") {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+
+      assert.ok(pendingView);
+      assert.equal(pendingView.status, "input_required");
+      assert.match(pendingView.last_progress_message ?? "", new RegExp(request.request_id));
+
+      const answerResponse = await client.callTool({
+        name: "answer_run_input",
+        arguments: {
+          run_id: started.run_id,
+          request_id: request.request_id,
+          answer: "continue",
+        },
+      });
+      assert.notEqual(answerResponse.isError, true);
+
+      const terminal = await waitForTerminalRun(client, started.run_id);
+      assert.equal(terminal.status, "completed");
+      assert.equal(await fs.readFile(terminal.output_path, "utf8"), "HEARTBEAT LONG DONE");
+    },
+    {
+      env: {
+        SUBAGENT007_HEARTBEAT_INTERVAL_MS: "25",
+      },
+    },
+  );
+});
+
 test("get_run can read a completed run snapshot after MCP server restart", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-run-snapshot-"));
   const projectDir = path.join(tmp, "project");
@@ -681,7 +862,7 @@ test("get_run can read a completed run snapshot after MCP server restart", async
   await fs.mkdir(stateDir, { recursive: true });
   await fs.writeFile(
     configPath,
-    JSON.stringify({ default_model: "openai-codex/gpt-5.4-mini", default_thinking_level: "medium" }),
+    JSON.stringify({ default_model_class: "C" }),
   );
   const env = {
     ...process.env,
@@ -784,4 +965,61 @@ test("answer_run_input can answer a pending request belonging to a started run",
     assert.equal(answered.length, 1);
     assert.equal(answered[0].request_id, requestId);
   });
+});
+
+test("cancel_run closes pending input requests and rejects late answers", async () => {
+  await connectFakeClient(
+    async (client, { projectDir }) => {
+      const startedResponse = await client.callTool({
+        name: "start_run",
+        arguments: {
+          cwd: projectDir,
+          prompt: "CANCEL_WAIT",
+          timeout_ms: 6000,
+        },
+      });
+      assert.notEqual(startedResponse.isError, true);
+      const started = startedResponse.structuredContent as RunSubagentMetadata;
+      const mailboxRoot = path.dirname(started.input_requests_dir);
+      const request = await createInputRequest({
+        mailboxRoot,
+        runId: started.run_id,
+        question: "Should be closed on cancel",
+      });
+
+      const cancelResponse = await client.callTool({
+        name: "cancel_run",
+        arguments: { run_id: started.run_id },
+      });
+      assert.notEqual(cancelResponse.isError, true);
+      const cancelled = cancelResponse.structuredContent as RunSubagentMetadata;
+      assert.equal(cancelled.status, "cancelled");
+      assert.equal(cancelled.input_requests.some((input) => input.status === "pending"), false);
+
+      const closed = await listInputRequests({ mailboxRoot, runId: started.run_id, status: "closed" });
+      assert.equal(closed.length, 1);
+      assert.equal(closed[0].request_id, request.request_id);
+
+      const lateAnswer = await client.callTool({
+        name: "answer_run_input",
+        arguments: {
+          run_id: started.run_id,
+          request_id: request.request_id,
+          answer: "late",
+        },
+      });
+      assert.equal(lateAnswer.isError, true);
+      const content = lateAnswer.content as Array<{ type: string; text?: string }>;
+      assert.match(
+        content[0]?.type === "text" ? (content[0].text ?? "") : "",
+        /not accepting input|already closed/,
+      );
+    },
+    {
+      env: {
+        SUBAGENT007_TIMEOUT_KILL_GRACE_MS: "10",
+        SUBAGENT007_TIMEOUT_FORCE_GRACE_MS: "10",
+      },
+    },
+  );
 });

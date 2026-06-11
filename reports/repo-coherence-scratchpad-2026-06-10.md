@@ -77,3 +77,57 @@ Status: repaired by changing `test:local` to use `tests/*.test.ts`, matching `np
 Observed while comparing `src/server.ts` and `src/validate.ts`: runtime validation rejects top-level `session_id` and `continuity.session_id` outside `mode:"resume"`, but `start_run` uses a non-strict object shape and the nested `continuity` branches are non-strict Zod objects. Through the MCP schema layer, unsupported fields can be stripped before `validateAndResolveRequest` sees them, turning an invalid request into an unintended ephemeral/fresh run.
 
 Status: repaired by making `continuity` variants strict, making `start_run` strict, and adding MCP regression tests that prove unsupported session fields reject before child invocation.
+
+## F015 - Live E2E Artifacts Still Read As Pre-Implementation
+
+Observed while inspecting the new live-e2e plan/report artifacts after the approved implementation: `docs/plans/live-e2e-coherent-saf-implementation-plan-2026-06-10.md` still has frontmatter `status: planned`, and `reports/live-e2e-skill-campaign-2026-06-10.md` still begins `Status: current observed-use campaign` even though the implemented source/tests now satisfy that plan. This is documentation-level semantic drift, not runtime behavior, but it can mislead future readers about whether the SAF set remains pending.
+
+Status: repaired by marking the live-e2e implementation plan implemented and the live campaign report historical/pre-repair.
+
+## F016 - README Overstates Immediacy Of Pending-Input Progress Message
+
+Observed while comparing `README.md`, `src/runTask.ts`, and `src/runSubagent.ts`: active `get_run` status immediately becomes `input_required` when pending request files exist, but `last_progress_message` is heartbeat-derived and only names pending request ids after a heartbeat observes them. The README wording says "when pending input requests exist, the progress message names the pending request ids," which is directionally true but too absolute for the implementation timing.
+
+Status: repaired by clarifying that status reflects pending input immediately and heartbeat progress messages name pending request ids once observed.
+
+## F017 - Model Health Reporting Misses Whitespace-Only Config Drift
+
+Observed while comparing `src/server.ts`, `scripts/migrate-config.mjs`, `src/modelAllowlist.ts`, and `tests/config-migrate.test.ts`: `config:migrate` intentionally rewrites a whitespace-padded but otherwise canonical `default_model`, but `list_allowed_models` computes `default_model_repaired` by comparing the effective model to `defaultModelConfigured.trim()`. That means the MCP health surface can report no migration needed for a config state that the migration command would still repair. This is a low-risk semantic drift between diagnosis and repair boundaries.
+
+Status: repaired by comparing the effective model to the persisted configured string and adding an MCP regression for whitespace-padded defaults.
+
+## F018 - Implemented Campaign Artifacts Mention A Dead Context Env Var
+
+Observed while scanning implemented campaign-state decision artifacts: `reports/coherent-revised-saf-set-2026-06-10.md` still mentions `SUBAGENT007_RECORD_CONTEXT` as an implementation option, but the actual code, README, and tests use `SUBAGENT007_CAMPAIGN_ID`. In an artifact marked implemented, that stale alternative reads like a live supported environment variable.
+
+Status: repaired by naming only the implemented `SUBAGENT007_CAMPAIGN_ID` field in the implemented decision record.
+
+## F019 - Full Coherent SAF Plan Still Reads As Pending
+
+Observed while scanning `docs/plans/full-coherent-revised-saf-implementation-plan-2026-06-10.md`: the plan describes work to implement the three-SAF set, but the current source and tests now contain those repairs. Unlike the older implemented plans, this file has no `status: implemented` frontmatter or status note, so it can be mistaken for an open implementation plan.
+
+Status: repaired by adding `status: implemented` frontmatter and an explicit status note.
+
+## F020 - New Full-HORC Report Chain Lacks Post-Implementation Status Notes
+
+Observed while scanning `reports/observed-real-use-horc-saf-campaign-2026-06-10.md`, `reports/saf-adversarial-classification-2026-06-10.md`, and `reports/full-coherent-revised-saf-set-2026-06-10.md`: the first two describe pre-repair findings and classifications, while the third is the revised set now implemented in code. None of those files has a status note making that timeline explicit. This can make repaired defects, such as late answers after cancellation, read as current behavior.
+
+Status: repaired by adding historical/pre-repair status notes to the source campaign and adversarial review, and an implemented decision-record status to the revised SAF set.
+
+## F021 - Live E2E Revised SAF Set Omits Subsequent Implementation Status
+
+Observed while scanning `reports/live-e2e-coherent-revised-saf-set-2026-06-10.md`: it correctly says no runtime code changes were made while writing the document, but companion artifacts now mark the implementation plan as implemented and the live campaign report as historical. Without a subsequent implementation note, this decision record can read as superseding but not yet realized.
+
+Status: repaired by marking the live E2E revised SAF set as implemented and noting that implementation occurred after the document was written.
+
+## F022 - Model Health Cannot Detect Whitespace Drift Through Normalized Config Loader
+
+Observed while running `npm test`: the new whitespace-padding health regression failed because `list_allowed_models` receives `default_model_configured` after the config loader has already trimmed it. The migration script operates on persisted JSON, but the MCP health tool only sees normalized config, so it still cannot diagnose persisted whitespace-only drift without a raw persisted value boundary.
+
+Status: repaired by adding a raw config-record loader, keeping runtime config normalization separate, and making `list_allowed_models` use the raw persisted `default_model` only for migration diagnostics.
+
+## F023 - Config Normalizer Reintroduced Undefined Keys For Missing Config
+
+Observed while rerunning `npm test` after the raw config-record repair: `loadConfig` returned `{ default_model: undefined, default_thinking_level: undefined }` for a missing config file instead of the established empty object `{}`. The raw-record boundary is correct, but the normalizer must preserve the previous sparse-object runtime contract.
+
+Status: repaired by returning a sparse `RunnerConfig` from `normalizeConfigRecord`.

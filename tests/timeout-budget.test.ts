@@ -21,6 +21,7 @@ type RunSubagentMetadata = {
   success: boolean;
   exit_code: number | null;
   timed_out: boolean;
+  timeout_recovery_hint?: string;
   partial_output_available: boolean;
   resume_possible: boolean;
   duration_ms: number;
@@ -126,7 +127,7 @@ test("start_run returns timeout metadata and transcript before caller deadline",
   await fs.mkdir(stateDir, { recursive: true });
   await fs.writeFile(
     configPath,
-    JSON.stringify({ default_model: "openai-codex/gpt-5.4-mini", default_thinking_level: "medium" }),
+    JSON.stringify({ default_model_class: "C" }),
   );
 
   const transport = new StdioClientTransport({
@@ -169,6 +170,7 @@ test("start_run returns timeout metadata and transcript before caller deadline",
 
     assert.equal(metadata.success, false);
     assert.equal(metadata.timed_out, true);
+    assert.equal(metadata.timeout_recovery_hint, undefined);
     assert.equal(metadata.partial_output_available, false);
     assert.equal(metadata.resume_possible, false);
     assert.equal(metadata.requested_timeout_ms, 2500);
@@ -210,7 +212,7 @@ test("start_run treats timeout_ms as a hard caller cap", async () => {
   await fs.mkdir(stateDir, { recursive: true });
   await fs.writeFile(
     configPath,
-    JSON.stringify({ default_model: "openai-codex/gpt-5.4-mini", default_thinking_level: "medium" }),
+    JSON.stringify({ default_model_class: "C" }),
   );
 
   const transport = new StdioClientTransport({

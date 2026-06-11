@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
   CURATED_EXACT_MODEL_REFS,
+  MODEL_CLASS_CALIBRATIONS,
   OPENAI_CODEX_GPT54_PLUS_REF,
   isOpenAICodexGpt54OrNewerModelId,
   splitKnownProviderModelRef,
@@ -97,6 +98,30 @@ rows.push({
   drift: piResult.ok && openAICodexMatches.length === 0,
   unverified: !piResult.ok,
 });
+
+const exactModelRefs = new Set(CURATED_EXACT_MODEL_REFS);
+const calibratedModelRefs = new Map();
+for (const [modelClass, calibration] of Object.entries(MODEL_CLASS_CALIBRATIONS)) {
+  const modelClasses = calibratedModelRefs.get(calibration.model) ?? [];
+  modelClasses.push(modelClass);
+  calibratedModelRefs.set(calibration.model, modelClasses);
+}
+
+for (const [modelRef, modelClasses] of calibratedModelRefs) {
+  if (exactModelRefs.has(modelRef)) {
+    continue;
+  }
+  const { provider } = splitKnownProviderModelRef(modelRef);
+  const piPresent = piRefs.has(modelRef);
+  rows.push({
+    modelRef,
+    piStatus: presentStatus(piResult.ok, piPresent, piResult.error),
+    sourceStatus: provider === "openai-codex" ? "pi-registry" : "calibration",
+    details: `Concrete calibration for class ${modelClasses.join("/")}.`,
+    drift: piResult.ok && !piPresent,
+    unverified: !piResult.ok,
+  });
+}
 
 for (const modelRef of CURATED_EXACT_MODEL_REFS) {
   const { provider, model } = splitKnownProviderModelRef(modelRef);

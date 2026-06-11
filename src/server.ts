@@ -10,16 +10,12 @@ import {
   type FailureLogTool,
 } from "./failureLog.js";
 import {
-  allowedModelChoices,
-  exactModelChoices,
-  formatAllowedModelChoices,
-  isAllowedModelRef,
-  modelPatternChoices,
-  repairKnownModelAlias,
-  resolveAllowedModelRef,
-  SUGGESTED_DEFAULT_MODEL_REF,
+  DEFAULT_MODEL_CLASS,
+  MODEL_CLASS_CALIBRATIONS,
+  modelClassChoices,
+  resolveModelClass,
 } from "./modelAllowlist.js";
-import { loadConfig } from "./config.js";
+import { loadConfigRecord, normalizeConfigRecord } from "./config.js";
 import { heartbeatFromExtra, heartbeatIntervalMsFromEnv, type ServerExtra } from "./progress.js";
 import { runSubagent } from "./runSubagent.js";
 import { answerRunTaskInput, cancelRunTask, getRunTask, startRunTask } from "./runTask.js";
@@ -27,10 +23,10 @@ import { SERVER_VERSION } from "./runtimeMetadata.js";
 import { runSubagentSession } from "./session.js";
 import {
   OUTPUT_MODES,
+  MODEL_CLASSES,
   RESUME_MODES,
   RUN_KINDS,
   SESSION_PACKET_POLICIES,
-  THINKING_LEVELS,
   TOOL_PROFILES,
 } from "./types.js";
 
@@ -83,13 +79,10 @@ const continuitySchema = z.discriminatedUnion("mode", [
   z.strictObject({ mode: z.literal("resume"), session_id: z.string().min(1) }),
 ]);
 
-const modelSchema = z
-  .string()
-  .describe(`Curated Pi model only. Allowed values: ${formatAllowedModelChoices()}`)
-  .refine(isAllowedModelRef, {
-    message: `model must be one of: ${formatAllowedModelChoices()}`,
-  })
-  .optional();
+const modelClassSchema = z
+  .enum(MODEL_CLASSES)
+  .optional()
+  .describe("Capability class A-E. A is simplest; E is highest-abstraction/deepest technical work.");
 
 const skillInputSchema = z
   .string()
@@ -106,8 +99,7 @@ const runKindSchema = z
 const baseRunInputSchema = {
   prompt: z.string().min(1),
   cwd: z.string().min(1),
-  model: modelSchema,
-  thinking_level: z.enum(THINKING_LEVELS).optional(),
+  model_class: modelClassSchema,
   skill_name: skillInputSchema,
   skill: skillInputSchema,
   output_mode: z.enum(OUTPUT_MODES).optional(),
@@ -163,52 +155,60 @@ const runSessionInputSchema = z.strictObject({
       : undefined,
 });
 
+async function listModelClassesResult(): Promise<ReturnType<typeof jsonToolResult<Record<string, unknown>>>> {
+  const configRecord = await loadConfigRecord();
+  const config = normalizeConfigRecord(configRecord);
+  const rawDefaultModelClass = typeof configRecord.default_model_class === "string"
+    ? configRecord.default_model_class
+    : null;
+  const defaultModelClass = config.default_model_class ?? DEFAULT_MODEL_CLASS;
+  const defaultResolution = resolveModelClass(defaultModelClass);
+  const legacyConfigDetected =
+    configRecord.default_model !== undefined || configRecord.default_thinking_level !== undefined;
+  const configMigration =
+    (rawDefaultModelClass !== null && rawDefaultModelClass !== defaultModelClass) || legacyConfigDetected
+    ? {
+        needed: true,
+        field: "default_model_class",
+        from: rawDefaultModelClass,
+        to: defaultModelClass,
+        command: "npm run config:migrate",
+      }
+    : null;
+  const result = {
+    model_classes: modelClassChoices().map((modelClass) => ({
+      class: modelClass,
+      description: MODEL_CLASS_CALIBRATIONS[modelClass].description,
+    })),
+    default_model_class: defaultModelClass,
+    default_model_class_configured: rawDefaultModelClass,
+    default_model_class_effective: defaultModelClass,
+    default_model_class_repaired: rawDefaultModelClass !== null && rawDefaultModelClass !== defaultModelClass,
+    config_migration: configMigration,
+    resolved_default_model: defaultResolution.model,
+    resolved_default_thinking_level: defaultResolution.thinkingLevel,
+  };
+  return jsonToolResult(result, result);
+}
+
+server.registerTool(
+  "list_model_classes",
+  {
+    title: "List Model Classes",
+    description: "List the Subagent007 capability classes accepted by this MCP server.",
+    inputSchema: {},
+  },
+  withFailureLogging("list_model_classes", async () => listModelClassesResult()),
+);
+
 server.registerTool(
   "list_allowed_models",
   {
-    title: "List Allowed Models",
-    description: "List the curated Pi model options accepted by this MCP server.",
+    title: "List Model Classes",
+    description: "Compatibility alias for list_model_classes.",
     inputSchema: {},
   },
-  withFailureLogging("list_allowed_models", async () => {
-    const config = await loadConfig();
-    const defaultModelConfigured = config.default_model ?? null;
-    const repairedDefaultModel = defaultModelConfigured ? repairKnownModelAlias(defaultModelConfigured) : null;
-    const defaultModelAllowed = defaultModelConfigured ? isAllowedModelRef(defaultModelConfigured) : null;
-    const defaultModelEffective = defaultModelConfigured && defaultModelAllowed
-      ? resolveAllowedModelRef(defaultModelConfigured)
-      : repairedDefaultModel;
-    const defaultModelRepaired = Boolean(
-      defaultModelConfigured &&
-        defaultModelEffective &&
-        defaultModelEffective !== defaultModelConfigured.trim(),
-    );
-    const configMigration = defaultModelRepaired && defaultModelAllowed
-      ? {
-          needed: true,
-          field: "default_model",
-          from: defaultModelConfigured,
-          to: defaultModelEffective,
-          command: "npm run config:migrate",
-        }
-      : null;
-    const result = {
-      allowed_models: allowedModelChoices(),
-      exact_models: exactModelChoices(),
-      model_patterns: modelPatternChoices(),
-      default_model: defaultModelConfigured,
-      default_model_configured: defaultModelConfigured,
-      default_model_resolved: defaultModelEffective,
-      default_model_effective: defaultModelEffective,
-      default_model_allowed: defaultModelAllowed,
-      default_model_repaired: defaultModelRepaired,
-      config_migration: configMigration,
-      default_thinking_level: config.default_thinking_level ?? null,
-      suggested_default_model:
-        defaultModelAllowed === false ? SUGGESTED_DEFAULT_MODEL_REF : null,
-    };
-    return jsonToolResult(result, result);
-  }),
+  withFailureLogging("list_allowed_models", async () => listModelClassesResult()),
 );
 
 server.registerTool(

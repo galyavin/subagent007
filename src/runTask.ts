@@ -4,13 +4,14 @@ import path from "node:path";
 import { logFailure } from "./failureLog.js";
 import {
   answerInputRequest,
+  closePendingInputRequestsForRun,
   defaultInputRequestsDir,
   listInputRequests,
   newRunId,
   type InputRequestView,
 } from "./inputMailbox.js";
 import { runSubagent } from "./runSubagent.js";
-import type { HeartbeatNotify } from "./progress.js";
+import { DEFAULT_HEARTBEAT_MESSAGE, type HeartbeatNotify } from "./progress.js";
 import type { RunSubagentRequest, RunSubagentResult } from "./types.js";
 import { ValidationError } from "./types.js";
 import { loadConfig } from "./config.js";
@@ -32,6 +33,10 @@ export interface RunTaskView extends Partial<RunSubagentResult> {
   finished_at?: string;
   input_requests_dir: string;
   input_requests: InputRequestView[];
+  elapsed_ms?: number;
+  last_progress_at?: string;
+  last_progress_message?: string;
+  heartbeat_count?: number;
   error?: string;
 }
 
@@ -45,6 +50,9 @@ interface RunTaskState {
   result?: RunSubagentResult;
   error?: Error;
   cancelRequested: boolean;
+  heartbeatCount: number;
+  lastProgressAt?: string;
+  lastProgressMessage?: string;
   promise: Promise<void>;
 }
 
@@ -92,6 +100,24 @@ async function taskInputRequests(state: RunTaskState): Promise<InputRequestView[
   return listInputRequests({ mailboxRoot: state.mailboxRoot, runId: state.runId });
 }
 
+function activeProgressView(state: RunTaskState): Pick<
+  RunTaskView,
+  "elapsed_ms" | "last_progress_at" | "last_progress_message" | "heartbeat_count"
+> {
+  return {
+    elapsed_ms: Math.max(0, Date.now() - Date.parse(state.startedAt)),
+    ...(state.lastProgressAt ? { last_progress_at: state.lastProgressAt } : {}),
+    ...(state.lastProgressMessage ? { last_progress_message: state.lastProgressMessage } : {}),
+    heartbeat_count: state.heartbeatCount,
+  };
+}
+
+function setTaskProgress(state: RunTaskState, message: string, heartbeatCount = state.heartbeatCount): void {
+  state.heartbeatCount = heartbeatCount;
+  state.lastProgressAt = new Date().toISOString();
+  state.lastProgressMessage = message;
+}
+
 export async function getRunTask(runId: string): Promise<RunTaskView> {
   const state = tasks.get(runId);
   if (!state) {
@@ -133,6 +159,7 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
       input_requests_dir: state.inputRequestsDir,
       input_requests: inputRequests,
       success: false,
+      ...activeProgressView(state),
       error: state.error.message,
     };
   }
@@ -147,6 +174,7 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
     started_at: state.startedAt,
     input_requests_dir: state.inputRequestsDir,
     input_requests: inputRequests,
+    ...activeProgressView(state),
   };
 }
 
@@ -174,6 +202,7 @@ export async function startRunTask(
     inputRequestsDir,
     abortController,
     cancelRequested: false,
+    heartbeatCount: 0,
     promise: Promise.resolve(),
   };
   tasks.set(runId, state);
@@ -187,7 +216,11 @@ export async function startRunTask(
         runsDir: options.runsDir,
         failureLogTool: "start_run",
         allowTimeout: true,
-        heartbeat: options.heartbeat,
+        heartbeat: async (beat, message) => {
+          setTaskProgress(state, message ?? DEFAULT_HEARTBEAT_MESSAGE, beat);
+          await writeTaskSnapshot(await getRunTask(runId));
+          await options.heartbeat?.(beat, message);
+        },
         heartbeatIntervalMs: options.heartbeatIntervalMs,
         abortSignal: abortController.signal,
       });
@@ -204,6 +237,11 @@ export async function startRunTask(
       }
     } finally {
       state.finishedAt = new Date().toISOString();
+      await closePendingInputRequestsForRun({
+        mailboxRoot: state.mailboxRoot,
+        runId,
+        reason: state.cancelRequested ? "run cancelled" : "run reached a terminal state",
+      });
       await writeTaskSnapshot(await getRunTask(runId));
     }
   })();
@@ -218,7 +256,13 @@ export async function cancelRunTask(runId: string): Promise<RunTaskView> {
   }
   if (!state.result && !state.error) {
     state.cancelRequested = true;
+    setTaskProgress(state, "cancellation requested");
     state.abortController.abort();
+    await closePendingInputRequestsForRun({
+      mailboxRoot: state.mailboxRoot,
+      runId,
+      reason: "run cancelled",
+    });
   }
   const view = await getRunTask(runId);
   await writeTaskSnapshot(view);
@@ -233,6 +277,9 @@ export async function answerRunTaskInput(options: {
   const state = tasks.get(options.runId);
   if (!state) {
     throw taskNotFound(options.runId);
+  }
+  if (state.cancelRequested || state.result || state.error) {
+    throw new ValidationError(`run is not accepting input: ${options.runId}`);
   }
   const requests = await listInputRequests({
     mailboxRoot: state.mailboxRoot,

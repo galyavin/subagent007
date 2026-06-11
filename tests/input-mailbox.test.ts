@@ -5,8 +5,10 @@ import path from "node:path";
 import { test } from "node:test";
 import {
   answerInputRequest,
+  closePendingInputRequestsForRun,
   createInputRequest,
   listInputRequests,
+  settleInputRequest,
   waitForInputAnswer,
 } from "../src/inputMailbox.js";
 
@@ -79,4 +81,109 @@ test("mailbox wait marks unanswered requests as timed out", async () => {
     answerInputRequest({ mailboxRoot, requestId: created.request_id, answer: "late" }),
     /already timed out/,
   );
+});
+
+test("mailbox settlement records one terminal state and rejects duplicate answers", async () => {
+  const mailboxRoot = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-mailbox-settle-"));
+  const created = await createInputRequest({
+    mailboxRoot,
+    runId: "run-settle",
+    question: "Choose once",
+  });
+
+  const settled = await settleInputRequest({
+    mailboxRoot,
+    requestId: created.request_id,
+    outcome: "answered",
+    answer: "first",
+  });
+  assert.equal(settled.status, "answered");
+  assert.equal(settled.answer, "first");
+
+  await assert.rejects(
+    answerInputRequest({ mailboxRoot, requestId: created.request_id, answer: "second" }),
+    /already answered/,
+  );
+
+  const answered = await listInputRequests({ mailboxRoot, status: "answered" });
+  assert.equal(answered.length, 1);
+  assert.equal(answered[0].request_id, created.request_id);
+  assert.equal(typeof answered[0].settled_at, "string");
+});
+
+test("closing pending run input requests rejects late answers and supports closed filtering", async () => {
+  const mailboxRoot = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-mailbox-closed-"));
+  const first = await createInputRequest({
+    mailboxRoot,
+    runId: "run-close",
+    question: "Close me",
+  });
+  const second = await createInputRequest({
+    mailboxRoot,
+    runId: "run-close",
+    question: "Close me too",
+  });
+
+  const closedRecords = await closePendingInputRequestsForRun({
+    mailboxRoot,
+    runId: "run-close",
+    reason: "test terminal run",
+  });
+  assert.equal(closedRecords.length, 2);
+
+  const closed = await listInputRequests({ mailboxRoot, runId: "run-close", status: "closed" });
+  assert.deepEqual(
+    closed.map((request) => request.request_id).sort(),
+    [first.request_id, second.request_id].sort(),
+  );
+  assert.equal(closed.every((request) => typeof request.closed_at === "string"), true);
+
+  await assert.rejects(
+    answerInputRequest({ mailboxRoot, requestId: first.request_id, answer: "late" }),
+    /already closed/,
+  );
+});
+
+test("legacy answer and timeout markers still classify request status", async () => {
+  const mailboxRoot = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-mailbox-legacy-"));
+  const answered = await createInputRequest({
+    mailboxRoot,
+    runId: "run-legacy",
+    question: "Legacy answer",
+  });
+  const timedOut = await createInputRequest({
+    mailboxRoot,
+    runId: "run-legacy",
+    question: "Legacy timeout",
+  });
+
+  const answeredPath = path.join(mailboxRoot, answered.run_id, `${answered.request_id}.answer.json`);
+  const timedOutPath = path.join(mailboxRoot, timedOut.run_id, `${timedOut.request_id}.timed_out.json`);
+  await fs.writeFile(
+    answeredPath,
+    `${JSON.stringify({
+      schema_version: 1,
+      request_id: answered.request_id,
+      answer: "legacy",
+      answered_at: "2026-06-10T00:00:00.000Z",
+    })}\n`,
+  );
+  await fs.writeFile(
+    timedOutPath,
+    `${JSON.stringify({
+      schema_version: 1,
+      request_id: timedOut.request_id,
+      timed_out_at: "2026-06-10T00:00:01.000Z",
+    })}\n`,
+  );
+
+  const answeredViews = await listInputRequests({ mailboxRoot, status: "answered" });
+  assert.equal(answeredViews.length, 1);
+  assert.equal(answeredViews[0].request_id, answered.request_id);
+  assert.equal(answeredViews[0].answered_at, "2026-06-10T00:00:00.000Z");
+
+  const timedOutViews = await listInputRequests({ mailboxRoot, status: "timed_out" });
+  assert.equal(timedOutViews.length, 1);
+  assert.equal(timedOutViews[0].request_id, timedOut.request_id);
+  assert.equal(timedOutViews[0].timed_out_at, "2026-06-10T00:00:01.000Z");
 });

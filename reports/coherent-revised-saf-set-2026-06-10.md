@@ -273,7 +273,7 @@ Add a lightweight campaign harness script or documented command wrapper that cre
 - `SUBAGENT007_RUN_TASKS_DIR`
 - `SUBAGENT007_INPUT_REQUESTS_DIR`
 - `SUBAGENT007_SESSIONS_DIR`
-- `SUBAGENT007_RECORD_CONTEXT` or `SUBAGENT007_CAMPAIGN_ID`
+- `SUBAGENT007_CAMPAIGN_ID`
 
 Then run SDK-based campaign probes through that harness.
 

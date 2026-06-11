@@ -4,8 +4,9 @@ import path from "node:path";
 import { defaultSubagentStatePath } from "./output.js";
 import { ValidationError } from "./types.js";
 
-export const INPUT_REQUEST_STATUSES = ["pending", "answered", "timed_out"] as const;
+export const INPUT_REQUEST_STATUSES = ["pending", "answered", "timed_out", "closed"] as const;
 export type InputRequestStatus = (typeof INPUT_REQUEST_STATUSES)[number];
+export type InputRequestSettlementOutcome = Exclude<InputRequestStatus, "pending">;
 
 export interface InputRequestRecord {
   schema_version: 1;
@@ -31,10 +32,21 @@ export interface InputTimeoutRecord {
   timed_out_at: string;
 }
 
+export interface InputTerminalRecord {
+  schema_version: 1;
+  request_id: string;
+  status: InputRequestSettlementOutcome;
+  settled_at: string;
+  answer?: string;
+  reason?: string;
+}
+
 export interface InputRequestView extends InputRequestRecord {
   status: InputRequestStatus;
+  settled_at?: string;
   answered_at?: string;
   timed_out_at?: string;
+  closed_at?: string;
 }
 
 export function defaultInputRequestsDir(): string {
@@ -63,6 +75,10 @@ function answerPathFor(recordPath: string): string {
 
 function timeoutPathFor(recordPath: string): string {
   return recordPath.replace(/\.json$/, ".timed_out.json");
+}
+
+function terminalPathFor(recordPath: string): string {
+  return recordPath.replace(/\.json$/, ".terminal.json");
 }
 
 async function readJson<T>(filePath: string): Promise<T | null> {
@@ -120,18 +136,64 @@ export async function createInputRequest(options: {
   return record;
 }
 
+function answerRecordFromTerminal(record: InputTerminalRecord): InputAnswerRecord | null {
+  if (record.status !== "answered" || typeof record.answer !== "string") {
+    return null;
+  }
+  return {
+    schema_version: 1,
+    request_id: record.request_id,
+    answer: record.answer,
+    answered_at: record.settled_at,
+  };
+}
+
+async function readSettledAnswer(recordPath: string): Promise<InputAnswerRecord | null> {
+  const terminal = await readJson<InputTerminalRecord>(terminalPathFor(recordPath));
+  if (terminal) {
+    return answerRecordFromTerminal(terminal);
+  }
+  return readJson<InputAnswerRecord>(answerPathFor(recordPath));
+}
+
 async function requestStatus(recordPath: string): Promise<{
   status: InputRequestStatus;
+  settled_at?: string;
   answered_at?: string;
   timed_out_at?: string;
+  closed_at?: string;
 }> {
+  const terminal = await readJson<InputTerminalRecord>(terminalPathFor(recordPath));
+  if (terminal) {
+    if (terminal.status === "answered") {
+      return {
+        status: "answered",
+        settled_at: terminal.settled_at,
+        answered_at: terminal.settled_at,
+      };
+    }
+    if (terminal.status === "timed_out") {
+      return {
+        status: "timed_out",
+        settled_at: terminal.settled_at,
+        timed_out_at: terminal.settled_at,
+      };
+    }
+    if (terminal.status === "closed") {
+      return {
+        status: "closed",
+        settled_at: terminal.settled_at,
+        closed_at: terminal.settled_at,
+      };
+    }
+  }
   const answer = await readJson<InputAnswerRecord>(answerPathFor(recordPath));
   if (answer) {
-    return { status: "answered", answered_at: answer.answered_at };
+    return { status: "answered", settled_at: answer.answered_at, answered_at: answer.answered_at };
   }
   const timeout = await readJson<InputTimeoutRecord>(timeoutPathFor(recordPath));
   if (timeout) {
-    return { status: "timed_out", timed_out_at: timeout.timed_out_at };
+    return { status: "timed_out", settled_at: timeout.timed_out_at, timed_out_at: timeout.timed_out_at };
   }
   return { status: "pending" };
 }
@@ -186,6 +248,7 @@ export async function listInputRequests(options: {
         !requestFile.name.endsWith(".json") ||
         requestFile.name.endsWith(".answer.json") ||
         requestFile.name.endsWith(".timed_out.json") ||
+        requestFile.name.endsWith(".terminal.json") ||
         requestFile.name.includes(".tmp-")
       ) {
         continue;
@@ -206,53 +269,95 @@ export async function listInputRequests(options: {
   return views.sort((a, b) => a.created_at.localeCompare(b.created_at));
 }
 
+function alreadySettledError(requestId: string, status: InputRequestStatus): ValidationError {
+  if (status === "answered") {
+    return new ValidationError(`input request is already answered: ${requestId}`);
+  }
+  if (status === "timed_out") {
+    return new ValidationError(`input request is already timed out: ${requestId}`);
+  }
+  if (status === "closed") {
+    return new ValidationError(`input request is already closed: ${requestId}`);
+  }
+  return new ValidationError(`input request is already settled: ${requestId}`);
+}
+
+async function settleInputRequestAtPath(options: {
+  recordPath: string;
+  requestId: string;
+  outcome: InputRequestSettlementOutcome;
+  answer?: string;
+  reason?: string;
+}): Promise<InputTerminalRecord> {
+  if (options.outcome === "answered") {
+    if (typeof options.answer !== "string" || options.answer.trim() === "") {
+      throw new ValidationError("answer must be a nonempty string");
+    }
+  } else if (options.answer !== undefined) {
+    throw new ValidationError(`${options.outcome} input request settlement cannot include an answer`);
+  }
+
+  const currentStatus = await requestStatus(options.recordPath);
+  if (currentStatus.status !== "pending") {
+    throw alreadySettledError(options.requestId, currentStatus.status);
+  }
+
+  const settledAt = new Date().toISOString();
+  const terminal: InputTerminalRecord = {
+    schema_version: 1,
+    request_id: options.requestId,
+    status: options.outcome,
+    settled_at: settledAt,
+    ...(options.outcome === "answered" ? { answer: options.answer } : {}),
+    ...(options.reason ? { reason: options.reason } : {}),
+  };
+
+  try {
+    await writeAtomicCreate(terminalPathFor(options.recordPath), terminal);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      const settledStatus = await requestStatus(options.recordPath);
+      throw alreadySettledError(options.requestId, settledStatus.status);
+    }
+    throw error;
+  }
+  return terminal;
+}
+
+export async function settleInputRequest(options: {
+  mailboxRoot?: string;
+  requestId: string;
+  outcome: InputRequestSettlementOutcome;
+  answer?: string;
+  reason?: string;
+}): Promise<InputTerminalRecord> {
+  const mailboxRoot = options.mailboxRoot ?? defaultInputRequestsDir();
+  const recordPath = await findRequestPath(mailboxRoot, options.requestId);
+  return settleInputRequestAtPath({
+    recordPath,
+    requestId: options.requestId,
+    outcome: options.outcome,
+    answer: options.answer,
+    reason: options.reason,
+  });
+}
+
 export async function answerInputRequest(options: {
   mailboxRoot?: string;
   requestId: string;
   answer: string;
 }): Promise<InputAnswerRecord> {
-  if (typeof options.answer !== "string" || options.answer.trim() === "") {
-    throw new ValidationError("answer must be a nonempty string");
-  }
-  const mailboxRoot = options.mailboxRoot ?? defaultInputRequestsDir();
-  const recordPath = await findRequestPath(mailboxRoot, options.requestId);
-  const currentStatus = await requestStatus(recordPath);
-  if (currentStatus.status === "answered") {
-    throw new ValidationError(`input request is already answered: ${options.requestId}`);
-  }
-  if (currentStatus.status === "timed_out") {
-    throw new ValidationError(`input request is already timed out: ${options.requestId}`);
-  }
-  const answer: InputAnswerRecord = {
-    schema_version: 1,
-    request_id: options.requestId,
+  const terminal = await settleInputRequest({
+    mailboxRoot: options.mailboxRoot,
+    requestId: options.requestId,
+    outcome: "answered",
     answer: options.answer,
-    answered_at: new Date().toISOString(),
-  };
-  try {
-    await writeAtomicCreate(answerPathFor(recordPath), answer);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-      throw new ValidationError(`input request is already answered: ${options.requestId}`);
-    }
-    throw error;
+  });
+  const answer = answerRecordFromTerminal(terminal);
+  if (!answer) {
+    throw new ValidationError(`input request was not answered: ${options.requestId}`);
   }
   return answer;
-}
-
-async function markTimedOut(recordPath: string, requestId: string): Promise<void> {
-  const timeout: InputTimeoutRecord = {
-    schema_version: 1,
-    request_id: requestId,
-    timed_out_at: new Date().toISOString(),
-  };
-  try {
-    await writeAtomicCreate(timeoutPathFor(recordPath), timeout);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-      throw error;
-    }
-  }
 }
 
 function sleep(ms: number): Promise<void> {
@@ -273,13 +378,69 @@ export async function waitForInputAnswer(options: {
   const pollIntervalMs = options.pollIntervalMs ?? 200;
 
   while (Date.now() < deadline) {
-    const answer = await readJson<InputAnswerRecord>(answerPathFor(recordPath));
+    const status = await requestStatus(recordPath);
+    if (status.status === "timed_out") {
+      throw new Error(`input request timed out: ${options.requestId}`);
+    }
+    if (status.status === "closed") {
+      throw new Error(`input request closed: ${options.requestId}`);
+    }
+    const answer = await readSettledAnswer(recordPath);
     if (answer) {
       return answer;
     }
     await sleep(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())));
   }
 
-  await markTimedOut(recordPath, options.requestId);
+  try {
+    await settleInputRequestAtPath({
+      recordPath,
+      requestId: options.requestId,
+      outcome: "timed_out",
+      reason: "wait_for_input_answer timeout elapsed",
+    });
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      const answer = await readSettledAnswer(recordPath);
+      if (answer) {
+        return answer;
+      }
+      const status = await requestStatus(recordPath);
+      if (status.status === "closed") {
+        throw new Error(`input request closed: ${options.requestId}`);
+      }
+      if (status.status === "timed_out") {
+        throw new Error(`input request timed out: ${options.requestId}`);
+      }
+    }
+    throw error;
+  }
   throw new Error(`input request timed out: ${options.requestId}`);
+}
+
+export async function closePendingInputRequestsForRun(options: {
+  mailboxRoot?: string;
+  runId: string;
+  reason?: string;
+}): Promise<InputTerminalRecord[]> {
+  const mailboxRoot = options.mailboxRoot ?? defaultInputRequestsDir();
+  const pending = await listInputRequests({ mailboxRoot, runId: options.runId, status: "pending" });
+  const closed: InputTerminalRecord[] = [];
+  for (const request of pending) {
+    try {
+      closed.push(
+        await settleInputRequest({
+          mailboxRoot,
+          requestId: request.request_id,
+          outcome: "closed",
+          reason: options.reason ?? "run reached a terminal state",
+        }),
+      );
+    } catch (error) {
+      if (!(error instanceof ValidationError) || !/already (answered|timed out|closed)/.test(error.message)) {
+        throw error;
+      }
+    }
+  }
+  return closed;
 }

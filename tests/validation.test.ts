@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, loadConfigRecord } from "../src/config.js";
 import { stripAnsiAndControls } from "../src/output.js";
 import { resolvePiAgentDir } from "../src/piAgentDir.js";
 import { composePrompt } from "../src/prompt.js";
@@ -18,27 +18,80 @@ test("loads Pi runner config defaults from JSON and ignores unknown keys", async
   await fs.writeFile(
     configPath,
     JSON.stringify({
-      default_model: "openai-codex/gpt-5.4-mini",
-      default_thinking_level: "medium",
+      default_model_class: "C",
       unknown_key: "ignored",
     }),
   );
 
   assert.deepEqual(await loadConfig(configPath), {
-    default_model: "openai-codex/gpt-5.4-mini",
-    default_thinking_level: "medium",
+    default_model_class: "C",
   });
 });
 
-test("rejects unsupported config thinking levels", async () => {
+test("raw config records preserve persisted values while runtime config normalizes them", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-config-raw-"));
+  const configPath = path.join(dir, "config.json");
+  await fs.writeFile(
+    configPath,
+    JSON.stringify({
+      default_model_class: " C ",
+    }),
+  );
+
+  assert.deepEqual(await loadConfigRecord(configPath), {
+    default_model_class: " C ",
+  });
+  assert.deepEqual(await loadConfig(configPath), {
+    default_model_class: "C",
+  });
+});
+
+test("legacy default model and thinking config maps to default model class", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-config-legacy-"));
+  const configPath = path.join(dir, "config.json");
+  await fs.writeFile(
+    configPath,
+    JSON.stringify({
+      default_model: "openrouter/deepseek/deepseek-v4-pro",
+      default_thinking_level: "high",
+    }),
+  );
+
+  assert.deepEqual(await loadConfig(configPath), {
+    default_model_class: "C",
+  });
+});
+
+test("malformed legacy model config does not block class defaults", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-config-legacy-malformed-"));
+  const configPath = path.join(dir, "config.json");
+  await fs.writeFile(
+    configPath,
+    JSON.stringify({
+      default_model: 42,
+      default_thinking_level: "ultra",
+    }),
+  );
+
+  const config = await loadConfig(configPath);
+  assert.deepEqual(config, {});
+
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-cwd-"));
+  const resolved = await validateAndResolveRequest({ prompt: "x", cwd }, config);
+  assert.equal(resolved.modelClass, "C");
+  assert.equal(resolved.model, "openrouter/deepseek/deepseek-v4-pro");
+  assert.equal(resolved.thinkingLevel, "high");
+});
+
+test("rejects unsupported config model classes", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-config-"));
   const configPath = path.join(dir, "config.json");
   await fs.writeFile(
     configPath,
-    JSON.stringify({ default_model: "openai-codex/gpt-5.4-mini", default_thinking_level: "minimal" }),
+    JSON.stringify({ default_model_class: "Z" }),
   );
 
-  await assert.rejects(loadConfig(configPath), /default_thinking_level must be one of: low, medium, high, xhigh/);
+  await assert.rejects(loadConfig(configPath), /default_model_class must be one of: A, B, C, D, E/);
 });
 
 test("missing config file is allowed until defaults are needed", async () => {
@@ -73,17 +126,17 @@ test("resolves caller fields over config defaults", async () => {
       prompt: "  say hi  ",
       cwd,
       continuity: { mode: "resume", session_id: `  ${sessionFile}  ` },
-      model: "openai-codex/gpt-5.4-mini",
-      thinking_level: "high",
+      model_class: "D",
       skill_name: "pda-lite",
       tool_profile: "workspace_write",
     },
-    { default_model: "ignored", default_thinking_level: "low" },
+    { default_model_class: "A" },
   );
 
   assert.equal(resolved.prompt, "say hi");
   assert.deepEqual(resolved.continuity, { mode: "resume", session_id: sessionFile });
-  assert.equal(resolved.model, "openai-codex/gpt-5.4-mini");
+  assert.equal(resolved.modelClass, "D");
+  assert.equal(resolved.model, "openai-codex/gpt-5.5");
   assert.equal(resolved.thinkingLevel, "high");
   assert.equal(resolved.skill, "pda-lite");
   assert.equal(resolved.outputMode, "final");
@@ -97,8 +150,7 @@ test("resolves canonical skill_name and legacy skill alias", async () => {
     {
       prompt: "x",
       cwd,
-      model: "openai-codex/gpt-5.4-mini",
-      thinking_level: "medium",
+      model_class: "C",
       skill_name: "pda-lite",
     },
     {},
@@ -109,8 +161,7 @@ test("resolves canonical skill_name and legacy skill alias", async () => {
     {
       prompt: "x",
       cwd,
-      model: "openai-codex/gpt-5.4-mini",
-      thinking_level: "medium",
+      model_class: "C",
       skill: "pda-lite",
     },
     {},
@@ -121,8 +172,7 @@ test("resolves canonical skill_name and legacy skill alias", async () => {
     {
       prompt: "x",
       cwd,
-      model: "openai-codex/gpt-5.4-mini",
-      thinking_level: "medium",
+      model_class: "C",
       skill_name: "pda-lite",
       skill: "pda-lite",
     },
@@ -134,8 +184,7 @@ test("resolves canonical skill_name and legacy skill alias", async () => {
     {
       prompt: "x",
       cwd,
-      model: "openai-codex/gpt-5.4-mini",
-      thinking_level: "medium",
+      model_class: "C",
       skill_name: null,
       skill: null,
     },
@@ -148,8 +197,7 @@ test("resolves canonical skill_name and legacy skill alias", async () => {
       {
         prompt: "x",
         cwd,
-        model: "openai-codex/gpt-5.4-mini",
-        thinking_level: "medium",
+        model_class: "C",
         skill_name: "pda-lite",
         skill: "tension-hunter",
       },
@@ -163,8 +211,7 @@ test("rejects leading skill invocation syntax in unbound prompts", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-prompt-skill-"));
   const base = {
     cwd,
-    model: "openai-codex/gpt-5.4-mini",
-    thinking_level: "medium" as const,
+    model_class: "C" as const,
   };
 
   for (const prompt of [
@@ -211,8 +258,7 @@ test("validates resume session files before spawning Pi work", async () => {
       prompt: "x",
       cwd,
       continuity: { mode: "resume", session_id: validSession },
-      model: "openai-codex/gpt-5.4-mini",
-      thinking_level: "medium",
+      model_class: "C",
     },
     {},
   );
@@ -224,8 +270,7 @@ test("validates resume session files before spawning Pi work", async () => {
         prompt: "x",
         cwd,
         continuity: { mode: "resume", session_id: "relative-session.jsonl" },
-        model: "openai-codex/gpt-5.4-mini",
-        thinking_level: "medium",
+        model_class: "C",
       },
       {},
     ),
@@ -237,8 +282,7 @@ test("validates resume session files before spawning Pi work", async () => {
         prompt: "x",
         cwd,
         continuity: { mode: "resume", session_id: path.join(cwd, "missing.jsonl") },
-        model: "openai-codex/gpt-5.4-mini",
-        thinking_level: "medium",
+        model_class: "C",
       },
       {},
     ),
@@ -250,8 +294,7 @@ test("validates resume session files before spawning Pi work", async () => {
         prompt: "x",
         cwd,
         continuity: { mode: "resume", session_id: cwd },
-        model: "openai-codex/gpt-5.4-mini",
-        thinking_level: "medium",
+        model_class: "C",
       },
       {},
     ),
@@ -266,8 +309,7 @@ test("validates resume session files before spawning Pi work", async () => {
         prompt: "x",
         cwd,
         continuity: { mode: "resume", session_id: emptySession },
-        model: "openai-codex/gpt-5.4-mini",
-        thinking_level: "medium",
+        model_class: "C",
       },
       {},
     ),
@@ -278,7 +320,7 @@ test("validates resume session files before spawning Pi work", async () => {
 test("defaults tool profile to inspect and validates explicit profiles", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-tool-profile-"));
   const defaulted = await validateAndResolveRequest(
-    { prompt: "x", cwd, model: "openai-codex/gpt-5.4-mini", thinking_level: "medium" },
+    { prompt: "x", cwd, model_class: "C" },
     {},
   );
   assert.equal(defaulted.toolProfile, "inspect");
@@ -288,8 +330,7 @@ test("defaults tool profile to inspect and validates explicit profiles", async (
       {
         prompt: "x",
         cwd,
-        model: "openai-codex/gpt-5.4-mini",
-        thinking_level: "medium",
+        model_class: "C",
         tool_profile: toolProfile,
       },
       {},
@@ -302,8 +343,7 @@ test("defaults tool profile to inspect and validates explicit profiles", async (
       {
         prompt: "x",
         cwd,
-        model: "openai-codex/gpt-5.4-mini",
-        thinking_level: "medium",
+        model_class: "C",
         tool_profile: "write_only" as never,
       },
       {},
@@ -312,71 +352,47 @@ test("defaults tool profile to inspect and validates explicit profiles", async (
   );
 });
 
-test("accepts curated model refs and compatible unqualified aliases", async () => {
+test("resolves model classes to calibrated model and thinking level", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-model-"));
-  for (const [model, canonical] of [
-    ["gpt-5.4", "openai-codex/gpt-5.4"],
-    ["openai-codex/gpt-5.4-mini", "openai-codex/gpt-5.4-mini"],
-    ["openai-codex/gpt-5.5", "openai-codex/gpt-5.5"],
-    ["gemma4:12b", "ollama/gemma4:12b"],
-    ["ollama/gemma4:12b", "ollama/gemma4:12b"],
-    ["deepseek/deepseek-v4-flash", "openrouter/deepseek/deepseek-v4-flash"],
-    ["deepseek/deepseek-v4-pro", "openrouter/deepseek/deepseek-v4-pro"],
-    ["openrouter/deepseek/deepseek-v4-pro", "openrouter/deepseek/deepseek-v4-pro"],
-    ["~anthropic/claude-sonnet-latest", "openrouter/~anthropic/claude-sonnet-latest"],
-    ["openrouter/~anthropic/claude-sonnet-latest", "openrouter/~anthropic/claude-sonnet-latest"],
+  for (const [modelClass, model, thinkingLevel] of [
+    ["A", "ollama/gemma4:12b", "high"],
+    ["B", "openrouter/deepseek/deepseek-v4-flash", "high"],
+    ["C", "openrouter/deepseek/deepseek-v4-pro", "high"],
+    ["D", "openai-codex/gpt-5.5", "high"],
+    ["E", "openai-codex/gpt-5.5", "xhigh"],
   ] as const) {
     const resolved = await validateAndResolveRequest(
-      { prompt: "x", cwd, model, thinking_level: "medium" },
+      { prompt: "x", cwd, model_class: modelClass },
       {},
     );
-    assert.equal(resolved.model, canonical);
+    assert.equal(resolved.modelClass, modelClass);
+    assert.equal(resolved.model, model);
+    assert.equal(resolved.thinkingLevel, thinkingLevel);
   }
 });
 
-test("repairs known stale model aliases to curated model refs", async () => {
-  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-model-repair-"));
-  const resolved = await validateAndResolveRequest(
-    {
-      prompt: "x",
-      cwd,
-      model: "openrouter/anthropic/claude-sonnet-4.5",
-      thinking_level: "medium",
-    },
-    {},
-  );
-  assert.equal(resolved.model, "openrouter/~anthropic/claude-sonnet-latest");
-});
-
-test("rejects models outside the curated allowlist", async () => {
+test("rejects invalid model class and old public model fields", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-model-"));
   await assert.rejects(
     validateAndResolveRequest(
-      { prompt: "x", cwd, model: "anthropic/claude-opus-4-5", thinking_level: "medium" },
+      { prompt: "x", cwd, model_class: "Z" as never },
       {},
     ),
-    /curated Subagent007 Pi allowlist/,
+    /model_class must be one of: A, B, C, D, E/,
   );
   await assert.rejects(
     validateAndResolveRequest(
-      { prompt: "x", cwd, model: "openai-codex/gpt-5.3-codex", thinking_level: "medium" },
+      { prompt: "x", cwd, model: "openrouter/deepseek/deepseek-v4-pro" } as never,
       {},
     ),
-    /curated Subagent007 Pi allowlist/,
+    /model is no longer a public input/,
   );
   await assert.rejects(
     validateAndResolveRequest(
-      { prompt: "x", cwd, model: "openai-codex/gpt-5.4+", thinking_level: "medium" },
+      { prompt: "x", cwd, thinking_level: "high" } as never,
       {},
     ),
-    /pass a matching literal model, not the pattern/,
-  );
-  await assert.rejects(
-    validateAndResolveRequest(
-      { prompt: "x", cwd, model: "deepseek/deepseek-v4-flash:free", thinking_level: "medium" },
-      {},
-    ),
-    /curated Subagent007 Pi allowlist/,
+    /thinking_level is calibrated by model_class/,
   );
 });
 
@@ -404,7 +420,7 @@ test("computes an effective child timeout within the requested hard cap", () => 
 test("rejects invalid preflight input before any child spawn is possible", async () => {
   await assert.rejects(
     validateAndResolveRequest(
-      { prompt: "x", cwd: "relative", model: "openai-codex/gpt-5.4-mini", thinking_level: "medium" },
+      { prompt: "x", cwd: "relative", model_class: "C" },
       {},
     ),
     ValidationError,
@@ -412,18 +428,19 @@ test("rejects invalid preflight input before any child spawn is possible", async
 
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-cwd-"));
   await assert.rejects(
-    validateAndResolveRequest({ prompt: "", cwd, model: "openai-codex/gpt-5.4-mini", thinking_level: "medium" }, {}),
+    validateAndResolveRequest({ prompt: "", cwd, model_class: "C" }, {}),
     ValidationError,
   );
 
-  await assert.rejects(validateAndResolveRequest({ prompt: "x", cwd }, {}), /default_model/);
+  const defaulted = await validateAndResolveRequest({ prompt: "x", cwd }, {});
+  assert.equal(defaulted.modelClass, "C");
 
   await assert.rejects(
     validateAndResolveRequest(
-      { prompt: "x", cwd, model: "openai-codex/gpt-5.4-mini", thinking_level: "minimal" as never },
+      { prompt: "x", cwd, model_class: "minimal" as never },
       {},
     ),
-    /thinking_level must be one of: low, medium, high, xhigh/,
+    /model_class must be one of: A, B, C, D, E/,
   );
 
   await withEnv(
@@ -439,8 +456,7 @@ test("rejects invalid preflight input before any child spawn is possible", async
           {
             prompt: "x",
             cwd,
-            model: "openai-codex/gpt-5.4-mini",
-            thinking_level: "medium",
+            model_class: "C",
             timeout_ms: 7000,
           },
           {},
@@ -456,8 +472,7 @@ test("rejects invalid preflight input before any child spawn is possible", async
         prompt: "x",
         cwd,
         session_id: "0",
-        model: "openai-codex/gpt-5.4-mini",
-        thinking_level: "medium",
+        model_class: "C",
       } as never,
       {},
     ),
@@ -470,8 +485,7 @@ test("rejects invalid preflight input before any child spawn is possible", async
         prompt: "x",
         cwd,
         continuity: { mode: "fresh", session_id: "/tmp/session.jsonl" } as never,
-        model: "openai-codex/gpt-5.4-mini",
-        thinking_level: "medium",
+        model_class: "C",
       },
       {},
     ),

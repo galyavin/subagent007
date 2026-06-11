@@ -19,6 +19,7 @@
     "premodels:reconcile": "npm run build",
     "models:reconcile": "node scripts/reconcile-models.mjs",
     "observed-campaign": "node scripts/run-observed-campaign.mjs",
+    "observed-mcp-probe": "node scripts/run-observed-mcp-probe.mjs",
     "failure-log:archive": "node scripts/archive-failure-log.mjs"
   },
   "dependencies": {

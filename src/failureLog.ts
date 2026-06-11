@@ -9,6 +9,7 @@ export type FailureLogTool =
   | "run_subagent"
   | "run_subagent_session"
   | "start_run"
+  | "list_model_classes"
   | "list_allowed_models"
   | "get_run"
   | "cancel_run"
@@ -26,8 +27,7 @@ export type FailureClass =
   | "unknown_error";
 
 export type FailureReasonCode =
-  | "config_missing_default_model"
-  | "config_missing_default_thinking_level"
+  | "config_missing_default_model_class"
   | "cwd_inaccessible"
   | "cwd_not_absolute"
   | "cwd_not_directory"
@@ -35,6 +35,7 @@ export type FailureReasonCode =
   | "invalid_output_mode"
   | "invalid_packet_policy"
   | "invalid_model"
+  | "invalid_model_class"
   | "invalid_resume_mode"
   | "invalid_session_id"
   | "invalid_session_key"
@@ -89,6 +90,7 @@ export interface FailureLogRecord {
   force_grace_ms?: number;
   partial_output_available?: boolean;
   resume_possible?: boolean;
+  model_class?: string;
   model?: string;
   thinking_level?: string;
   skill?: string | null;
@@ -220,10 +222,7 @@ export function failureReasonCodeForError(error: unknown): FailureReasonCode {
   if (message.includes("cwd is not accessible")) return "cwd_inaccessible";
   if (message.includes("cwd must be a directory")) return "cwd_not_directory";
   if (message.includes("prompt must be a nonempty string")) return "prompt_missing";
-  if (message.includes("default_model is not configured")) return "config_missing_default_model";
-  if (message.includes("default_thinking_level is not configured")) {
-    return "config_missing_default_thinking_level";
-  }
+  if (message.includes("default_model_class is not configured")) return "config_missing_default_model_class";
   if (message.includes("timeout_ms must be at least")) return "invalid_timeout_ms";
   if (message.includes("timeout_ms must be a positive integer")) return "invalid_timeout_ms";
   if (message.includes("timeout_ms is not supported by run_subagent")) {
@@ -232,6 +231,9 @@ export function failureReasonCodeForError(error: unknown): FailureReasonCode {
   if (message.includes("skill must") || message.includes("skill_name") || message.includes("skill invocation syntax")) {
     return "invalid_skill";
   }
+  if (message.includes("model is no longer a public input")) return "invalid_model";
+  if (message.includes("model_class must")) return "invalid_model_class";
+  if (message.includes("thinking_level is calibrated by model_class")) return "invalid_thinking_level";
   if (message.includes("curated Subagent007 Pi allowlist")) return "invalid_model";
   if (message.includes("thinking_level must")) return "invalid_thinking_level";
   if (message.includes("tool_profile must")) return "invalid_tool_profile";

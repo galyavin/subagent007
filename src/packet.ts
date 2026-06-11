@@ -3,6 +3,32 @@ import type { ContractPacketV1, PacketParseStatus } from "./types.js";
 
 export const CONTRACT_PACKET_FENCE = "contract_packet_v1";
 
+const CONTRACT_PACKET_EXAMPLE = {
+  verdict: "inconclusive",
+  summary: "One concise sentence.",
+  findings: [
+    {
+      severity: "low",
+      claim: "Claim being made.",
+      evidence: "Evidence or source basis for that claim.",
+      required_repair: "Optional repair when applicable.",
+    },
+  ],
+  blockers: ["Concrete blocker, or use an empty array."],
+  next_step: "Smallest useful next action.",
+  closure: {
+    canonical_closure_source: "Primary source used to decide this handoff.",
+    artifact_roles: [
+      {
+        path: "relative/or/absolute/artifact-path",
+        role: "How this artifact supports the handoff.",
+      },
+    ],
+    validation: ["Concrete validation performed, or omit closure if none."],
+    claim_ceiling: "What this packet does and does not certify.",
+  },
+} satisfies ContractPacketV1;
+
 const packetFindingSchema = z.object({
   severity: z.enum(["high", "medium", "low"]),
   claim: z.string(),
@@ -45,26 +71,9 @@ export function appendContractPacketInstruction(prompt: string): string {
     "Allowed finding severity values: high, medium, low.",
     "Use this JSON shape and no comments inside the JSON:",
     `\`\`\`${CONTRACT_PACKET_FENCE}`,
-    JSON.stringify(
-      {
-        verdict: "inconclusive",
-        summary: "One concise sentence.",
-        findings: [
-          {
-            severity: "low",
-            claim: "Claim being made.",
-            evidence: "Evidence or source basis for that claim.",
-            required_repair: "Optional repair when applicable.",
-          },
-        ],
-        blockers: ["Concrete blocker, or use an empty array."],
-        next_step: "Smallest useful next action.",
-      },
-      null,
-      2,
-    ),
+    JSON.stringify(CONTRACT_PACKET_EXAMPLE, null, 2),
     "```",
-    "Optional closure fields may be added under `closure`: canonical_closure_source, artifact_roles, validation, claim_ceiling.",
+    "The `closure` object may be omitted entirely. If included, it must use the nested shapes shown above: `artifact_roles` is an array of `{ path, role }` objects and `validation` is an array of strings.",
     "</subagent007_contract_packet>",
   ].join("\n");
 }

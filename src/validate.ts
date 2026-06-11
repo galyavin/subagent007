@@ -2,19 +2,19 @@ import fs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import {
+  MODEL_CLASSES,
   OUTPUT_MODES,
   RUN_CONTINUITY_MODES,
-  THINKING_LEVELS,
   TOOL_PROFILES,
+  type ModelClass,
   type OutputMode,
   type ResolvedRunSubagentRequest,
   type RunContinuity,
   type RunSubagentRequest,
   type RunnerConfig,
-  type ThinkingLevel,
   type ToolProfile,
 } from "./types.js";
-import { resolveAllowedModelRef } from "./modelAllowlist.js";
+import { DEFAULT_MODEL_CLASS, resolveModelClass } from "./modelAllowlist.js";
 import { minimumRequestedTimeoutMs } from "./timeoutBudget.js";
 import { ValidationError } from "./types.js";
 
@@ -75,15 +75,15 @@ function resolveSkillName(request: RunSubagentRequest, prompt: string): string |
   return resolvedSkill;
 }
 
-function validateThinkingLevel(value: unknown, key: string): ThinkingLevel | undefined {
-  const level = trimOptional(value, key);
-  if (level === undefined) {
+function validateModelClass(value: unknown): ModelClass | undefined {
+  const modelClass = trimOptional(value, "model_class");
+  if (modelClass === undefined) {
     return undefined;
   }
-  if (!THINKING_LEVELS.includes(level as ThinkingLevel)) {
-    throw new ValidationError(`${key} must be one of: ${THINKING_LEVELS.join(", ")}`);
+  if (!MODEL_CLASSES.includes(modelClass as ModelClass)) {
+    throw new ValidationError(`model_class must be one of: ${MODEL_CLASSES.join(", ")}`);
   }
-  return level as ThinkingLevel;
+  return modelClass as ModelClass;
 }
 
 function validateOutputMode(value: unknown): OutputMode {
@@ -205,18 +205,14 @@ export async function validateAndResolveRequest(
 
   const cwd = await validateCwd(request.cwd);
 
-  const model = trimOptional(request.model, "model") ?? config.default_model;
-  if (!model) {
-    throw new ValidationError("model was omitted and default_model is not configured");
+  if ("model" in request) {
+    throw new ValidationError("model is no longer a public input; use model_class");
   }
-  const resolvedModel = resolveAllowedModelRef(model);
-  const thinkingLevel =
-    validateThinkingLevel(request.thinking_level, "thinking_level") ?? config.default_thinking_level;
-  if (!thinkingLevel) {
-    throw new ValidationError(
-      "thinking_level was omitted and default_thinking_level is not configured",
-    );
+  if ("thinking_level" in request) {
+    throw new ValidationError("thinking_level is calibrated by model_class and is no longer a public input");
   }
+  const modelClass = validateModelClass(request.model_class) ?? config.default_model_class ?? DEFAULT_MODEL_CLASS;
+  const resolvedModelClass = resolveModelClass(modelClass);
 
   let timeoutMs: number | undefined;
   if (request.timeout_ms !== undefined) {
@@ -243,8 +239,9 @@ export async function validateAndResolveRequest(
   return {
     prompt,
     cwd,
-    model: resolvedModel,
-    thinkingLevel,
+    modelClass,
+    model: resolvedModelClass.model,
+    thinkingLevel: resolvedModelClass.thinkingLevel,
     timeoutMs,
     continuity,
     skill: resolveSkillName(request, prompt),

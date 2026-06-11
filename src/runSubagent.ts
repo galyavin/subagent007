@@ -25,6 +25,8 @@ import { ValidationError } from "./types.js";
 import { validateAndResolveRequest } from "./validate.js";
 
 const DEFAULT_RUN_SUBAGENT_TIMEOUT_MS = 110_000;
+export const RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT =
+  "Use start_run with explicit timeout_ms for broad, exploratory, interactive, cancellable, polling, or long-running work.";
 
 type RunSubagentSessionMode =
   | { kind: "ephemeral" }
@@ -266,6 +268,10 @@ export async function runSubagent(
       hasPublicSubagentWarning: output.hasPublicSubagentWarning,
       hasPublicSubagentError: output.hasPublicSubagentError,
     });
+    const timeoutRecoveryHint =
+      processResult.timedOut && !options.allowTimeout
+        ? RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT
+        : undefined;
     const resumePossible = Boolean(
       processResult.timedOut &&
         (sessionMode.kind === "resume" || (sessionMode.kind === "fresh" && parsedSessionId)),
@@ -290,6 +296,7 @@ export async function runSubagent(
       kill_grace_ms: timeoutBudget.killGraceMs,
       force_grace_ms: timeoutBudget.forceGraceMs,
       size_bytes: output.sizeBytes,
+      resolved_model_class: resolved.modelClass,
       resolved_model: resolved.model,
       resolved_thinking_level: resolved.thinkingLevel,
       requested_skill: resolved.skill ?? null,
@@ -297,6 +304,7 @@ export async function runSubagent(
       written_output_mode: writtenOutputMode,
       resolved_tool_profile: resolved.toolProfile,
       stop_reason: processResult.stopReason,
+      ...(timeoutRecoveryHint ? { timeout_recovery_hint: timeoutRecoveryHint } : {}),
       session_id: sessionId,
       session_established: sessionEstablished,
       input_requests_dir: inputRequestsDir,
@@ -335,6 +343,7 @@ export async function runSubagent(
         timeout_headroom_ms: result.timeout_headroom_ms,
         kill_grace_ms: result.kill_grace_ms,
         force_grace_ms: result.force_grace_ms,
+        model_class: result.resolved_model_class,
         model: result.resolved_model,
         thinking_level: result.resolved_thinking_level,
         skill: result.requested_skill,

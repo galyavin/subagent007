@@ -5,14 +5,19 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
+import { createFakePiChild } from "./helpers/fakePiChild.js";
+import { readJsonl } from "./helpers/testUtils.js";
 
 const execFileAsync = promisify(execFile);
 const harnessPath = path.resolve("scripts/run-observed-campaign.mjs");
+const probePath = path.resolve("scripts/run-observed-mcp-probe.mjs");
 
 type HarnessResult = {
   campaign_id: string;
+  evidence_class: "campaign-scoped";
   state_root: string;
   failure_log_path: string;
+  campaign_ledger_path: string;
   runs_dir: string;
   run_tasks_dir: string;
   input_requests_dir: string;
@@ -61,6 +66,7 @@ test("observed campaign harness supplies isolated state paths by default", async
     "const env = {",
     "  campaign_id: process.env.SUBAGENT007_CAMPAIGN_ID,",
     "  failure_log_path: process.env.SUBAGENT007_FAILURE_LOG_PATH,",
+    "  campaign_ledger_path: process.env.SUBAGENT007_CAMPAIGN_LEDGER_PATH,",
     "  runs_dir: process.env.SUBAGENT007_RUNS_DIR,",
     "  run_tasks_dir: process.env.SUBAGENT007_RUN_TASKS_DIR,",
     "  input_requests_dir: process.env.SUBAGENT007_INPUT_REQUESTS_DIR,",
@@ -80,6 +86,7 @@ test("observed campaign harness supplies isolated state paths by default", async
   assert.ok(result.json);
   const summary = result.json;
   assert.equal(summary.campaign_id, "campaign.test-1");
+  assert.equal(summary.evidence_class, "campaign-scoped");
   const childEnv = JSON.parse(await fs.readFile(envPath, "utf8")) as Record<string, string>;
   assert.equal(childEnv.campaign_id, "campaign.test-1");
   assert.equal(childEnv.failure_log_path, summary.failure_log_path);
@@ -88,6 +95,7 @@ test("observed campaign harness supplies isolated state paths by default", async
 
   for (const statePath of [
     summary.failure_log_path,
+    summary.campaign_ledger_path,
     summary.runs_dir,
     summary.run_tasks_dir,
     summary.input_requests_dir,
@@ -97,10 +105,111 @@ test("observed campaign harness supplies isolated state paths by default", async
     assert.equal(statePath.startsWith(`${summary.state_root}${path.sep}`), true, statePath);
   }
   assert.equal(childEnv.runs_dir, summary.runs_dir);
+  assert.equal(childEnv.campaign_ledger_path, summary.campaign_ledger_path);
   assert.equal(childEnv.run_tasks_dir, summary.run_tasks_dir);
   assert.equal(childEnv.input_requests_dir, summary.input_requests_dir);
   assert.equal(childEnv.sessions_dir, summary.sessions_dir);
   assert.equal(childEnv.pi_raw_sessions_dir, summary.pi_raw_sessions_dir);
+});
+
+test("observed MCP probe records call attempts and failure-log deltas", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-campaign-probe-"));
+  const projectDir = path.join(tmp, "project");
+  const stateDir = path.join(tmp, "state");
+  const configPath = path.join(stateDir, "config.json");
+  const fake = await createFakePiChild();
+  await fs.mkdir(projectDir, { recursive: true });
+  await fs.mkdir(stateDir, { recursive: true });
+  await fs.writeFile(
+    configPath,
+    JSON.stringify({ default_model_class: "C" }),
+  );
+
+  const result = await runHarness(
+    [
+      "--campaign-id",
+      "campaign.probe-1",
+      "--",
+      process.execPath,
+      probePath,
+      "--server",
+      path.resolve("dist/server.js"),
+      "--cwd",
+      projectDir,
+      "--scenario",
+      "success",
+      "--scenario",
+      "schema-error",
+      "--scenario",
+      "handler-validation",
+      "--scenario",
+      "child-failure",
+      "--quiet",
+    ],
+    {
+      SUBAGENT007_CONFIG_PATH: configPath,
+      SUBAGENT007_PI_CHILD_PATH: fake.childPath,
+      FAKE_PI_LOG_PATH: fake.logPath,
+      SUBAGENT007_RECORD_SOURCE: "test",
+    },
+  );
+
+  assert.equal(result.ok, true);
+  assert.ok(result.json);
+  const events = await readJsonl<{
+    event: string;
+    call_id: string;
+    scenario: string;
+    tool: string;
+    result?: { success: boolean | null };
+    argument_shape?: Record<string, unknown>;
+    failure_classes?: string[];
+    reason_codes?: string[];
+  }>(result.json.campaign_ledger_path);
+
+  for (const scenario of ["success", "schema-error", "handler-validation", "child-failure"]) {
+    assert.ok(events.some((event) => event.event === "call_started" && event.scenario === scenario), scenario);
+  }
+
+  const schemaError = events.find((event) => event.event === "call_schema_error" && event.scenario === "schema-error");
+  assert.ok(schemaError);
+  assert.equal(events.some((event) => event.event === "failure_log_delta" && event.call_id === schemaError.call_id), false);
+
+  const handlerError = events.find(
+    (event) => event.event === "call_handler_error" && event.scenario === "handler-validation",
+  );
+  assert.ok(handlerError);
+  assert.ok(
+    events.some(
+      (event) =>
+        event.event === "failure_log_delta" &&
+        event.call_id === handlerError.call_id &&
+        event.reason_codes?.includes("cwd_not_absolute"),
+    ),
+  );
+
+  const successResult = events.find((event) => event.event === "call_result" && event.scenario === "success");
+  assert.equal(successResult?.result?.success, true);
+
+  const childFailure = events.find((event) => event.event === "call_result" && event.scenario === "child-failure");
+  assert.equal(childFailure?.result?.success, false);
+  assert.ok(
+    events.some(
+      (event) =>
+        event.event === "failure_log_delta" &&
+        event.call_id === childFailure?.call_id &&
+        event.failure_classes?.includes("nonzero_exit"),
+    ),
+  );
+
+  assert.doesNotMatch(JSON.stringify(events), /SECRET_LEDGER_PROMPT/);
+  assert.equal(events.every((event) => event.tool === "run_subagent"), true);
+  assert.equal(
+    events
+      .filter((event) => event.event === "call_started")
+      .every((event) => Array.isArray(event.argument_shape?.keys)),
+    true,
+  );
 });
 
 test("observed campaign harness preserves child command exit code", async () => {
@@ -116,6 +225,7 @@ test("observed campaign harness preserves child command exit code", async () => 
   assert.equal(result.ok, false);
   assert.equal(result.code, 7);
   assert.equal(result.json?.campaign_id, "campaign.exit-7");
+  assert.equal(result.json?.evidence_class, "campaign-scoped");
   assert.equal(result.json?.command_exit_code, 7);
 });
 
@@ -168,6 +278,7 @@ test("observed campaign harness can archive the campaign ledger", async () => {
   assert.ok(result.json);
   const summary = result.json;
   assert.equal(summary.archive?.ok, true);
+  assert.equal(summary.evidence_class, "campaign-scoped");
   assert.equal(summary.archive?.result?.archived, true);
   assert.equal(summary.archive?.result?.log_path, summary.failure_log_path);
   await assert.rejects(fs.stat(summary.failure_log_path), /ENOENT/);

@@ -38,35 +38,55 @@ async function runMigrate(configPath: string) {
   }
 }
 
-test("config:migrate rewrites known stale default_model aliases to canonical refs", async () => {
+test("config:migrate does not rewrite unsupported legacy model pairs", async () => {
   const { configPath } = await createConfigDir();
-  await fs.writeFile(
-    configPath,
-    `${JSON.stringify({
-      default_model: "anthropic/claude-sonnet-4.5",
-      default_thinking_level: "medium",
-      extra: "preserved",
-    })}\n`,
-    "utf8",
-  );
+  const original = `${JSON.stringify({
+    default_model: "anthropic/claude-sonnet-4.5",
+    default_thinking_level: "medium",
+    extra: "preserved",
+  })}\n`;
+  await fs.writeFile(configPath, original, "utf8");
+
+  const result = await runMigrate(configPath);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 1);
+  assert.equal(result.json.status, "unrepairable_model_class");
+  assert.equal(result.json.default_model, "anthropic/claude-sonnet-4.5");
+  assert.equal(result.json.default_thinking_level, "medium");
+  assert.equal(await fs.readFile(configPath, "utf8"), original);
+});
+
+test("config:migrate migrates legacy model and thinking defaults to model class", async () => {
+  const { configPath } = await createConfigDir();
+  const original = `${JSON.stringify({
+    default_model: "openrouter/deepseek/deepseek-v4-pro",
+    default_thinking_level: "high",
+    extra: "preserved",
+  }, null, 2)}\n`;
+  await fs.writeFile(configPath, original, "utf8");
 
   const result = await runMigrate(configPath);
 
   assert.equal(result.ok, true);
   assert.equal(result.json.status, "migrated");
-  assert.equal(result.json.from, "anthropic/claude-sonnet-4.5");
-  assert.equal(result.json.to, "openrouter/~anthropic/claude-sonnet-latest");
+  assert.deepEqual(result.json.from, {
+    default_model: "openrouter/deepseek/deepseek-v4-pro",
+    default_thinking_level: "high",
+  });
+  assert.equal(result.json.to, "C");
   const migrated = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<string, unknown>;
-  assert.equal(migrated.default_model, "openrouter/~anthropic/claude-sonnet-latest");
-  assert.equal(migrated.default_thinking_level, "medium");
+  assert.equal(migrated.default_model_class, "C");
+  assert.equal(migrated.default_model, undefined);
+  assert.equal(migrated.default_thinking_level, undefined);
   assert.equal(migrated.extra, "preserved");
 });
 
-test("config:migrate is idempotent for canonical configs", async () => {
+test("config:migrate is idempotent for canonical model class configs", async () => {
   const { configPath } = await createConfigDir();
   const original = `${JSON.stringify({
-    default_model: "openrouter/deepseek/deepseek-v4-pro",
-    default_thinking_level: "high",
+    default_model_class: "C",
+    extra: "preserved",
   }, null, 2)}\n`;
   await fs.writeFile(configPath, original, "utf8");
 
@@ -74,16 +94,16 @@ test("config:migrate is idempotent for canonical configs", async () => {
 
   assert.equal(result.ok, true);
   assert.equal(result.json.status, "unchanged");
+  assert.equal(result.json.default_model_class, "C");
   assert.equal(await fs.readFile(configPath, "utf8"), original);
 });
 
-test("config:migrate trims otherwise canonical default_model values", async () => {
+test("config:migrate trims otherwise canonical model class values", async () => {
   const { configPath } = await createConfigDir();
   await fs.writeFile(
     configPath,
     `${JSON.stringify({
-      default_model: " openrouter/deepseek/deepseek-v4-pro ",
-      default_thinking_level: "medium",
+      default_model_class: " C ",
     })}\n`,
     "utf8",
   );
@@ -92,10 +112,10 @@ test("config:migrate trims otherwise canonical default_model values", async () =
 
   assert.equal(result.ok, true);
   assert.equal(result.json.status, "migrated");
-  assert.equal(result.json.from, " openrouter/deepseek/deepseek-v4-pro ");
-  assert.equal(result.json.to, "openrouter/deepseek/deepseek-v4-pro");
+  assert.equal(result.json.from, " C ");
+  assert.equal(result.json.to, "C");
   const migrated = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<string, unknown>;
-  assert.equal(migrated.default_model, "openrouter/deepseek/deepseek-v4-pro");
+  assert.equal(migrated.default_model_class, "C");
 });
 
 test("config:migrate does not silently rewrite unsupported models", async () => {
@@ -110,7 +130,7 @@ test("config:migrate does not silently rewrite unsupported models", async () => 
 
   assert.equal(result.ok, false);
   assert.equal(result.code, 1);
-  assert.equal(result.json.status, "unrepairable_model");
+  assert.equal(result.json.status, "unrepairable_model_class");
   assert.equal(await fs.readFile(configPath, "utf8"), original);
 });
 

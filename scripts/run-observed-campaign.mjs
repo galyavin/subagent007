@@ -162,11 +162,16 @@ const failureLogPath = parsed.options.failureLogPath
   ? path.resolve(parsed.options.failureLogPath)
   : path.join(stateRoot, "failures.jsonl");
 await fs.mkdir(path.dirname(failureLogPath), { recursive: true });
+const campaignLedgerPath = process.env.SUBAGENT007_CAMPAIGN_LEDGER_PATH
+  ? path.resolve(process.env.SUBAGENT007_CAMPAIGN_LEDGER_PATH)
+  : path.join(stateRoot, "campaign-ledger.jsonl");
+await fs.mkdir(path.dirname(campaignLedgerPath), { recursive: true });
 
 const campaignEnv = {
   ...process.env,
   SUBAGENT007_CAMPAIGN_ID: parsed.options.campaignId,
   SUBAGENT007_FAILURE_LOG_PATH: failureLogPath,
+  SUBAGENT007_CAMPAIGN_LEDGER_PATH: campaignLedgerPath,
   SUBAGENT007_RUNS_DIR: path.join(stateRoot, "runs"),
   SUBAGENT007_RUN_TASKS_DIR: path.join(stateRoot, "run-tasks"),
   SUBAGENT007_INPUT_REQUESTS_DIR: path.join(stateRoot, "input-requests"),
@@ -189,8 +194,10 @@ if (parsed.options.archive) {
 console.log(JSON.stringify(
   {
     campaign_id: parsed.options.campaignId,
+    evidence_class: "campaign-scoped",
     state_root: stateRoot,
     failure_log_path: failureLogPath,
+    campaign_ledger_path: campaignLedgerPath,
     runs_dir: campaignEnv.SUBAGENT007_RUNS_DIR,
     run_tasks_dir: campaignEnv.SUBAGENT007_RUN_TASKS_DIR,
     input_requests_dir: campaignEnv.SUBAGENT007_INPUT_REQUESTS_DIR,

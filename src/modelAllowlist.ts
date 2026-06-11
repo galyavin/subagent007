@@ -1,19 +1,15 @@
-import { ValidationError } from "./types.js";
+import { MODEL_CLASSES, ValidationError, type ModelClass, type ThinkingLevel } from "./types.js";
 
 export const KNOWN_MODEL_PROVIDERS = ["openai-codex", "ollama", "openrouter"] as const;
 export type KnownModelProvider = (typeof KNOWN_MODEL_PROVIDERS)[number];
 
 export const OPENAI_CODEX_GPT54_PLUS_REF = "openai-codex/gpt-5.4+";
-export const SUGGESTED_DEFAULT_MODEL_REF = "openai-codex/gpt-5.4-mini";
 export const OPENAI_CODEX_MIN_GPT5_MINOR = 4;
 
 export const CURATED_EXACT_MODEL_REFS = [
   "ollama/gemma4:12b",
   "openrouter/deepseek/deepseek-v4-flash",
   "openrouter/deepseek/deepseek-v4-pro",
-  "openrouter/~anthropic/claude-sonnet-latest",
-  "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
-  "openrouter/moonshotai/kimi-k2.6",
 ] as const;
 
 export function modelPatternChoices(): string[] {
@@ -24,8 +20,75 @@ export function exactModelChoices(): string[] {
   return [...CURATED_EXACT_MODEL_REFS];
 }
 
-export function allowedModelChoices(): string[] {
-  return [...modelPatternChoices(), ...exactModelChoices()];
+export const DEFAULT_MODEL_CLASS: ModelClass = "C";
+
+export const MODEL_CLASS_CALIBRATIONS: Record<ModelClass, {
+  model: string;
+  thinkingLevel: ThinkingLevel;
+  description: string;
+}> = {
+  A: {
+    model: "ollama/gemma4:12b",
+    thinkingLevel: "high",
+    description: "Simplest mechanistic tasks with low abstraction and low technical difficulty.",
+  },
+  B: {
+    model: "openrouter/deepseek/deepseek-v4-flash",
+    thinkingLevel: "high",
+    description: "Simple coding, review, or search tasks with limited ambiguity.",
+  },
+  C: {
+    model: "openrouter/deepseek/deepseek-v4-pro",
+    thinkingLevel: "high",
+    description: "Default class for ordinary software engineering and technical reasoning.",
+  },
+  D: {
+    model: "openai-codex/gpt-5.5",
+    thinkingLevel: "high",
+    description: "Complex multi-file debugging, planning, synthesis, and high-abstraction work.",
+  },
+  E: {
+    model: "openai-codex/gpt-5.5",
+    thinkingLevel: "xhigh",
+    description: "Highest-abstraction, highest-difficulty work requiring the deepest technical judgment.",
+  },
+};
+
+export function modelClassChoices(): ModelClass[] {
+  return [...MODEL_CLASSES];
+}
+
+export function resolveModelClass(modelClass: ModelClass): {
+  model: string;
+  thinkingLevel: ThinkingLevel;
+} {
+  const calibration = MODEL_CLASS_CALIBRATIONS[modelClass];
+  return {
+    model: resolveAllowedModelRef(calibration.model),
+    thinkingLevel: calibration.thinkingLevel,
+  };
+}
+
+export function modelClassForResolvedPair(
+  modelRef: string,
+  thinkingLevel: ThinkingLevel,
+): ModelClass | null {
+  let resolvedModel: string;
+  try {
+    resolvedModel = resolveAllowedModelRef(modelRef);
+  } catch {
+    return null;
+  }
+  for (const modelClass of modelClassChoices()) {
+    const calibration = MODEL_CLASS_CALIBRATIONS[modelClass];
+    if (
+      resolveAllowedModelRef(calibration.model) === resolvedModel &&
+      calibration.thinkingLevel === thinkingLevel
+    ) {
+      return modelClass;
+    }
+  }
+  return null;
 }
 
 export function formatAllowedModelChoices(): string {
@@ -59,7 +122,7 @@ export function isOpenAICodexGpt54OrNewerModelId(modelId: string): boolean {
 }
 
 function canonicalAllowedModelRef(modelRef: string): string | null {
-  const { provider, model } = splitKnownProviderModelRef(repairKnownModelAlias(modelRef));
+  const { provider, model } = splitKnownProviderModelRef(modelRef);
   if ((provider === undefined || provider === "openai-codex") && isOpenAICodexGpt54OrNewerModelId(model)) {
     return `openai-codex/${model}`;
   }
@@ -72,21 +135,6 @@ function canonicalAllowedModelRef(modelRef: string): string | null {
   }
 
   return null;
-}
-
-export function isAllowedModelRef(modelRef: string): boolean {
-  return canonicalAllowedModelRef(modelRef) !== null;
-}
-
-export function repairKnownModelAlias(modelRef: string): string {
-  const normalized = normalizeModelRef(modelRef);
-  if (
-    normalized === "openrouter/anthropic/claude-sonnet-4.5" ||
-    normalized === "anthropic/claude-sonnet-4.5"
-  ) {
-    return "openrouter/~anthropic/claude-sonnet-latest";
-  }
-  return modelRef.trim();
 }
 
 export function resolveAllowedModelRef(modelRef: string): string {
