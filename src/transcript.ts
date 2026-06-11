@@ -1,3 +1,5 @@
+import type { RunPublicEventKind } from "./types.js";
+
 const DEFAULT_MAX_TRANSCRIPT_BYTES = 256 * 1024;
 
 function maxTranscriptBytes(): number {
@@ -24,11 +26,9 @@ function textPartsFromContent(content: unknown): string[] {
     .filter((text) => text.trim() !== "");
 }
 
-type PublicLineKind = "user" | "assistant" | "warning" | "error" | "marker";
-
-interface PublicLine {
+export interface PublicOutputLine {
   text: string;
-  kind: PublicLineKind;
+  kind: RunPublicEventKind;
 }
 
 export interface PublicTranscript {
@@ -66,7 +66,7 @@ export function publicTranscriptContentFlags(text: string): Omit<PublicTranscrip
   };
 }
 
-function eventMessageLine(event: Record<string, unknown>): PublicLine | null {
+function eventMessageLine(event: Record<string, unknown>): PublicOutputLine | null {
   const message = event.message;
   if (typeof message !== "object" || message === null) {
     return null;
@@ -85,7 +85,7 @@ function eventMessageLine(event: Record<string, unknown>): PublicLine | null {
   };
 }
 
-function publicLineForEvent(event: Record<string, unknown>): PublicLine | null {
+function publicLineForEvent(event: Record<string, unknown>): PublicOutputLine | null {
   switch (event.type) {
     case "subagent007.error": {
       const error = typeof event.error === "string" ? event.error : "unknown error";
@@ -102,7 +102,7 @@ function publicLineForEvent(event: Record<string, unknown>): PublicLine | null {
   }
 }
 
-function publicMarkerLine(line: string): PublicLine | null {
+function publicMarkerLine(line: string): PublicOutputLine | null {
   const trimmed = line.trim();
   return trimmed.startsWith("[subagent007 timeout]") || trimmed === "[subagent007 cancelled]"
     ? { text: trimmed, kind: "marker" }
@@ -120,7 +120,7 @@ function truncateUtf8(value: string, maxBytes: number): string {
 }
 
 export function preparePublicTranscriptFromProcessOutput(rawOutput: string): PublicTranscript {
-  const publicLines: PublicLine[] = [];
+  const publicLines: PublicOutputLine[] = [];
   const rawLines: string[] = [];
   let sawStructuredEvent = false;
 
@@ -167,4 +167,23 @@ export function preparePublicTranscriptFromProcessOutput(rawOutput: string): Pub
 
 export function publicTranscriptFromProcessOutput(rawOutput: string): string {
   return preparePublicTranscriptFromProcessOutput(rawOutput).text;
+}
+
+export function publicOutputLineFromProcessLine(line: string): PublicOutputLine | null {
+  const markerLine = publicMarkerLine(line);
+  if (markerLine) {
+    return markerLine;
+  }
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("{")) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    return typeof parsed === "object" && parsed !== null
+      ? publicLineForEvent(parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
 }

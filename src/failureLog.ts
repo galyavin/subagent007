@@ -8,6 +8,7 @@ import { ValidationError } from "./types.js";
 export type FailureLogTool =
   | "run_subagent"
   | "run_subagent_session"
+  | "start_session_run"
   | "start_run"
   | "list_model_classes"
   | "list_allowed_models"
@@ -51,6 +52,7 @@ export type FailureReasonCode =
   | "packet_required_missing"
   | "prompt_missing"
   | "raw_session_id_unsupported"
+  | "run_subagent_incompatible_workload"
   | "run_subagent_timeout_unsupported"
   | "session_already_exists"
   | "session_already_running"
@@ -238,6 +240,9 @@ export function failureReasonCodeForError(error: unknown): FailureReasonCode {
   if (message.includes("timeout_ms must be a positive integer")) return "invalid_timeout_ms";
   if (message.includes("timeout_ms is not supported by run_subagent")) {
     return "run_subagent_timeout_unsupported";
+  }
+  if (message.includes("incompatible with run_subagent's quick_noninteractive contract")) {
+    return "run_subagent_incompatible_workload";
   }
   if (message.includes("skill must") || message.includes("skill_name") || message.includes("skill invocation syntax")) {
     return "invalid_skill";

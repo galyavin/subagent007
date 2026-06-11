@@ -27,6 +27,32 @@ const PROMPT_SKILL_INVOCATION_PATTERNS = [
   /^\[\$[A-Za-z0-9][A-Za-z0-9_-]*(?::[A-Za-z0-9][A-Za-z0-9_-]*)?\]\([^)]+\)/,
   /^(?:use|run|invoke)\s+\$[A-Za-z0-9][A-Za-z0-9_-]*(?::[A-Za-z0-9][A-Za-z0-9_-]*)?(?:\b|\s|$)/i,
 ];
+const ONE_SHOT_MAX_PROMPT_CHARS = 6000;
+const ONE_SHOT_BROAD_WORK_PATTERNS = [
+  /\bHORCs?\b/i,
+  /\bSAFs?\b/i,
+  /\bhighest-order root cause\b/i,
+  /\bsupreme atomic fix\b/i,
+  /\bcampaign\b/i,
+  /\bobserved real use trials?\b/i,
+  /\bimplementation plan\b/i,
+  /\breview the repo\b/i,
+  /\baudit\b/i,
+  /\bsynthesize\b/i,
+  /\binvestigate\b/i,
+  /\bstress-?test\b/i,
+];
+const ONE_SHOT_WRITE_WORK_PATTERNS = [
+  /\bimplement\b/i,
+  /\brepair\b/i,
+  /\bmodify\b/i,
+  /\bwrite\b/i,
+  /\bedit\b/i,
+  /\brefactor\b/i,
+  /\bfix\b/i,
+];
+const ONE_SHOT_GUIDANCE =
+  "This request is incompatible with run_subagent's quick_noninteractive contract; use start_run with explicit timeout_ms for broad, exploratory, skill-bound, cancellable, polling, or long-running work.";
 
 function trimOptional(value: unknown, key: string): string | undefined {
   if (value === undefined) {
@@ -248,4 +274,38 @@ export async function validateAndResolveRequest(
     outputMode: validateOutputMode(request.output_mode),
     toolProfile: validateToolProfile(request.tool_profile),
   };
+}
+
+function oneShotIncompatibilityReason(
+  request: RunSubagentRequest,
+  resolved: ResolvedRunSubagentRequest,
+): string | null {
+  if (resolved.skill) {
+    return "skill-bound work needs a durable, pollable run";
+  }
+  if (resolved.prompt.length > ONE_SHOT_MAX_PROMPT_CHARS) {
+    return `prompt exceeds ${ONE_SHOT_MAX_PROMPT_CHARS} characters`;
+  }
+  const firstBroadPattern = ONE_SHOT_BROAD_WORK_PATTERNS.find((pattern) => pattern.test(resolved.prompt));
+  if (firstBroadPattern) {
+    return "prompt asks for broad, exploratory, or synthesis work";
+  }
+  if (
+    request.tool_profile === "workspace_write" &&
+    ONE_SHOT_WRITE_WORK_PATTERNS.some((pattern) => pattern.test(resolved.prompt))
+  ) {
+    return "workspace_write work should be durable and cancellable";
+  }
+  return null;
+}
+
+export function assertRunSubagentOneShotCompatible(
+  request: RunSubagentRequest,
+  resolved: ResolvedRunSubagentRequest,
+): void {
+  const reason = oneShotIncompatibilityReason(request, resolved);
+  if (!reason) {
+    return;
+  }
+  throw new ValidationError(`${ONE_SHOT_GUIDANCE} Reason: ${reason}.`);
 }

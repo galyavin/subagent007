@@ -33,6 +33,8 @@ type RunSubagentMetadata = {
   last_progress_at?: string;
   last_progress_message?: string;
   heartbeat_count?: number;
+  recent_events?: Array<{ kind: string; text: string; occurred_at: string }>;
+  last_public_output_excerpt?: string;
 };
 
 async function connectFakeClient<T>(
@@ -439,9 +441,15 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     const response = await client.listTools();
     const names = response.tools.map((tool) => tool.name);
     assert.deepEqual(
-      ["start_run", "get_run", "answer_run_input", "cancel_run", "run_subagent", "run_subagent_session"].every((name) =>
-        names.includes(name),
-      ),
+      [
+        "start_run",
+        "get_run",
+        "answer_run_input",
+        "cancel_run",
+        "run_subagent",
+        "start_session_run",
+        "run_subagent_session",
+      ].every((name) => names.includes(name)),
       true,
     );
     assert.equal(names.includes("list_model_classes"), true);
@@ -695,7 +703,6 @@ test("MCP run_subagent uses the configured fake Pi child", async () => {
         cwd: projectDir,
         prompt: "FAST",
         run_kind: "quick_noninteractive",
-        skill_name: "pda-lite",
       },
     });
     assert.notEqual(response.isError, true);
@@ -707,8 +714,29 @@ test("MCP run_subagent uses the configured fake Pi child", async () => {
     const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
     assert.equal(logs[0].request.model, "openrouter/deepseek/deepseek-v4-pro");
     assert.equal(logs[0].request.thinkingLevel, "high");
-    assert.equal(logs[0].request.skill, "pda-lite");
+    assert.equal(logs[0].request.skill, undefined);
     assert.equal(logs[0].request.toolProfile, "inspect");
+  });
+});
+
+test("MCP run_subagent rejects skill-bound one-shot work before invoking the child", async () => {
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    const response = await client.callTool({
+      name: "run_subagent",
+      arguments: {
+        cwd: projectDir,
+        prompt: "FAST",
+        run_kind: "quick_noninteractive",
+        skill_name: "pda-lite",
+      },
+    });
+    assert.equal(response.isError, true);
+    const content = response.content as Array<{ type: string; text?: string }>;
+    assert.match(
+      content[0]?.type === "text" ? (content[0].text ?? "") : "",
+      /incompatible with run_subagent's quick_noninteractive contract/,
+    );
+    await assert.rejects(fs.stat(fakeLogPath), /ENOENT/);
   });
 });
 
@@ -822,6 +850,26 @@ test("MCP run_subagent fails fast for known unhealthy one-shot model class", asy
   });
 });
 
+test("MCP run_subagent rejects broad analysis prompts before invoking the child", async () => {
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    const response = await client.callTool({
+      name: "run_subagent",
+      arguments: {
+        cwd: projectDir,
+        prompt: "Investigate the HORCs and SAFs across this repo and produce an implementation plan.",
+        run_kind: "quick_noninteractive",
+      },
+    });
+    assert.equal(response.isError, true);
+    const content = response.content as Array<{ type: string; text?: string }>;
+    assert.match(
+      content[0]?.type === "text" ? (content[0].text ?? "") : "",
+      /use start_run with explicit timeout_ms/,
+    );
+    await assert.rejects(fs.stat(fakeLogPath), /ENOENT/);
+  });
+});
+
 test("MCP start_run/get_run completes asynchronously with the same child contract", async () => {
   await connectFakeClient(async (client, { projectDir }) => {
     const startedResponse = await client.callTool({
@@ -917,6 +965,115 @@ test("MCP start_run/get_run exposes active liveness and pending-input progress",
       },
     },
   );
+});
+
+test("MCP start_run/get_run exposes sanitized active public events", async () => {
+  await connectFakeClient(async (client, { projectDir }) => {
+    const startedResponse = await client.callTool({
+      name: "start_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "TIMEOUT_ASSISTANT_EVENT",
+      },
+    });
+    assert.notEqual(startedResponse.isError, true);
+    const started = startedResponse.structuredContent as RunSubagentMetadata;
+
+    const deadline = Date.now() + 2000;
+    let eventView: RunSubagentMetadata | undefined;
+    while (Date.now() < deadline) {
+      const response = await client.callTool({
+        name: "get_run",
+        arguments: { run_id: started.run_id },
+      });
+      assert.notEqual(response.isError, true);
+      const metadata = response.structuredContent as RunSubagentMetadata;
+      if (metadata.recent_events?.some((event) => /PUBLIC PARTIAL ASSISTANT/.test(event.text))) {
+        eventView = metadata;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    assert.ok(eventView);
+    assert.match(eventView.last_public_output_excerpt ?? "", /PUBLIC PARTIAL ASSISTANT/);
+    assert.doesNotMatch(JSON.stringify(eventView.recent_events), /thinking_delta|SECRET_THINKING/);
+    await client.callTool({ name: "cancel_run", arguments: { run_id: started.run_id } });
+  });
+});
+
+test("MCP start_session_run returns a durable pollable named-session task", async () => {
+  await connectFakeClient(async (client, { projectDir }) => {
+    const startedResponse = await client.callTool({
+      name: "start_session_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "PACKET_VALID",
+        session_key: "mcp-session:T001",
+        resume_mode: "new",
+        packet_policy: "required",
+      },
+    });
+    assert.notEqual(startedResponse.isError, true);
+    const started = startedResponse.structuredContent as RunSubagentMetadata & {
+      task_kind?: string;
+      session_key?: string;
+      packet_parse_status?: string;
+    };
+    assert.equal(started.task_kind, "session");
+    assert.equal(started.session_key, "mcp-session:T001");
+
+    const terminal = await waitForTerminalRun(client, started.run_id) as RunSubagentMetadata & {
+      task_kind?: string;
+      session_key?: string;
+      packet_parse_status?: string;
+      run_record?: { success: boolean };
+    };
+    assert.equal(terminal.task_kind, "session");
+    assert.equal(terminal.status, "completed");
+    assert.equal(terminal.success, true);
+    assert.equal(terminal.session_key, "mcp-session:T001");
+    assert.equal(terminal.packet_parse_status, "valid");
+    assert.equal(terminal.run_record?.success, true);
+  });
+});
+
+test("MCP start_session_run rejects invalid session input before creating a task", async () => {
+  await connectFakeClient(async (client, { projectDir }) => {
+    const response = await client.callTool({
+      name: "start_session_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "FAST",
+        session_key: "bad key with spaces",
+      },
+    });
+    assert.equal(response.isError, true);
+    const content = response.content as Array<{ type: string; text?: string }>;
+    assert.match(
+      content[0]?.type === "text" ? (content[0].text ?? "") : "",
+      /session_key must start with an ASCII letter or digit/,
+    );
+  });
+});
+
+test("MCP run_subagent_session preserves handler validation errors in compatibility mode", async () => {
+  await connectFakeClient(async (client, { projectDir }) => {
+    const response = await client.callTool({
+      name: "run_subagent_session",
+      arguments: {
+        cwd: projectDir,
+        prompt: "FAST",
+        session_key: "bad key with spaces",
+      },
+    });
+    assert.equal(response.isError, true);
+    const content = response.content as Array<{ type: string; text?: string }>;
+    assert.match(
+      content[0]?.type === "text" ? (content[0].text ?? "") : "",
+      /session_key must start with an ASCII letter or digit/,
+    );
+  });
 });
 
 test("get_run can read a completed run snapshot after MCP server restart", async () => {

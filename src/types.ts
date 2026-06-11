@@ -175,6 +175,14 @@ export interface RunSubagentSessionResult extends SubagentRunResultBase {
   thinking_level_changed_from_manifest: boolean;
 }
 
+export type RunPublicEventKind = "user" | "assistant" | "warning" | "error" | "marker" | "input";
+
+export interface RunPublicEvent {
+  kind: RunPublicEventKind;
+  text: string;
+  occurred_at: string;
+}
+
 export interface ContractPacketFinding {
   severity: "high" | "medium" | "low";
   claim: string;

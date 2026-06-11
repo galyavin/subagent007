@@ -22,11 +22,12 @@ import {
   answerRunTaskInput,
   cancelRunTask,
   getRunTask,
+  runSubagentSessionTaskAndWait,
   runSubagentOneShotTask,
+  startSessionRunTask,
   startRunTask,
 } from "./runTask.js";
 import { SERVER_VERSION } from "./runtimeMetadata.js";
-import { runSubagentSession } from "./session.js";
 import {
   OUTPUT_MODES,
   MODEL_CLASSES,
@@ -240,7 +241,7 @@ server.registerTool(
   {
     title: "Get Run",
     description:
-      "Read the current status, pending input requests, and terminal result for a durable run created by run_subagent or start_run.",
+      "Read the current status, pending input requests, and terminal result for a durable run created by run_subagent, start_run, start_session_run, or run_subagent_session.",
     inputSchema: {
       run_id: z.string().min(1),
     },
@@ -306,6 +307,23 @@ server.registerTool(
 );
 
 server.registerTool(
+  "start_session_run",
+  {
+    title: "Start Session Run",
+    description:
+      "Start or resume a named persistent Pi-backed subagent session as a durable, pollable task.",
+    inputSchema: runSessionInputSchema,
+  },
+  withFailureLogging("start_session_run", async (request, extra) => {
+    const result = await startSessionRunTask(request, {
+      heartbeat: heartbeatFromExtra(extra),
+      heartbeatIntervalMs: heartbeatIntervalMsFromEnv(),
+    });
+    return jsonToolResult(result, { ...result });
+  }),
+);
+
+server.registerTool(
   "run_subagent_session",
   {
     title: "Run Subagent Session",
@@ -314,7 +332,7 @@ server.registerTool(
     inputSchema: runSessionInputSchema,
   },
   withFailureLogging("run_subagent_session", async (request, extra) => {
-    const result = await runSubagentSession(request, {
+    const result = await runSubagentSessionTaskAndWait(request, {
       heartbeat: heartbeatFromExtra(extra),
       heartbeatIntervalMs: heartbeatIntervalMsFromEnv(),
     });

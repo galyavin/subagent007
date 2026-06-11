@@ -343,6 +343,27 @@ test("run_subagent_session recovers only definitely stale local locks", async ()
         ),
         /session is already running/,
       );
+      await fs.writeFile(
+        lockPath,
+        `${JSON.stringify({
+          pid: process.pid,
+          hostname: os.hostname(),
+          created_at: new Date(Date.now() - 60_000).toISOString(),
+          task_id: "expired-task",
+          owner_id: "expired-owner",
+          lease_expires_at: new Date(Date.now() - 1_000).toISOString(),
+        })}\n`,
+      );
+      const recoveredExpiredLease = await runSubagentSession(
+        {
+          cwd: fixture.projectDir,
+          prompt: "FAST",
+          session_key: "coherent-execution:T005",
+          model_class: "C",
+        },
+        { sessionsDir: fixture.sessionsDir },
+      );
+      assert.equal(recoveredExpiredLease.success, true);
       await fs.rm(lockPath, { force: true });
     },
   );

@@ -4,11 +4,12 @@ type: feat
 date: 2026-06-11
 status: implemented
 origin: reports/full-coherent-revised-saf-set-2026-06-11.md
+superseded_by: docs/plans/current-coherent-revised-saf-implementation-plan-2026-06-11.md
 ---
 
 # Coherent Revised SAF Implementation Plan
 
-Status note: this plan has been implemented in the current worktree. It remains as traceability for the repaired June 11 SAF set, not as an open task list.
+Status note: this plan has been implemented in the current worktree. Its named-session task boundary was later superseded by `docs/plans/current-coherent-revised-saf-implementation-plan-2026-06-11.md`, which made named sessions durable and pollable. This file remains as traceability for the earlier repaired June 11 SAF set, not as an open task list or current architecture contract.
 
 ## Summary
 
@@ -92,7 +93,7 @@ flowchart TB
   G --> K["Archive/readers with calibration era"]
 ```
 
-The key separation is between the durable public lifecycle wrapper and the core child execution primitive. `start_run` and public `run_subagent` share task snapshot semantics; `run_subagent_session` continues to call core child execution so packet-gated session attempts do not become nested public tasks.
+The key separation in this earlier plan was between the durable public lifecycle wrapper and the core child execution primitive. `start_run` and public `run_subagent` shared task snapshot semantics while `run_subagent_session` stayed on the core path. That named-session boundary is superseded by the current plan: `run_subagent_session` now acts as a compatibility wrapper around the durable session task lifecycle, while packet-gated candidate-session promotion remains protected inside the session executor.
 
 ---
 
@@ -146,7 +147,7 @@ The key separation is between the durable public lifecycle wrapper and the core 
   - `get_run` for that `run_id` after the `run_subagent` response returns the same terminal metadata.
   - A fake nonzero one-shot failure is logged once as `tool:"run_subagent"`.
   - A successful quick `run_subagent` result remains backward-compatible in structured fields.
-  - `run_subagent_session` still writes session ledgers without creating public run-task snapshots for candidate session attempts.
+  - Historical note: this plan originally kept `run_subagent_session` outside public run-task snapshots. The current architecture supersedes that by wrapping named sessions in durable session tasks while preserving candidate-attempt ledger and packet-promotion semantics.
 - **Verification:** Existing session tests must still pass, proving the core/public split did not contaminate named-session semantics.
 
 ### U3. Add One-Shot Model-Class Health Boundary

@@ -95,6 +95,25 @@ interface LockOwner {
   pid: number;
   hostname: string;
   created_at: string;
+  owner_id?: string;
+  task_id?: string;
+  lease_expires_at?: string;
+}
+
+interface SessionLock {
+  release: () => Promise<void>;
+  refresh: () => Promise<void>;
+}
+
+const DEFAULT_SESSION_LOCK_LEASE_MS = 30_000;
+
+function sessionLockLeaseMs(): number {
+  const raw = process.env.SUBAGENT007_SESSION_LOCK_LEASE_MS;
+  if (!raw || raw.trim() === "") {
+    return DEFAULT_SESSION_LOCK_LEASE_MS;
+  }
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : DEFAULT_SESSION_LOCK_LEASE_MS;
 }
 
 function validationSummary(error: z.ZodError): string {
@@ -146,6 +165,17 @@ function assertNoRawSessionId(request: RunSubagentSessionRequest): void {
   if ((request as { continuity?: unknown }).continuity !== undefined) {
     throw new ValidationError("continuity is not supported by run_subagent_session; use session_key and resume_mode");
   }
+}
+
+export async function validateRunSubagentSessionRequestPreflight(
+  request: RunSubagentSessionRequest,
+): Promise<void> {
+  assertNoRawSessionId(request);
+  validateSessionKey(request.session_key);
+  validateResumeMode(request.resume_mode);
+  validateSessionPacketPolicy(request.packet_policy);
+  const config = await loadConfig();
+  await validateAndResolveRequest(request, config);
 }
 
 function identityHash(cwd: string, sessionKey: string): string {
@@ -204,29 +234,60 @@ function isStaleLocalLock(owner: LockOwner | null): boolean {
   );
 }
 
-async function acquireLock(lockPath: string): Promise<() => Promise<void>> {
+function isExpiredLease(owner: LockOwner | null, now = Date.now()): boolean {
+  if (!owner?.lease_expires_at) {
+    return false;
+  }
+  const expiresAt = Date.parse(owner.lease_expires_at);
+  return Number.isFinite(expiresAt) && expiresAt <= now;
+}
+
+async function acquireLock(lockPath: string, taskId?: string): Promise<SessionLock> {
+  const ownerId = randomBytes(12).toString("hex");
+  const leaseMs = sessionLockLeaseMs();
   const owner: LockOwner = {
     pid: process.pid,
     hostname: os.hostname(),
     created_at: new Date().toISOString(),
+    owner_id: ownerId,
+    ...(taskId ? { task_id: taskId } : {}),
+    lease_expires_at: new Date(Date.now() + leaseMs).toISOString(),
+  };
+  const writeOwner = async (writeFlag: "wx" | "w") => {
+    owner.lease_expires_at = new Date(Date.now() + leaseMs).toISOString();
+    await fs.writeFile(lockPath, `${JSON.stringify(owner)}\n`, { encoding: "utf8", flag: writeFlag });
   };
   for (const staleRecoveryAttempt of [false, true]) {
     try {
-      await fs.writeFile(lockPath, `${JSON.stringify(owner)}\n`, { encoding: "utf8", flag: "wx" });
-      return async () => {
-        await fs.rm(lockPath, { force: true });
+      await writeOwner("wx");
+      return {
+        refresh: async () => {
+          const current = await readLockOwner(lockPath);
+          if (current?.owner_id !== ownerId) {
+            throw new ValidationError("session lock ownership was lost");
+          }
+          await writeOwner("w");
+        },
+        release: async () => {
+          const current = await readLockOwner(lockPath);
+          if (!current?.owner_id || current.owner_id === ownerId) {
+            await fs.rm(lockPath, { force: true });
+          }
+        },
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
         throw error;
       }
       const existingOwner = await readLockOwner(lockPath);
-      if (!staleRecoveryAttempt && isStaleLocalLock(existingOwner)) {
+      if (!staleRecoveryAttempt && (isStaleLocalLock(existingOwner) || isExpiredLease(existingOwner))) {
         await fs.rm(lockPath, { force: true });
         continue;
       }
       const ownerDescription = existingOwner
-        ? ` by pid ${existingOwner.pid} on ${existingOwner.hostname}`
+        ? ` by pid ${existingOwner.pid} on ${existingOwner.hostname}${
+            existingOwner.task_id ? ` for task ${existingOwner.task_id}` : ""
+          }`
         : "";
       throw new ValidationError(`session is already running${ownerDescription}`);
     }
@@ -455,7 +516,16 @@ async function promoteAttemptSession(options: {
 
 export async function runSubagentSession(
   request: RunSubagentSessionRequest,
-  options: { sessionsDir?: string; heartbeat?: HeartbeatNotify; heartbeatIntervalMs?: number } = {},
+  options: {
+    sessionsDir?: string;
+    heartbeat?: HeartbeatNotify;
+    heartbeatIntervalMs?: number;
+    abortSignal?: AbortSignal;
+    mailboxRoot?: string;
+    childRunId?: string;
+    taskId?: string;
+    onOutputLine?: (line: string) => void | Promise<void>;
+  } = {},
 ): Promise<RunSubagentSessionResult> {
   assertNoRawSessionId(request);
   const config = await loadConfig();
@@ -480,7 +550,12 @@ export async function runSubagentSession(
   const attemptsPath = path.join(sessionDir, "attempts.jsonl");
   const lockPath = path.join(sessionDir, "run.lock");
   await fs.mkdir(sessionDir, { recursive: true });
-  const releaseLock = await acquireLock(lockPath);
+  const sessionLock = await acquireLock(lockPath, options.taskId ?? options.childRunId);
+  const leaseRefreshInterval = setInterval(() => {
+    void sessionLock.refresh().catch(() => {
+      // The active run will fail if lock ownership loss affects the session write path.
+    });
+  }, Math.max(100, Math.floor(sessionLockLeaseMs() / 3)));
 
   try {
     let manifest = await readManifest(manifestPath);
@@ -497,15 +572,19 @@ export async function runSubagentSession(
     const startedAt = new Date().toISOString();
     const sequence = (manifest?.run_count ?? 0) + 1;
     const runId = `${String(sequence).padStart(4, "0")}-${randomBytes(6).toString("hex")}`;
+    const childRunId = options.childRunId ?? runId;
     const attemptSession = await prepareAttemptSession(sessionDir, runId, manifest);
     const runResult = await runSubagentCore(sessionRunRequest(resolved, attemptSession.runManifest), {
-      runId,
+      runId: childRunId,
+      mailboxRoot: options.mailboxRoot,
       runsDir: path.join(sessionDir, "runs"),
       suppressFailureLog: true,
       allowTimeout: true,
       piSessionDir: attemptSession.attemptPiSessionDir,
       heartbeat: options.heartbeat,
       heartbeatIntervalMs: options.heartbeatIntervalMs,
+      abortSignal: options.abortSignal,
+      onOutputLine: options.onOutputLine,
     });
     const outputText = await fs.readFile(runResult.output_path, "utf8");
     const attemptSubagentSessionId = attemptSession.runManifest?.subagent_session_id ?? runResult.session_id;
@@ -688,6 +767,7 @@ export async function runSubagentSession(
     }
     return result;
   } finally {
-    await releaseLock();
+    clearInterval(leaseRefreshInterval);
+    await sessionLock.release();
   }
 }

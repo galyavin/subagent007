@@ -188,6 +188,7 @@ export async function runSubagentCore(
     heartbeat?: HeartbeatNotify;
     heartbeatIntervalMs?: number;
     abortSignal?: AbortSignal;
+    onOutputLine?: (line: string) => void | Promise<void>;
   } = {},
 ): Promise<RunSubagentResult> {
   if (!options.allowTimeout && request.timeout_ms !== undefined) {
@@ -241,6 +242,7 @@ export async function runSubagentCore(
           }
         : undefined,
       abortSignal: options.abortSignal,
+      onOutputLine: options.onOutputLine,
     });
     const finalMessage = await readFinalMessage(finalMessageTarget.outputLastMessagePath);
     const writtenOutputMode: OutputMode = finalMessage ? "final" : "transcript";

@@ -169,6 +169,7 @@ test("observed MCP probe records call attempts and failure-log deltas", async ()
     argument_shape?: Record<string, unknown>;
     failure_classes?: string[];
     reason_codes?: string[];
+    evidence_class?: string;
   }>(result.json.campaign_ledger_path);
 
   for (const scenario of ["success", "schema-error", "handler-validation", "child-failure"]) {
@@ -208,6 +209,7 @@ test("observed MCP probe records call attempts and failure-log deltas", async ()
 
   assert.doesNotMatch(JSON.stringify(events), /SECRET_LEDGER_PROMPT/);
   assert.equal(events.every((event) => event.tool === "run_subagent"), true);
+  assert.equal(events.every((event) => event.evidence_class === "protocol-deterministic"), true);
   assert.equal(
     events
       .filter((event) => event.event === "call_started")
@@ -259,15 +261,19 @@ test("observed MCP probe reports bundled scenario coverage semantics", async () 
 
   const summary = JSON.parse(result.stdout) as {
     scenario_set: string;
+    mode: string;
     scenarios: string[];
     coverage_summary: {
       covered_surfaces: string[];
+      covered_surfaces_by_evidence_class: Record<string, string[]>;
       uncovered_surfaces: string[];
-      scenarios: Array<{ scenario: string; tool: string; surfaces: string[] }>;
+      scenarios: Array<{ scenario: string; tool: string; surfaces: string[]; evidence_class: string }>;
+      evidence_classes: string[];
     };
   };
 
   assert.equal(summary.scenario_set, "all-bundled");
+  assert.equal(summary.mode, "protocol-deterministic");
   assert.deepEqual(summary.scenarios.sort(), [
     "child-failure",
     "handler-validation",
@@ -276,10 +282,43 @@ test("observed MCP probe reports bundled scenario coverage semantics", async () 
     "success",
   ]);
   assert.ok(summary.coverage_summary.covered_surfaces.includes("run_subagent-success"));
+  assert.ok(summary.coverage_summary.covered_surfaces_by_evidence_class["protocol-deterministic"].includes("run_subagent-success"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("run_subagent_session-packet-failure"));
   assert.ok(summary.coverage_summary.uncovered_surfaces.includes("start_run-async-polling"));
   assert.ok(summary.coverage_summary.uncovered_surfaces.includes("installed-pi-integration"));
   assert.equal(summary.coverage_summary.scenarios.every((scenario) => scenario.tool.length > 0), true);
+  assert.deepEqual(summary.coverage_summary.evidence_classes, ["protocol-deterministic"]);
+  assert.equal(
+    summary.coverage_summary.scenarios.every((scenario) => scenario.evidence_class === "protocol-deterministic"),
+    true,
+  );
+});
+
+test("observed MCP probe separates live-model mode from deterministic-only scenarios", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-probe-live-mode-"));
+  const projectDir = path.join(tmp, "project");
+  await fs.mkdir(projectDir, { recursive: true });
+
+  await assert.rejects(
+    execFileAsync(
+      process.execPath,
+      [
+        probePath,
+        "--server",
+        path.resolve("dist/server.js"),
+        "--cwd",
+        projectDir,
+        "--mode",
+        "live-model",
+        "--scenario",
+        "child-failure",
+      ],
+      {
+        cwd: path.resolve("."),
+      },
+    ),
+    /deterministic-only scenarios/,
+  );
 });
 
 test("observed campaign harness preserves child command exit code", async () => {

@@ -14,6 +14,7 @@ interface ProcessRunOptions {
     message?: (beat: number) => string | undefined | Promise<string | undefined>;
     notify: HeartbeatNotify;
   };
+  onOutputLine?: (line: string) => void | Promise<void>;
 }
 
 interface ProcessRunResult {
@@ -36,6 +37,30 @@ function timeoutMarker(budget: TimeoutBudget): string {
 export function runChildProcess(options: ProcessRunOptions): Promise<ProcessRunResult> {
   const startedAt = Date.now();
   const chunks: Buffer[] = [];
+  let pendingLine = "";
+
+  const emitOutputLine = (line: string) => {
+    if (!options.onOutputLine) {
+      return;
+    }
+    try {
+      void Promise.resolve(options.onOutputLine(line)).catch(() => {
+        // Active output projection is best-effort and must not affect the child process.
+      });
+    } catch {
+      // Active output projection is best-effort and must not affect the child process.
+    }
+  };
+
+  const collectChunk = (chunk: Buffer) => {
+    chunks.push(chunk);
+    pendingLine += chunk.toString("utf8");
+    const lines = pendingLine.split(/\r?\n/);
+    pendingLine = lines.pop() ?? "";
+    for (const line of lines) {
+      emitOutputLine(line);
+    }
+  };
 
   return new Promise((resolve) => {
     const child = spawn(options.command, options.args, {
@@ -137,7 +162,11 @@ export function runChildProcess(options: ProcessRunOptions): Promise<ProcessRunR
     if (options.timeoutBudget.effectiveTimeoutMs !== null) {
       timeout = setTimeout(() => {
         timedOut = true;
-        chunks.push(Buffer.from(timeoutMarker(options.timeoutBudget)));
+        const marker = timeoutMarker(options.timeoutBudget);
+        chunks.push(Buffer.from(marker));
+        for (const line of marker.split(/\r?\n/)) {
+          emitOutputLine(line);
+        }
         signalChild("SIGTERM");
         killTimeout = setTimeout(() => {
           if (!closed) {
@@ -157,7 +186,11 @@ export function runChildProcess(options: ProcessRunOptions): Promise<ProcessRunR
         return;
       }
       cancelled = true;
-      chunks.push(Buffer.from("\n[subagent007 cancelled]\n"));
+      const marker = "\n[subagent007 cancelled]\n";
+      chunks.push(Buffer.from(marker));
+      for (const line of marker.split(/\r?\n/)) {
+        emitOutputLine(line);
+      }
       signalChild("SIGTERM");
       killTimeout = setTimeout(() => {
         if (!closed) {
@@ -183,14 +216,17 @@ export function runChildProcess(options: ProcessRunOptions): Promise<ProcessRunR
       );
     }
 
-    child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
-    child.stderr.on("data", (chunk: Buffer) => chunks.push(chunk));
+    child.stdout.on("data", collectChunk);
+    child.stderr.on("data", collectChunk);
     child.on("error", (error) => {
       spawnError = error;
       chunks.push(Buffer.from(`\n[spawn error] ${error.message}\n`));
     });
     child.on("close", (code) => {
       closed = true;
+      if (pendingLine.trim() !== "") {
+        emitOutputLine(pendingLine);
+      }
       finish(code);
     });
   });
