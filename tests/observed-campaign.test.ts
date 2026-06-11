@@ -165,7 +165,7 @@ test("observed MCP probe records call attempts and failure-log deltas", async ()
     call_id: string;
     scenario: string;
     tool: string;
-    result?: { success: boolean | null };
+    result?: { success: boolean | null; kind?: string | null; transcript_redacted?: boolean };
     argument_shape?: Record<string, unknown>;
     failure_classes?: string[];
     reason_codes?: string[];
@@ -180,15 +180,16 @@ test("observed MCP probe records call attempts and failure-log deltas", async ()
   assert.ok(schemaError);
   assert.equal(events.some((event) => event.event === "failure_log_delta" && event.call_id === schemaError.call_id), false);
 
-  const handlerError = events.find(
-    (event) => event.event === "call_handler_error" && event.scenario === "handler-validation",
+  const handlerRejection = events.find(
+    (event) => event.event === "call_preflight_rejected" && event.scenario === "handler-validation",
   );
-  assert.ok(handlerError);
+  assert.ok(handlerRejection);
+  assert.equal(handlerRejection.result?.kind, "preflight_rejected");
   assert.ok(
     events.some(
       (event) =>
         event.event === "failure_log_delta" &&
-        event.call_id === handlerError.call_id &&
+        event.call_id === handlerRejection.call_id &&
         event.reason_codes?.includes("cwd_not_absolute"),
     ),
   );
@@ -267,26 +268,46 @@ test("observed MCP probe reports bundled scenario coverage semantics", async () 
       covered_surfaces: string[];
       covered_surfaces_by_evidence_class: Record<string, string[]>;
       uncovered_surfaces: string[];
-      scenarios: Array<{ scenario: string; tool: string; surfaces: string[]; evidence_class: string }>;
+      missing_required_surfaces: string[];
+      scenarios: Array<{
+        scenario: string;
+        tool: string;
+        surfaces: string[];
+        evidence_class: string;
+        evidence_satisfied?: boolean;
+        observed_result?: { transcript_redacted?: boolean };
+      }>;
       evidence_classes: string[];
     };
   };
 
-  assert.equal(summary.scenario_set, "all-bundled");
+  assert.equal(summary.scenario_set, "protocol-core");
   assert.equal(summary.mode, "protocol-deterministic");
   assert.deepEqual(summary.scenarios.sort(), [
     "child-failure",
     "handler-validation",
+    "model-listing",
     "packet-failure",
     "schema-error",
-    "success",
-  ]);
+      "success",
+      "tool-listing",
+      "transcript-redaction",
+    ]);
   assert.ok(summary.coverage_summary.covered_surfaces.includes("run_subagent-success"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("tool-listing"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("model-class-listing"));
   assert.ok(summary.coverage_summary.covered_surfaces_by_evidence_class["protocol-deterministic"].includes("run_subagent-success"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("run_subagent_session-packet-failure"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("transcript-redaction"));
   assert.ok(summary.coverage_summary.uncovered_surfaces.includes("start_run-async-polling"));
   assert.ok(summary.coverage_summary.uncovered_surfaces.includes("installed-pi-integration"));
+  assert.deepEqual(summary.coverage_summary.missing_required_surfaces, []);
   assert.equal(summary.coverage_summary.scenarios.every((scenario) => scenario.tool.length > 0), true);
+  const redactionScenario = summary.coverage_summary.scenarios.find((scenario) =>
+    scenario.scenario === "transcript-redaction"
+  );
+  assert.equal(redactionScenario?.evidence_satisfied, true);
+  assert.equal(redactionScenario?.observed_result?.transcript_redacted, true);
   assert.deepEqual(summary.coverage_summary.evidence_classes, ["protocol-deterministic"]);
   assert.equal(
     summary.coverage_summary.scenarios.every((scenario) => scenario.evidence_class === "protocol-deterministic"),
@@ -318,6 +339,100 @@ test("observed MCP probe separates live-model mode from deterministic-only scena
       },
     ),
     /deterministic-only scenarios/,
+  );
+});
+
+test("observed MCP probe self-check fails when manifest omits a SAF-required surface", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-probe-manifest-"));
+  const manifestPath = path.join(tmp, "bad-manifest.json");
+  await fs.writeFile(
+    manifestPath,
+    JSON.stringify({
+      saf_required_surfaces: ["missing-surface"],
+      surfaces: {},
+      scenarios: {},
+      profiles: {},
+      aliases: {},
+    }),
+  );
+
+  await assert.rejects(
+    execFileAsync(
+      process.execPath,
+      [probePath, "--help"],
+      {
+        cwd: path.resolve("."),
+        env: {
+          ...process.env,
+          SUBAGENT007_COVERAGE_MANIFEST_PATH: manifestPath,
+        },
+      },
+    ),
+    /coverage manifest omits SAF-required surfaces/,
+  );
+});
+
+test("observed MCP probe fails required coverage when selected scenario has wrong result class", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-probe-wrong-result-"));
+  const projectDir = path.join(tmp, "project");
+  const stateDir = path.join(tmp, "state");
+  const configPath = path.join(stateDir, "config.json");
+  const manifestPath = path.join(tmp, "wrong-result-manifest.json");
+  await fs.mkdir(projectDir, { recursive: true });
+  await fs.mkdir(stateDir, { recursive: true });
+  await fs.writeFile(configPath, JSON.stringify({ default_model_class: "C" }));
+  await fs.writeFile(
+    manifestPath,
+    JSON.stringify({
+      saf_required_surfaces: ["run_subagent-success"],
+      surfaces: {
+        "run_subagent-success": { evidence_classes: ["protocol-deterministic"] },
+      },
+      scenarios: {
+        "schema-error": {
+          tool: "run_subagent",
+          lifecycle_phases: ["sdk-schema-validation"],
+          result_classes: ["success"],
+          surfaces: ["run_subagent-success"],
+        },
+      },
+      profiles: {
+        "protocol-core": {
+          mode: "protocol-deterministic",
+          scenarios: ["schema-error"],
+          required_surfaces: ["run_subagent-success"],
+        },
+      },
+      aliases: {},
+    }),
+  );
+
+  await assert.rejects(
+    execFileAsync(
+      process.execPath,
+      [
+        probePath,
+        "--server",
+        path.resolve("dist/server.js"),
+        "--cwd",
+        projectDir,
+        "--profile",
+        "protocol-core",
+      ],
+      {
+        cwd: path.resolve("."),
+        env: {
+          ...process.env,
+          SUBAGENT007_CONFIG_PATH: configPath,
+          SUBAGENT007_COVERAGE_MANIFEST_PATH: manifestPath,
+          SUBAGENT007_FAILURE_LOG_PATH: path.join(stateDir, "failures.jsonl"),
+          SUBAGENT007_CAMPAIGN_LEDGER_PATH: path.join(stateDir, "campaign-ledger.jsonl"),
+          SUBAGENT007_RECORD_SOURCE: "test",
+        },
+        maxBuffer: 8 * 1024 * 1024,
+      },
+    ),
+    /missing required coverage surfaces: run_subagent-success/,
   );
 });
 

@@ -173,7 +173,8 @@ test("handler-level validation failures are logged without prompt text", async (
       },
     });
 
-    assert.equal(response.isError, true);
+    assert.notEqual(response.isError, true);
+    assert.equal((response.structuredContent as { kind?: string }).kind, "preflight_rejected");
     const failures = await readJsonl<FailureRecord>(failureLogPath);
     assert.equal(failures.length, 1);
     assert.equal(failures[0].tool, "run_subagent");

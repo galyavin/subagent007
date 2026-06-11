@@ -19,6 +19,12 @@ import {
   validateRunSubagentSessionRequestPreflight,
 } from "./session.js";
 import { DEFAULT_HEARTBEAT_MESSAGE, type HeartbeatNotify } from "./progress.js";
+import {
+  appendRunPublicEvent,
+  publicOutputExcerptProjection,
+  readRunPublicEvents,
+  recentEventsProjection,
+} from "./runEvents.js";
 import { publicOutputLineFromProcessLine } from "./transcript.js";
 import type {
   RunPublicEvent,
@@ -85,8 +91,6 @@ interface RunTaskState {
 }
 
 const tasks = new Map<string, RunTaskState>();
-const MAX_RECENT_EVENTS = 25;
-const MAX_PUBLIC_OUTPUT_EXCERPT_CHARS = 1000;
 
 function defaultRunTasksDir(): string {
   return defaultSubagentStatePath("SUBAGENT007_RUN_TASKS_DIR", "run-tasks");
@@ -130,7 +134,7 @@ async function taskInputRequests(state: RunTaskState): Promise<InputRequestView[
   return listInputRequests({ mailboxRoot: state.mailboxRoot, runId: state.runId });
 }
 
-function activeProgressView(state: RunTaskState, inputRequests: InputRequestView[] = []): Pick<
+function activeProgressView(state: RunTaskState): Pick<
   RunTaskView,
   | "elapsed_ms"
   | "last_progress_at"
@@ -144,7 +148,7 @@ function activeProgressView(state: RunTaskState, inputRequests: InputRequestView
     ...(state.lastProgressAt ? { last_progress_at: state.lastProgressAt } : {}),
     ...(state.lastProgressMessage ? { last_progress_message: state.lastProgressMessage } : {}),
     heartbeat_count: state.heartbeatCount,
-    recent_events: eventsForView(state, inputRequests),
+    recent_events: state.recentEvents,
     ...(state.lastPublicOutputExcerpt ? { last_public_output_excerpt: state.lastPublicOutputExcerpt } : {}),
   };
 }
@@ -152,7 +156,6 @@ function activeProgressView(state: RunTaskState, inputRequests: InputRequestView
 function terminalProgressView(
   state: RunTaskState,
   result: RunTaskTerminalResult,
-  inputRequests: InputRequestView[] = [],
 ): Pick<
   RunTaskView,
   | "elapsed_ms"
@@ -167,7 +170,7 @@ function terminalProgressView(
     ...(state.lastProgressAt ? { last_progress_at: state.lastProgressAt } : {}),
     ...(state.lastProgressMessage ? { last_progress_message: state.lastProgressMessage } : {}),
     heartbeat_count: state.heartbeatCount,
-    recent_events: eventsForView(state, inputRequests),
+    recent_events: state.recentEvents,
     ...(state.lastPublicOutputExcerpt ? { last_public_output_excerpt: state.lastPublicOutputExcerpt } : {}),
   };
 }
@@ -181,16 +184,156 @@ function setTaskProgress(state: RunTaskState, message: string, heartbeatCount = 
   state.lastProgressMessage = message;
 }
 
-function appendPublicEvent(state: RunTaskState, event: RunPublicEvent): void {
-  if (state.terminalSnapshotStarted) {
+async function appendStatusEvent(
+  state: RunTaskState,
+  event: RunPublicEvent,
+  progressMessage = event.text,
+): Promise<void> {
+  const written = await appendPublicEvent(state, event);
+  setTaskProgress(state, progressMessage);
+  state.lastProgressAt = written.occurred_at;
+}
+
+async function appendPublicEvent(state: RunTaskState, event: RunPublicEvent): Promise<RunPublicEvent> {
+  const written = await appendRunPublicEvent(defaultRunTasksDir(), state.runId, event);
+  const events = [...state.recentEvents, written];
+  state.recentEvents = recentEventsProjection(events);
+  state.lastPublicOutputExcerpt = publicOutputExcerptProjection(events);
+  return written;
+}
+
+async function appendRunStartedEvent(
+  state: RunTaskState,
+  request: RunSubagentRequest | RunSubagentSessionRequest,
+): Promise<void> {
+  await appendStatusEvent(state, {
+    kind: "task",
+    event: "run_started",
+    text: `[run_started] ${state.taskKind} run ${state.runId}`,
+    occurred_at: state.startedAt,
+    metadata: {
+      task_kind: state.taskKind,
+      cwd: typeof request.cwd === "string" ? request.cwd : undefined,
+    },
+  }, DEFAULT_HEARTBEAT_MESSAGE);
+  if (typeof request.prompt === "string" && request.prompt.trim() !== "") {
+    await appendPublicEvent(state, {
+      kind: "user",
+      event: "message",
+      text: `[user]\n${request.prompt}`,
+      occurred_at: state.startedAt,
+    });
+  }
+  const skill = typeof request.skill_name === "string" && request.skill_name.trim() !== ""
+    ? request.skill_name.trim()
+    : typeof request.skill === "string" && request.skill.trim() !== ""
+      ? request.skill.trim()
+      : undefined;
+  if (skill) {
+    await appendPublicEvent(state, {
+      kind: "task",
+      event: "message",
+      text: `[server_contract] skill_name=${skill}`,
+      occurred_at: state.startedAt,
+    });
+  }
+  if ("packet_policy" in request && request.packet_policy && request.packet_policy !== "none") {
+    await appendPublicEvent(state, {
+      kind: "packet",
+      event: "message",
+      text: `[server_contract] packet_policy=${request.packet_policy} contract_packet_v1 instruction applied`,
+      occurred_at: state.startedAt,
+    });
+  }
+}
+
+async function appendChildSpawnEvent(state: RunTaskState): Promise<void> {
+  await appendStatusEvent(state, {
+    kind: "child",
+    event: "child_spawned",
+    text: "[child_spawned] Pi child process starting",
+    occurred_at: new Date().toISOString(),
+  }, "child process starting");
+}
+
+async function appendClosedInputEvents(
+  state: RunTaskState,
+  closed: Awaited<ReturnType<typeof closePendingInputRequestsForRun>>,
+): Promise<void> {
+  for (const request of closed) {
+    await appendStatusEvent(state, {
+      kind: "input",
+      event: "input_closed",
+      text: `[input_closed] ${request.request_id}`,
+      occurred_at: request.settled_at,
+      metadata: {
+        request_id: request.request_id,
+        status: "closed",
+      },
+    }, "input request closed");
+  }
+}
+
+async function appendTerminalEvent(state: RunTaskState): Promise<void> {
+  const result = state.result;
+  const occurredAt = state.finishedAt ?? new Date().toISOString();
+  if (result) {
+    if ("packet_parse_status" in result && result.packet_parse_status !== "not_run") {
+      const packetAccepted = result.success && result.packet_parse_status === "valid";
+      await appendStatusEvent(state, {
+        kind: "packet",
+        event: packetAccepted ? "packet_accepted" : "packet_rejected",
+        text: packetAccepted
+          ? `[packet_accepted] packet_parse_status=${result.packet_parse_status}`
+          : `[packet_rejected] packet_parse_status=${result.packet_parse_status}`,
+        occurred_at: occurredAt,
+        metadata: {
+          packet_parse_status: result.packet_parse_status,
+          packet_error: result.packet_error,
+          committed: result.success,
+        },
+      }, packetAccepted ? "packet accepted" : "packet rejected");
+    }
+    const event = result.stop_reason === "cancelled"
+      ? "cancellation_settled"
+      : result.stop_reason === "timeout"
+        ? "timeout"
+        : result.success
+          ? "completed"
+          : "failed";
+    const text = event === "cancellation_settled"
+      ? "[cancellation_settled] run cancelled"
+      : event === "timeout"
+        ? "[timeout] run timed out"
+        : event === "completed"
+          ? "[completed] run completed"
+          : "[failed] run failed";
+    await appendStatusEvent(state, {
+      kind: "terminal",
+      event,
+      text,
+      occurred_at: occurredAt,
+      metadata: {
+        success: result.success,
+        stop_reason: result.stop_reason,
+        exit_code: result.exit_code,
+        timed_out: result.timed_out,
+      },
+    }, text.replace(/^\[[^\]]+\]\s*/, ""));
     return;
   }
-  state.recentEvents = [...state.recentEvents, event].slice(-MAX_RECENT_EVENTS);
-  const previous = state.lastPublicOutputExcerpt ? `${state.lastPublicOutputExcerpt}\n\n` : "";
-  const next = `${previous}${event.text}`;
-  state.lastPublicOutputExcerpt = next.length <= MAX_PUBLIC_OUTPUT_EXCERPT_CHARS
-    ? next
-    : next.slice(next.length - MAX_PUBLIC_OUTPUT_EXCERPT_CHARS);
+  if (state.error) {
+    await appendStatusEvent(state, {
+      kind: "terminal",
+      event: state.cancelRequested ? "cancellation_settled" : "failed",
+      text: state.cancelRequested ? "[cancellation_settled] run cancelled" : `[failed] ${state.error.message}`,
+      occurred_at: occurredAt,
+      metadata: {
+        success: false,
+        error: state.error.message,
+      },
+    }, state.cancelRequested ? "run cancelled" : state.error.message);
+  }
 }
 
 async function observeOutputLine(state: RunTaskState, line: string): Promise<void> {
@@ -198,31 +341,47 @@ async function observeOutputLine(state: RunTaskState, line: string): Promise<voi
   if (!publicLine) {
     return;
   }
-  appendPublicEvent(state, {
+  if (publicLine.kind === "user") {
+    return;
+  }
+  await appendPublicEvent(state, {
     kind: publicLine.kind,
+    event: publicLine.event ?? "message",
     text: publicLine.text,
     occurred_at: new Date().toISOString(),
   });
+  if (publicLine.event === "input_required") {
+    setTaskProgress(state, "input required");
+  } else if (publicLine.event === "input_timed_out") {
+    setTaskProgress(state, "input timed out");
+  } else if (publicLine.event === "input_closed") {
+    setTaskProgress(state, "input request closed");
+  } else if (publicLine.event === "timeout") {
+    setTaskProgress(state, "run timed out");
+  } else if (publicLine.event === "cancellation_settled") {
+    setTaskProgress(state, "run cancelled");
+  }
   await writeTaskSnapshot(await getRunTask(state.runId));
 }
 
-function inputRequestEvent(inputRequests: InputRequestView[]): RunPublicEvent | null {
-  const pending = inputRequests.filter((request) => request.status === "pending");
-  if (pending.length === 0) {
-    return null;
+async function loadSnapshotEvents(
+  snapshot: RunTaskView,
+): Promise<Pick<RunTaskView, "recent_events" | "last_public_output_excerpt">> {
+  const events = await readRunPublicEvents(defaultRunTasksDir(), snapshot.run_id);
+  if (events.length === 0) {
+    return {
+      ...(snapshot.recent_events ? { recent_events: snapshot.recent_events } : {}),
+      ...(snapshot.last_public_output_excerpt
+        ? { last_public_output_excerpt: snapshot.last_public_output_excerpt }
+        : {}),
+    };
   }
   return {
-    kind: "input",
-    text: `[input_required] ${pending.length} pending input request${pending.length === 1 ? "" : "s"}`,
-    occurred_at: new Date().toISOString(),
+    recent_events: recentEventsProjection(events),
+    ...(publicOutputExcerptProjection(events)
+      ? { last_public_output_excerpt: publicOutputExcerptProjection(events) }
+      : {}),
   };
-}
-
-function eventsForView(state: RunTaskState, inputRequests: InputRequestView[]): RunPublicEvent[] {
-  const inputEvent = inputRequestEvent(inputRequests);
-  return inputEvent
-    ? [...state.recentEvents, inputEvent].slice(-MAX_RECENT_EVENTS)
-    : state.recentEvents;
 }
 
 export async function getRunTask(runId: string): Promise<RunTaskView> {
@@ -234,9 +393,11 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
     }
     const mailboxRoot = path.dirname(snapshot.input_requests_dir);
     const inputRequests = await listInputRequests({ mailboxRoot, runId });
+    const eventProjection = await loadSnapshotEvents(snapshot);
     if (snapshot.status === "working" || snapshot.status === "input_required") {
       return {
         ...snapshot,
+        ...eventProjection,
         status: "failed",
         finished_at: snapshot.finished_at ?? new Date().toISOString(),
         input_requests: inputRequests,
@@ -244,7 +405,7 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
         error: "run is not active in this MCP server process; the server may have restarted",
       };
     }
-    return { ...snapshot, input_requests: inputRequests };
+    return { ...snapshot, ...eventProjection, input_requests: inputRequests };
   }
   const inputRequests = await taskInputRequests(state);
   if (state.result) {
@@ -258,7 +419,7 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
       finished_at: state.finishedAt,
       input_requests_dir: state.inputRequestsDir,
       input_requests: inputRequests,
-      ...terminalProgressView(state, state.result, inputRequests),
+      ...terminalProgressView(state, state.result),
     };
   }
   if (state.error) {
@@ -273,7 +434,7 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
       input_requests_dir: state.inputRequestsDir,
       input_requests: inputRequests,
       success: false,
-      ...activeProgressView(state, inputRequests),
+      ...activeProgressView(state),
       error: state.error.message,
     };
   }
@@ -290,7 +451,7 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
     started_at: state.startedAt,
     input_requests_dir: state.inputRequestsDir,
     input_requests: inputRequests,
-    ...activeProgressView(state, inputRequests),
+    ...activeProgressView(state),
   };
 }
 
@@ -326,10 +487,13 @@ export async function startRunTask(
   };
   setTaskProgress(state, DEFAULT_HEARTBEAT_MESSAGE, 0);
   tasks.set(runId, state);
+  await appendRunStartedEvent(state, request);
   await writeTaskSnapshot(await getRunTask(runId));
 
   state.promise = (async () => {
     try {
+      await appendChildSpawnEvent(state);
+      await writeTaskSnapshot(await getRunTask(runId));
       state.result = await runSubagentCore(request, {
         runId,
         mailboxRoot,
@@ -357,13 +521,15 @@ export async function startRunTask(
         });
       }
     } finally {
-      state.terminalSnapshotStarted = true;
       state.finishedAt = new Date().toISOString();
-      await closePendingInputRequestsForRun({
+      const closed = await closePendingInputRequestsForRun({
         mailboxRoot: state.mailboxRoot,
         runId,
         reason: state.cancelRequested ? "run cancelled" : "run reached a terminal state",
       });
+      await appendClosedInputEvents(state, closed);
+      await appendTerminalEvent(state);
+      state.terminalSnapshotStarted = true;
       await writeTaskSnapshot(await getRunTask(runId));
     }
   })();
@@ -403,10 +569,13 @@ export async function startSessionRunTask(
   };
   setTaskProgress(state, DEFAULT_HEARTBEAT_MESSAGE, 0);
   tasks.set(runId, state);
+  await appendRunStartedEvent(state, request);
   await writeTaskSnapshot(await getRunTask(runId));
 
   state.promise = (async () => {
     try {
+      await appendChildSpawnEvent(state);
+      await writeTaskSnapshot(await getRunTask(runId));
       state.result = await runSubagentSession(request, {
         sessionsDir: options.sessionsDir,
         heartbeat: async (beat, message) => {
@@ -433,13 +602,15 @@ export async function startSessionRunTask(
         });
       }
     } finally {
-      state.terminalSnapshotStarted = true;
       state.finishedAt = new Date().toISOString();
-      await closePendingInputRequestsForRun({
+      const closed = await closePendingInputRequestsForRun({
         mailboxRoot: state.mailboxRoot,
         runId,
         reason: state.cancelRequested ? "run cancelled" : "run reached a terminal state",
       });
+      await appendClosedInputEvents(state, closed);
+      await appendTerminalEvent(state);
+      state.terminalSnapshotStarted = true;
       await writeTaskSnapshot(await getRunTask(runId));
     }
   })();
@@ -498,10 +669,13 @@ export async function runSubagentOneShotTask(
   };
   setTaskProgress(state, DEFAULT_HEARTBEAT_MESSAGE, 0);
   tasks.set(runId, state);
+  await appendRunStartedEvent(state, request);
   await writeTaskSnapshot(await getRunTask(runId));
 
   state.promise = (async () => {
     try {
+      await appendChildSpawnEvent(state);
+      await writeTaskSnapshot(await getRunTask(runId));
       state.result = await runSubagentCore(request, {
         runId,
         mailboxRoot,
@@ -528,13 +702,15 @@ export async function runSubagentOneShotTask(
         });
       }
     } finally {
-      state.terminalSnapshotStarted = true;
       state.finishedAt = new Date().toISOString();
-      await closePendingInputRequestsForRun({
+      const closed = await closePendingInputRequestsForRun({
         mailboxRoot: state.mailboxRoot,
         runId,
         reason: "run reached a terminal state",
       });
+      await appendClosedInputEvents(state, closed);
+      await appendTerminalEvent(state);
+      state.terminalSnapshotStarted = true;
       await writeTaskSnapshot(await getRunTask(runId));
     }
   })();
@@ -576,13 +752,19 @@ export async function cancelRunTask(runId: string): Promise<RunTaskView> {
   }
   if (!state.result && !state.error) {
     state.cancelRequested = true;
-    setTaskProgress(state, "cancellation requested");
+    await appendStatusEvent(state, {
+      kind: "terminal",
+      event: "cancellation_requested",
+      text: "[cancellation_requested] cancellation requested",
+      occurred_at: new Date().toISOString(),
+    }, "cancellation requested");
     state.abortController.abort();
-    await closePendingInputRequestsForRun({
+    const closed = await closePendingInputRequestsForRun({
       mailboxRoot: state.mailboxRoot,
       runId,
       reason: "run cancelled",
     });
+    await appendClosedInputEvents(state, closed);
   }
   const view = await getRunTask(runId);
   await writeTaskSnapshot(view);
@@ -613,6 +795,16 @@ export async function answerRunTaskInput(options: {
     requestId: options.requestId,
     answer: options.answer,
   });
+  await appendStatusEvent(state, {
+    kind: "input",
+    event: "input_answered",
+    text: `[input_answered] ${options.requestId}`,
+    occurred_at: new Date().toISOString(),
+    metadata: {
+      request_id: options.requestId,
+      status: "answered",
+    },
+  }, "input answered");
   const view = await getRunTask(options.runId);
   await writeTaskSnapshot(view);
   return view;

@@ -31,10 +31,12 @@ import { SERVER_VERSION } from "./runtimeMetadata.js";
 import {
   OUTPUT_MODES,
   MODEL_CLASSES,
+  type PreflightRejectedResult,
   RESUME_MODES,
   RUN_KINDS,
   SESSION_PACKET_POLICIES,
   TOOL_PROFILES,
+  ValidationError,
 } from "./types.js";
 
 const server = new McpServer({
@@ -50,6 +52,68 @@ function withFailureLogging<TRequest, TResult>(
     try {
       return await handler(request, extra);
     } catch (error) {
+      await logFailure({
+        tool,
+        failure_class: failureClassForToolHandlerError(tool, error),
+        reason_code: failureReasonCodeForError(error),
+        cwd: cwdFromRequest(request),
+        success: false,
+      });
+      throw error;
+    }
+  };
+}
+
+function preflightRetryGuidance(message: string): string | undefined {
+  if (message.includes("incompatible with run_subagent's quick_noninteractive contract")) {
+    return "Use start_run with explicit timeout_ms for broad, exploratory, skill-bound, cancellable, polling, or long-running work.";
+  }
+  if (message.includes("timeout_ms is not supported by run_subagent")) {
+    return "Use start_run for timed work.";
+  }
+  return undefined;
+}
+
+async function preflightRejectedResult(
+  tool: FailureLogTool,
+  request: unknown,
+  error: ValidationError,
+): Promise<PreflightRejectedResult> {
+  const reasonCode = failureReasonCodeForError(error);
+  await logFailure({
+    tool,
+    failure_class: "validation_error",
+    reason_code: reasonCode,
+    cwd: cwdFromRequest(request),
+    success: false,
+  });
+  return {
+    status: "rejected",
+    kind: "preflight_rejected",
+    success: false,
+    child_started: false,
+    error_class: "validation_error",
+    reason_code: reasonCode,
+    message: error.message,
+    ...(preflightRetryGuidance(error.message)
+      ? { retry_guidance: preflightRetryGuidance(error.message) }
+      : {}),
+  };
+}
+
+function withPreflightRejection<TRequest, TResult extends object>(
+  tool: FailureLogTool,
+  handler: (request: TRequest, extra: ServerExtra) => Promise<TResult>,
+): (request: TRequest, extra: ServerExtra) => Promise<ReturnType<typeof jsonToolResult<Record<string, unknown>>>> {
+  return async (request, extra) => {
+    try {
+      const result = await handler(request, extra);
+      return jsonToolResult(result, { ...result } as Record<string, unknown>);
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        const result = await preflightRejectedResult(tool, request, error);
+        return jsonToolResult(result, { ...result });
+      }
       await logFailure({
         tool,
         failure_class: failureClassForToolHandlerError(tool, error),
@@ -227,13 +291,12 @@ server.registerTool(
       "Start one Pi-backed child run as a run-scoped task and return immediately with status and input mailbox metadata.",
     inputSchema: startRunInputSchema,
   },
-  withFailureLogging("start_run", async (request, extra) => {
-    const result = await startRunTask(request, {
+  withPreflightRejection("start_run", async (request, extra) =>
+    startRunTask(request, {
       heartbeat: heartbeatFromExtra(extra),
       heartbeatIntervalMs: heartbeatIntervalMsFromEnv(),
-    });
-    return jsonToolResult(result, { ...result });
-  }),
+    }),
+  ),
 );
 
 server.registerTool(
@@ -297,13 +360,12 @@ server.registerTool(
       "Run one quick, non-interactive Pi-backed subagent invocation in an absolute cwd, write cleaned final or transcript output to Markdown, and return metadata.",
     inputSchema: runInputSchema,
   },
-  withFailureLogging("run_subagent", async (request, extra) => {
-    const result = await runSubagentOneShotTask(request, {
+  withPreflightRejection("run_subagent", async (request, extra) =>
+    runSubagentOneShotTask(request, {
       heartbeat: heartbeatFromExtra(extra),
       heartbeatIntervalMs: heartbeatIntervalMsFromEnv(),
-    });
-    return jsonToolResult(result, { ...result });
-  }),
+    }),
+  ),
 );
 
 server.registerTool(
@@ -314,13 +376,12 @@ server.registerTool(
       "Start or resume a named persistent Pi-backed subagent session as a durable, pollable task.",
     inputSchema: runSessionInputSchema,
   },
-  withFailureLogging("start_session_run", async (request, extra) => {
-    const result = await startSessionRunTask(request, {
+  withPreflightRejection("start_session_run", async (request, extra) =>
+    startSessionRunTask(request, {
       heartbeat: heartbeatFromExtra(extra),
       heartbeatIntervalMs: heartbeatIntervalMsFromEnv(),
-    });
-    return jsonToolResult(result, { ...result });
-  }),
+    }),
+  ),
 );
 
 server.registerTool(
@@ -331,13 +392,12 @@ server.registerTool(
       "Run or resume a named persistent Pi-backed subagent session in an absolute cwd, write output and append an auditable session ledger.",
     inputSchema: runSessionInputSchema,
   },
-  withFailureLogging("run_subagent_session", async (request, extra) => {
-    const result = await runSubagentSessionTaskAndWait(request, {
+  withPreflightRejection("run_subagent_session", async (request, extra) =>
+    runSubagentSessionTaskAndWait(request, {
       heartbeat: heartbeatFromExtra(extra),
       heartbeatIntervalMs: heartbeatIntervalMsFromEnv(),
-    });
-    return jsonToolResult(result, { ...result });
-  }),
+    }),
+  ),
 );
 
 const transport = new StdioServerTransport();

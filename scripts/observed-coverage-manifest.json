@@ -1,0 +1,137 @@
+{
+  "saf_required_surfaces": [
+    "tool-listing",
+    "model-class-listing",
+    "run_subagent-success",
+    "run_subagent-schema-error",
+    "run_subagent-preflight-rejection",
+    "run_subagent-child-failure",
+    "run_subagent-timeout-recovery",
+    "start_run-async-polling",
+    "answer_run_input-caller-input",
+    "cancel_run-cancellation-settlement",
+    "transcript-redaction",
+    "run_subagent_session-packet-failure",
+    "run_subagent_session-valid-packet-closure",
+    "run_subagent_session-invalid-packet-closure",
+    "installed-pi-integration"
+  ],
+  "surfaces": {
+    "tool-listing": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
+    "model-class-listing": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
+    "run_subagent-success": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
+    "run_subagent-schema-error": { "evidence_classes": ["protocol-deterministic"] },
+    "run_subagent-preflight-rejection": { "evidence_classes": ["protocol-deterministic"] },
+    "run_subagent-child-failure": { "evidence_classes": ["protocol-deterministic"] },
+    "run_subagent-timeout-recovery": { "evidence_classes": ["protocol-deterministic"] },
+    "start_run-async-polling": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
+    "answer_run_input-caller-input": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
+    "cancel_run-cancellation-settlement": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
+    "transcript-redaction": { "evidence_classes": ["protocol-deterministic"] },
+    "run_subagent_session-packet-failure": { "evidence_classes": ["protocol-deterministic"] },
+    "run_subagent_session-valid-packet-closure": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
+    "run_subagent_session-invalid-packet-closure": { "evidence_classes": ["protocol-deterministic"] },
+    "installed-pi-integration": { "evidence_classes": ["live-model-smoke"] }
+  },
+  "scenarios": {
+    "tool-listing": {
+      "tool": "__list_tools",
+      "lifecycle_phases": ["tool-discovery"],
+      "result_classes": ["success"],
+      "surfaces": ["tool-listing"]
+    },
+    "model-listing": {
+      "tool": "list_model_classes",
+      "lifecycle_phases": ["model-class-listing"],
+      "result_classes": ["success"],
+      "surfaces": ["model-class-listing"]
+    },
+    "success": {
+      "tool": "run_subagent",
+      "lifecycle_phases": ["one-shot-success"],
+      "result_classes": ["success"],
+      "surfaces": ["run_subagent-success"]
+    },
+    "schema-error": {
+      "tool": "run_subagent",
+      "lifecycle_phases": ["sdk-schema-validation"],
+      "result_classes": ["schema_error"],
+      "surfaces": ["run_subagent-schema-error"]
+    },
+    "handler-validation": {
+      "tool": "run_subagent",
+      "lifecycle_phases": ["handler-validation"],
+      "result_classes": ["preflight_rejected"],
+      "surfaces": ["run_subagent-preflight-rejection"]
+    },
+    "child-failure": {
+      "tool": "run_subagent",
+      "lifecycle_phases": ["child-process-terminal"],
+      "result_classes": ["nonzero_exit"],
+      "surfaces": ["run_subagent-child-failure"]
+    },
+    "packet-failure": {
+      "tool": "run_subagent_session",
+      "lifecycle_phases": ["session-attempt", "packet-required-gate"],
+      "result_classes": ["packet_failed"],
+      "surfaces": ["run_subagent_session-packet-failure"]
+    },
+    "transcript-redaction": {
+      "tool": "run_subagent",
+      "lifecycle_phases": ["transcript-rendering"],
+      "result_classes": ["transcript_redacted"],
+      "surfaces": ["transcript-redaction"]
+    }
+  },
+  "profiles": {
+    "protocol-core": {
+      "mode": "protocol-deterministic",
+      "scenarios": ["tool-listing", "model-listing", "success", "schema-error", "handler-validation", "child-failure", "packet-failure", "transcript-redaction"],
+      "required_surfaces": [
+        "tool-listing",
+        "model-class-listing",
+        "run_subagent-success",
+        "run_subagent-schema-error",
+        "run_subagent-preflight-rejection",
+        "run_subagent-child-failure",
+        "run_subagent_session-packet-failure",
+        "transcript-redaction"
+      ]
+    },
+    "live-smoke": {
+      "mode": "live-model",
+      "scenarios": ["tool-listing", "model-listing", "success"],
+      "required_surfaces": ["tool-listing", "model-class-listing", "run_subagent-success"]
+    },
+    "stateful-live": {
+      "mode": "live-model",
+      "scenarios": ["tool-listing", "model-listing", "success"],
+      "required_surfaces": ["tool-listing", "model-class-listing", "run_subagent-success"]
+    },
+    "full-current": {
+      "mode": "protocol-deterministic",
+      "scenarios": ["tool-listing", "model-listing", "success", "schema-error", "handler-validation", "child-failure", "packet-failure", "transcript-redaction"],
+      "required_surfaces": [
+        "tool-listing",
+        "model-class-listing",
+        "run_subagent-success",
+        "run_subagent-schema-error",
+        "run_subagent-preflight-rejection",
+        "run_subagent-child-failure",
+        "run_subagent-timeout-recovery",
+        "start_run-async-polling",
+        "answer_run_input-caller-input",
+        "cancel_run-cancellation-settlement",
+        "transcript-redaction",
+        "run_subagent_session-packet-failure",
+        "run_subagent_session-valid-packet-closure",
+        "run_subagent_session-invalid-packet-closure",
+        "installed-pi-integration"
+      ]
+    }
+  },
+  "aliases": {
+    "all": "protocol-core",
+    "all-bundled": "protocol-core"
+  }
+}

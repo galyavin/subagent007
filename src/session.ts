@@ -12,6 +12,7 @@ import {
 import { resolveAllowedModelRef } from "./modelAllowlist.js";
 import { defaultSessionsDir } from "./output.js";
 import { appendContractPacketInstruction, extractContractPacket } from "./packet.js";
+import { createPromptProvenance } from "./prompt.js";
 import type { HeartbeatNotify } from "./progress.js";
 import { runSubagentCore } from "./runSubagent.js";
 import {
@@ -534,14 +535,16 @@ export async function runSubagentSession(
   const packetPolicy = validateSessionPacketPolicy(request.packet_policy);
   const resolvedBase = await validateAndResolveRequest(request, config);
   const cwd = await fs.realpath(resolvedBase.cwd);
-  const resolved = {
-    ...resolvedBase,
-    cwd,
-    prompt:
-      packetPolicy === "none"
-        ? resolvedBase.prompt
-        : appendContractPacketInstruction(resolvedBase.prompt),
-  };
+  const resolved = { ...resolvedBase, cwd };
+  const packetPrompt = packetPolicy === "none"
+    ? resolved.prompt
+    : appendContractPacketInstruction(resolved.prompt);
+  const promptProvenance = createPromptProvenance({
+    publicPrompt: resolved.prompt,
+    childPrompt: packetPrompt,
+    skill: resolved.skill,
+    packetPolicy,
+  });
 
   const sessionsDir = options.sessionsDir ?? defaultSessionsDir();
   const sessionDir = sessionDirFor(sessionsDir, cwd, sessionKey);
@@ -585,6 +588,7 @@ export async function runSubagentSession(
       heartbeatIntervalMs: options.heartbeatIntervalMs,
       abortSignal: options.abortSignal,
       onOutputLine: options.onOutputLine,
+      promptProvenance,
     });
     const outputText = await fs.readFile(runResult.output_path, "utf8");
     const attemptSubagentSessionId = attemptSession.runManifest?.subagent_session_id ?? runResult.session_id;

@@ -3,66 +3,19 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
-const PRODUCT_SURFACES = [
-  "tool-listing",
-  "model-class-listing",
-  "run_subagent-success",
-  "run_subagent-schema-error",
-  "run_subagent-handler-validation",
-  "run_subagent-child-failure",
-  "run_subagent-timeout-recovery",
-  "start_run-async-polling",
-  "answer_run_input-caller-input",
-  "cancel_run-cancellation-settlement",
-  "transcript-redaction",
-  "run_subagent_session-packet-failure",
-  "run_subagent_session-valid-packet-closure",
-  "run_subagent_session-invalid-packet-closure",
-  "installed-pi-integration",
-];
-
-const SCENARIO_REGISTRY = {
-  success: {
-    tool: "run_subagent",
-    evidence_class: "mcp-call-observed",
-    lifecycle_phases: ["one-shot-success"],
-    result_classes: ["success"],
-    surfaces: ["run_subagent-success"],
-  },
-  "schema-error": {
-    tool: "run_subagent",
-    evidence_class: "mcp-call-observed",
-    lifecycle_phases: ["sdk-schema-validation"],
-    result_classes: ["schema_error"],
-    surfaces: ["run_subagent-schema-error"],
-  },
-  "handler-validation": {
-    tool: "run_subagent",
-    evidence_class: "mcp-call-observed",
-    lifecycle_phases: ["handler-validation"],
-    result_classes: ["validation_error"],
-    surfaces: ["run_subagent-handler-validation"],
-  },
-  "child-failure": {
-    tool: "run_subagent",
-    evidence_class: "mcp-call-observed",
-    lifecycle_phases: ["child-process-terminal"],
-    result_classes: ["nonzero_exit"],
-    surfaces: ["run_subagent-child-failure"],
-  },
-  "packet-failure": {
-    tool: "run_subagent_session",
-    evidence_class: "mcp-call-observed",
-    lifecycle_phases: ["session-attempt", "packet-required-gate"],
-    result_classes: ["packet_failed"],
-    surfaces: ["run_subagent_session-packet-failure"],
-  },
-};
-
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const MANIFEST_PATH = process.env.SUBAGENT007_COVERAGE_MANIFEST_PATH
+  ? path.resolve(process.env.SUBAGENT007_COVERAGE_MANIFEST_PATH)
+  : path.join(SCRIPT_DIR, "observed-coverage-manifest.json");
+const MANIFEST = JSON.parse(await fs.readFile(MANIFEST_PATH, "utf8"));
+const PRODUCT_SURFACES = Object.keys(MANIFEST.surfaces).sort();
+const SCENARIO_REGISTRY = MANIFEST.scenarios;
 const SCENARIOS = new Set(Object.keys(SCENARIO_REGISTRY));
+const PROFILES = new Set(Object.keys(MANIFEST.profiles));
 const PROBE_MODES = new Set(["protocol-deterministic", "live-model"]);
 
 function usage() {
@@ -74,8 +27,10 @@ function usage() {
     "Options:",
     "  --server <path>       MCP server entrypoint. Default: dist/server.js",
     "  --cwd <path>          Absolute project cwd for successful child-backed probes.",
-    "  --scenario <name>     Scenario to run. May repeat. Default: all-bundled.",
-    "                       Names: all-bundled, success, schema-error, handler-validation, child-failure, packet-failure",
+    "  --profile <name>      Coverage profile. Default: protocol-core.",
+    "                       Names: protocol-core, live-smoke, stateful-live, full-current.",
+    "  --scenario <name>     Scenario to run. May repeat. Overrides profile scenarios.",
+    "                       Compatibility scenario aliases: all, all-bundled -> protocol-core.",
     "  --mode <mode>         Evidence mode: protocol-deterministic or live-model. Default: protocol-deterministic.",
     "  --quiet               Do not print a JSON summary.",
     "  -h, --help            Show this help.",
@@ -87,7 +42,8 @@ function parseArgs(argv) {
     server: path.resolve("dist/server.js"),
     cwd: undefined,
     scenarios: [],
-    scenarioSet: "custom",
+    profile: "protocol-core",
+    scenarioSet: "protocol-core",
     mode: "protocol-deterministic",
     quiet: false,
     help: false,
@@ -111,15 +67,29 @@ function parseArgs(argv) {
     } else if (arg === "--cwd") {
       options.cwd = path.resolve(nextValue(index, arg));
       index += 1;
+    } else if (arg === "--profile") {
+      const profile = nextValue(index, arg);
+      const canonical = MANIFEST.aliases[profile] ?? profile;
+      if (!PROFILES.has(canonical)) {
+        throw new Error(`unknown profile: ${profile}`);
+      }
+      options.profile = canonical;
+      options.scenarioSet = canonical;
+      options.mode = MANIFEST.profiles[canonical].mode;
+      index += 1;
     } else if (arg === "--scenario") {
       const scenario = nextValue(index, arg);
       if (scenario === "all" || scenario === "all-bundled") {
-        options.scenarios.push(...SCENARIOS);
-        options.scenarioSet = "all-bundled";
+        const profile = MANIFEST.aliases[scenario];
+        options.profile = profile;
+        options.scenarios.push(...MANIFEST.profiles[profile].scenarios);
+        options.scenarioSet = profile;
+        options.mode = MANIFEST.profiles[profile].mode;
       } else if (!SCENARIOS.has(scenario)) {
         throw new Error(`unknown scenario: ${scenario}`);
       } else {
         options.scenarios.push(scenario);
+        options.scenarioSet = "custom";
       }
       index += 1;
     } else if (arg === "--mode") {
@@ -140,9 +110,9 @@ function parseArgs(argv) {
     return { mode: "help" };
   }
   if (options.scenarios.length === 0) {
-    options.scenarios = [...SCENARIOS];
-    options.scenarioSet = "all-bundled";
+    options.scenarios = [...MANIFEST.profiles[options.profile].scenarios];
   }
+  options.scenarios = [...new Set(options.scenarios)];
   if (options.scenarios.some((scenario) => scenario !== "schema-error") && !options.cwd) {
     throw new Error("--cwd is required unless only schema-error is being probed");
   }
@@ -163,15 +133,75 @@ function evidenceClassForMode(mode) {
   return mode === "protocol-deterministic" ? "protocol-deterministic" : "live-model-smoke";
 }
 
-function coverageSummary(scenarios, mode) {
+function assertManifestComplete() {
+  const missing = MANIFEST.saf_required_surfaces.filter((surface) => !MANIFEST.surfaces[surface]);
+  if (missing.length > 0) {
+    throw new Error(`coverage manifest omits SAF-required surfaces: ${missing.join(", ")}`);
+  }
+  for (const [profileName, profile] of Object.entries(MANIFEST.profiles)) {
+    const missingRequired = profile.required_surfaces.filter((surface) => !MANIFEST.surfaces[surface]);
+    if (missingRequired.length > 0) {
+      throw new Error(`coverage profile ${profileName} requires unknown surfaces: ${missingRequired.join(", ")}`);
+    }
+  }
+}
+
+function responseMatchesResultClass(response, resultClass) {
+  if (!response) {
+    return false;
+  }
+  if (resultClass === "success") {
+    return response.is_error === false && response.success !== false;
+  }
+  if (resultClass === "schema_error") {
+    return response.is_error === true;
+  }
+  if (resultClass === "preflight_rejected") {
+    return response.kind === "preflight_rejected" && response.child_started === false;
+  }
+  if (resultClass === "nonzero_exit") {
+    return response.success === false && typeof response.exit_code === "number" && response.exit_code !== 0;
+  }
+  if (resultClass === "packet_failed") {
+    return response.success === false && typeof response.packet_parse_status === "string";
+  }
+  if (resultClass === "transcript_redacted") {
+    return response.success === true && response.transcript_redacted === true;
+  }
+  return false;
+}
+
+function coverageSummary(scenarios, mode, profileName, calls = []) {
   const evidenceClass = evidenceClassForMode(mode);
+  const profile = MANIFEST.profiles[profileName] ?? {
+    required_surfaces: [],
+    scenarios,
+  };
+  const callsByScenario = new Map(calls.map((call) => [call.scenario, call]));
   const metadata = scenarios.map((scenario) => ({
     scenario,
     ...SCENARIO_REGISTRY[scenario],
     evidence_class: evidenceClass,
-  }));
-  const coveredSurfaces = unique(metadata.flatMap((scenario) => scenario.surfaces));
+  })).map((scenario) => {
+    const call = callsByScenario.get(scenario.scenario);
+    const evidence_satisfied = scenario.result_classes.some((resultClass) =>
+      responseMatchesResultClass(call?.response, resultClass),
+    );
+    return {
+      ...scenario,
+      evidence_satisfied,
+      observed_result: call?.response ?? null,
+    };
+  });
+  const coveredSurfaces = unique(
+    metadata
+      .filter((scenario) => scenario.evidence_satisfied)
+      .flatMap((scenario) => scenario.surfaces),
+  );
   const coveredByEvidenceClass = metadata.reduce((groups, scenario) => {
+    if (!scenario.evidence_satisfied) {
+      return groups;
+    }
     groups[scenario.evidence_class] = unique([
       ...(groups[scenario.evidence_class] ?? []),
       ...scenario.surfaces,
@@ -179,10 +209,16 @@ function coverageSummary(scenarios, mode) {
     return groups;
   }, {});
   return {
+    profile: profileName,
     scenarios: metadata,
+    required_surfaces: [...profile.required_surfaces].sort(),
+    optional_surfaces: PRODUCT_SURFACES.filter((surface) => !profile.required_surfaces.includes(surface)),
+    out_of_scope_surfaces: PRODUCT_SURFACES.filter((surface) => !profile.required_surfaces.includes(surface)),
+    skipped_surfaces: PRODUCT_SURFACES.filter((surface) => !coveredSurfaces.includes(surface)),
     covered_surfaces: coveredSurfaces,
     covered_surfaces_by_evidence_class: coveredByEvidenceClass,
     uncovered_surfaces: PRODUCT_SURFACES.filter((surface) => !coveredSurfaces.includes(surface)),
+    missing_required_surfaces: profile.required_surfaces.filter((surface) => !coveredSurfaces.includes(surface)).sort(),
     tools: unique(metadata.map((scenario) => scenario.tool)),
     lifecycle_phases: unique(metadata.flatMap((scenario) => scenario.lifecycle_phases)),
     result_classes: unique(metadata.flatMap((scenario) => scenario.result_classes)),
@@ -224,6 +260,10 @@ async function createDeterministicFakeChild() {
       "  process.exit(42);",
       "} else if (request.prompt.includes('PACKET_INCONCLUSIVE')) {",
       "  writeFinal('```contract_packet_v1\\n' + JSON.stringify({ verdict: 'inconclusive', summary: 'not ready', findings: [], blockers: ['needs evidence'], next_step: 'repair' }) + '\\n```');",
+      "} else if (request.prompt.includes('RAW_THINKING_TRANSCRIPT')) {",
+      "  writeEvent({ type: 'message_end', message: { role: 'user', content: [{ type: 'text', text: 'user prompt' }] } });",
+      "  writeEvent({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: 'SECRET_THINKING_SHOULD_NOT_LEAK' } });",
+      "  writeEvent({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'PUBLIC ASSISTANT TEXT' }] } });",
       "} else {",
       "  writeFinal('FAST FINAL');",
       "}",
@@ -338,6 +378,8 @@ function responseSummary(response) {
     is_error: response.isError === true,
     success: typeof structured.success === "boolean" ? structured.success : null,
     status: typeof structured.status === "string" ? structured.status : null,
+    kind: typeof structured.kind === "string" ? structured.kind : null,
+    child_started: typeof structured.child_started === "boolean" ? structured.child_started : undefined,
     exit_code: typeof structured.exit_code === "number" || structured.exit_code === null
       ? structured.exit_code
       : undefined,
@@ -351,10 +393,41 @@ function responseSummary(response) {
     attempt_session_established: typeof structured.attempt_session_established === "boolean"
       ? structured.attempt_session_established
       : undefined,
+    output_path: typeof structured.output_path === "string" ? structured.output_path : undefined,
   };
 }
 
+async function responseSummaryForScenario(response, scenario) {
+  const summary = responseSummary(response);
+  if (scenario !== "transcript-redaction" || typeof summary.output_path !== "string") {
+    return summary;
+  }
+  try {
+    const output = await fs.readFile(summary.output_path, "utf8");
+    return {
+      ...summary,
+      transcript_redacted:
+        output.includes("PUBLIC ASSISTANT TEXT") &&
+        !/SECRET_THINKING_SHOULD_NOT_LEAK|thinking_delta|assistantMessageEvent/.test(output),
+    };
+  } catch {
+    return { ...summary, transcript_redacted: false };
+  }
+}
+
 function scenarioCall(scenario, cwd) {
+  if (scenario === "tool-listing") {
+    return {
+      tool: "__list_tools",
+      args: {},
+    };
+  }
+  if (scenario === "model-listing") {
+    return {
+      tool: "list_model_classes",
+      args: {},
+    };
+  }
   if (scenario === "success") {
     return {
       tool: "run_subagent",
@@ -406,6 +479,17 @@ function scenarioCall(scenario, cwd) {
       },
     };
   }
+  if (scenario === "transcript-redaction") {
+    return {
+      tool: "run_subagent",
+      args: {
+        cwd,
+        prompt: "RAW_THINKING_TRANSCRIPT",
+        run_kind: "quick_noninteractive",
+        output_mode: "transcript",
+      },
+    };
+  }
   throw new Error(`unknown scenario: ${scenario}`);
 }
 
@@ -421,11 +505,14 @@ async function runCall(client, ledgerPath, evidenceClass, scenario, call) {
 
   const failuresBefore = await readFailureRecords();
   let response;
+  let observedSummary = null;
   try {
-    response = await client.callTool({
-      name: call.tool,
-      arguments: call.args,
-    });
+    response = call.tool === "__list_tools"
+      ? await client.listTools()
+      : await client.callTool({
+          name: call.tool,
+          arguments: call.args,
+        });
   } catch (error) {
     await appendLedger(ledgerPath, evidenceClass, {
       event: "call_handler_error",
@@ -438,13 +525,23 @@ async function runCall(client, ledgerPath, evidenceClass, scenario, call) {
   }
 
   if (response) {
+    const summary = await responseSummaryForScenario(response, scenario);
+    observedSummary = summary;
     if (isSchemaError(response)) {
       await appendLedger(ledgerPath, evidenceClass, {
         event: "call_schema_error",
         call_id: callId,
         scenario,
         tool: call.tool,
-        result: responseSummary(response),
+        result: summary,
+      });
+    } else if (summary.kind === "preflight_rejected") {
+      await appendLedger(ledgerPath, evidenceClass, {
+        event: "call_preflight_rejected",
+        call_id: callId,
+        scenario,
+        tool: call.tool,
+        result: summary,
       });
     } else if (response.isError === true) {
       await appendLedger(ledgerPath, evidenceClass, {
@@ -452,7 +549,7 @@ async function runCall(client, ledgerPath, evidenceClass, scenario, call) {
         call_id: callId,
         scenario,
         tool: call.tool,
-        result: responseSummary(response),
+        result: summary,
       });
     } else {
       await appendLedger(ledgerPath, evidenceClass, {
@@ -460,7 +557,7 @@ async function runCall(client, ledgerPath, evidenceClass, scenario, call) {
         call_id: callId,
         scenario,
         tool: call.tool,
-        result: responseSummary(response),
+        result: summary,
       });
     }
   }
@@ -484,13 +581,14 @@ async function runCall(client, ledgerPath, evidenceClass, scenario, call) {
     call_id: callId,
     scenario,
     tool: call.tool,
-    response: response ? responseSummary(response) : null,
+    response: observedSummary,
     failure_log_delta_count: delta.length,
   };
 }
 
 let parsed;
 try {
+  assertManifestComplete();
   parsed = parseArgs(process.argv.slice(2));
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
@@ -551,6 +649,7 @@ const eventCounts = events.reduce((counts, event) => {
   counts[event.event] = (counts[event.event] ?? 0) + 1;
   return counts;
 }, {});
+const summary = coverageSummary(parsed.options.scenarios, parsed.options.mode, parsed.options.scenarioSet, results);
 
 if (!parsed.options.quiet) {
   console.log(JSON.stringify(
@@ -558,13 +657,19 @@ if (!parsed.options.quiet) {
       campaign_id: process.env.SUBAGENT007_CAMPAIGN_ID ?? null,
       ledger_path: ledgerPath,
       scenario_set: parsed.options.scenarioSet,
+      profile: parsed.options.scenarioSet,
       mode: parsed.options.mode,
       scenarios: parsed.options.scenarios,
-      coverage_summary: coverageSummary(parsed.options.scenarios, parsed.options.mode),
+      coverage_summary: summary,
       calls: results,
       event_counts: eventCounts,
     },
     null,
     2,
   ));
+}
+
+if (summary.missing_required_surfaces.length > 0) {
+  console.error(`missing required coverage surfaces: ${summary.missing_required_surfaces.join(", ")}`);
+  process.exit(1);
 }

@@ -17,10 +17,18 @@ import {
   readFinalMessage,
   writeRunOutput,
 } from "./output.js";
+import { createPromptProvenance } from "./prompt.js";
 import { runChildProcess } from "./processRunner.js";
 import type { HeartbeatNotify } from "./progress.js";
 import { computeTimeoutBudget } from "./timeoutBudget.js";
-import type { OutputMode, RunContinuity, RunSubagentRequest, RunSubagentResult, ToolProfile } from "./types.js";
+import type {
+  OutputMode,
+  PromptProvenance,
+  RunContinuity,
+  RunSubagentRequest,
+  RunSubagentResult,
+  ToolProfile,
+} from "./types.js";
 import { ValidationError } from "./types.js";
 import { validateAndResolveRequest } from "./validate.js";
 
@@ -42,6 +50,7 @@ interface PiChildRequestFile {
   outputMode: OutputMode;
   toolProfile: ToolProfile;
   outputLastMessagePath?: string;
+  promptProvenance?: PromptProvenance;
   mailboxRoot: string;
   runId: string;
   inputTimeoutMs: number;
@@ -189,6 +198,7 @@ export async function runSubagentCore(
     heartbeatIntervalMs?: number;
     abortSignal?: AbortSignal;
     onOutputLine?: (line: string) => void | Promise<void>;
+    promptProvenance?: PromptProvenance;
   } = {},
 ): Promise<RunSubagentResult> {
   if (!options.allowTimeout && request.timeout_ms !== undefined) {
@@ -208,8 +218,12 @@ export async function runSubagentCore(
       resolved.timeoutMs ?? (options.allowTimeout ? undefined : defaultRunSubagentTimeoutMs()),
     );
     const sessionMode = sessionModeFor(resolved.continuity);
+    const promptProvenance = options.promptProvenance ?? createPromptProvenance({
+      publicPrompt: resolved.prompt,
+      skill: resolved.skill,
+    });
     const childPayload: PiChildRequestFile = {
-      prompt: resolved.prompt,
+      prompt: promptProvenance.composed_child_prompt,
       cwd: resolved.cwd,
       model: resolved.model,
       thinkingLevel: resolved.thinkingLevel,
@@ -217,6 +231,7 @@ export async function runSubagentCore(
       outputMode: resolved.outputMode,
       toolProfile: resolved.toolProfile,
       outputLastMessagePath: finalMessageTarget.outputLastMessagePath,
+      promptProvenance,
       mailboxRoot,
       runId,
       inputTimeoutMs: timeoutBudget.effectiveTimeoutMs ?? defaultInputRequestTimeoutMs(),
@@ -248,6 +263,7 @@ export async function runSubagentCore(
     const writtenOutputMode: OutputMode = finalMessage ? "final" : "transcript";
     const output = await writeRunOutput(finalMessage ?? processResult.combinedOutput, options.runsDir, {
       processTranscript: !finalMessage,
+      promptProvenance,
     });
     const processSuccess =
       processResult.exitCode === 0 && !processResult.timedOut && !processResult.cancelled;

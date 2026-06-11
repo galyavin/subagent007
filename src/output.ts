@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import type { OutputMode } from "./types.js";
+import type { OutputMode, PromptProvenance } from "./types.js";
 import {
   preparePublicTranscriptFromProcessOutput,
   publicTranscriptContentFlags,
@@ -68,7 +68,7 @@ export async function readFinalMessage(outputLastMessagePath?: string): Promise<
 export async function writeRunOutput(
   rawOutput: string,
   runsDir = defaultRunsDir(),
-  options: { processTranscript?: boolean } = {},
+  options: { processTranscript?: boolean; promptProvenance?: PromptProvenance } = {},
 ): Promise<{
   outputPath: string;
   sizeBytes: number;
@@ -79,7 +79,7 @@ export async function writeRunOutput(
   await fs.mkdir(runsDir, { recursive: true });
   const outputPath = uniqueRunPath(runsDir);
   const transcript = options.processTranscript
-    ? preparePublicTranscriptFromProcessOutput(rawOutput)
+    ? preparePublicTranscriptFromProcessOutput(rawOutput, { promptProvenance: options.promptProvenance })
     : null;
   const prepared = transcript ? transcript.text : rawOutput;
   const cleaned = stripAnsiAndControls(prepared);

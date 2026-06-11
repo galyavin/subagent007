@@ -6,12 +6,12 @@ Subagent007 Pi is a private MCP server that delegates work to a separate Pi-back
 
 | Situation | Tool | Key constraints |
 | --- | --- | --- |
-| Quick, bounded, non-interactive one-shot work | `run_subagent` | Requires `run_kind: "quick_noninteractive"`; rejects caller `timeout_ms` plus known one-shot-incompatible skill-bound, broad, overlong, or write-profile work; timeout results can be inspected later with `get_run`. |
+| Quick, bounded, non-interactive one-shot work | `run_subagent` | Requires `run_kind: "quick_noninteractive"`; rejects caller `timeout_ms` plus known one-shot-incompatible skill-bound, broad, overlong, or workspace-write edit requests; timeout results can be inspected later with `get_run`. |
 | Broad, long, cancellable, polling, or caller-interactive work | `start_run` plus `get_run` | Default here for repo audits, implementation work, planning, unclear scope, or anything likely to exceed the one-shot deadline. Pass `timeout_ms` when a hard deadline matters; answer pending input with `answer_run_input`; cancel with `cancel_run`. |
 | Durable continuity by semantic key | `start_session_run` plus `get_run`, or `run_subagent_session` for compatibility | Requires `session_key`; use when manifest/ledger continuity matters. Prefer the async task form for long, cancellable, or abandoned-client-safe work. |
 | Model-class/config health | `list_model_classes` | `list_allowed_models` is a compatibility alias. |
 
-Agent rule of thumb: if the task may need tools, skills, edits, caller input, or more than a short answer, use a durable task (`start_run` or `start_session_run`) and poll `get_run`. Use `run_subagent` only when you can honestly treat the call as quick, bounded, and non-interactive.
+Agent rule of thumb: if the task may need shell/write tools, skills, edits, caller input, or more than a short answer, use a durable task (`start_run` or `start_session_run`) and poll `get_run`. Use `run_subagent` only when you can honestly treat the call as quick, bounded, and non-interactive.
 
 The default `tool_profile` is `inspect`; set `workspace_write` before expecting the child to edit files.
 
@@ -88,6 +88,8 @@ Child-invocation tools require:
 - `cwd`: absolute directory path
 - `prompt`: nonempty string
 
+Treat `prompt` as public within Subagent007 artifacts: it is copied into run transcripts and public event ledgers. `answer_run_input.answer` is stored in local mailbox records but omitted from public events.
+
 Omit `model_class` for the configured/default class, or pass `A`, `B`, `C`, `D`, or `E` when the task needs a different capability tier. Public concrete `model` and `thinking_level` inputs are intentionally unsupported.
 
 Optional common fields:
@@ -119,7 +121,13 @@ Use `workspace_write` only when the child is expected to modify files. Use `shel
 
 Bind skills with `skill_name`, not prompt syntax. It must be a bare name such as `pda-lite` or `google-drive:google-docs`, not `$skill`, `/skill:name`, markdown, prose, or a path. Child runs receive no ambient skill catalog; omission means no skills, and a provided name must resolve to exactly one skill before model invocation.
 
-Runs that reach child execution return `output_path` on terminal completion; schema and preflight errors do not. `run_subagent`, `start_run`, `start_session_run`, and the compatibility `run_subagent_session` wrapper create durable run-task snapshots that can be inspected with `get_run` by `run_id`. `start_run` and `start_session_run` return `output_path` only after polling reaches a terminal state. Active `get_run` views expose sanitized `recent_events` and `last_public_output_excerpt`; raw thinking, control events, and prompt text are not public active events. On timeout, `partial_output_available` is true only when the artifact includes child assistant text, a warning/error, or a captured final message.
+Result semantics:
+
+- Runs that reach child execution return `output_path` on terminal completion; schema and preflight rejections do not.
+- Expected handler-level semantic rejections return structured content with `kind:"preflight_rejected"`, `success:false`, and `child_started:false`; SDK schema errors remain MCP input validation errors.
+- `run_subagent`, `start_run`, `start_session_run`, and `run_subagent_session` create durable run-task snapshots inspectable with `get_run` by `run_id`.
+- Active `get_run` views expose sanitized `recent_events` and `last_public_output_excerpt`; raw thinking, private tool payloads, full packet instructions, composed child prompts, and input answer text are not public events.
+- On timeout, `partial_output_available` is true only when the artifact includes child assistant text, a warning/error, or a captured final message.
 
 ## One-Shot Runs
 
@@ -165,7 +173,7 @@ Input requests are stored under `~/.codex/subagent007-pi/input-requests` by defa
 
 `timeout_ms` is optional for `start_run`, `start_session_run`, and `run_subagent_session`; omit it only for deliberately unbounded work. When provided, it is a hard response-budget cap: the child process is stopped before that budget is exhausted so the MCP tool can return timeout metadata and any public transcript. Values must leave at least one millisecond of effective child runtime after configured response headroom, kill grace, and force grace are reserved. It is not a `run_subagent` input, and `run_subagent` rejects calls that provide it.
 
-Run task snapshots are stored under `~/.codex/subagent007-pi/run-tasks` by default. Active runs expose `elapsed_ms`, `heartbeat_count`, `last_progress_at`, `last_progress_message`, bounded `recent_events`, and `last_public_output_excerpt` through `get_run` immediately after task creation; `status` reflects pending input immediately, and heartbeat progress messages name pending request ids once observed. Completed `run_subagent`, `start_run`, and session tasks can still be inspected by `get_run` after an MCP server restart. A run that was active during a restart is reported as failed with a clear restart-state error because the new server process cannot safely reattach to the old child process.
+Run task snapshots and public event ledgers are stored under `~/.codex/subagent007-pi/run-tasks` by default. Active runs expose progress fields and bounded public events immediately after task creation; `status` reflects pending input immediately. Completed `run_subagent`, `start_run`, and session tasks can still be inspected by `get_run` after an MCP server restart. A run that was active during a restart is reported as failed with a clear restart-state error because the new server process cannot safely reattach to the old child process, while previously persisted public events are preserved.
 
 ## Named Sessions
 
@@ -191,7 +199,7 @@ Use `start_session_run` when the caller wants durable continuity by semantic key
 - `new`: fail if a session already exists
 - `require_existing`: fail if no session exists
 
-The first successful run locks in `cwd` and the normalized skill binding from `skill_name` or legacy `skill`. Later runs with the same `session_key` must use the same real `cwd` and same normalized skill binding. Do not pass raw `continuity` or top-level `session_id` to `run_subagent_session`; named sessions derive Pi continuity from the manifest.
+The first successful run locks in `cwd` and the normalized skill binding from `skill_name` or legacy `skill`. Later runs with the same `session_key` must use the same real `cwd` and same normalized skill binding. Do not pass raw `continuity` or top-level `session_id` to named-session tools; named sessions derive Pi continuity from the manifest.
 
 Use `packet_policy` only when the caller needs a structured handoff packet. Values:
 
@@ -200,6 +208,8 @@ Use `packet_policy` only when the caller needs a structured handoff packet. Valu
 - `required`: fail the session run unless a valid `contract_packet_v1` block claims `verdict: "ready"` with an empty `blockers` array
 
 Session turns execute against a candidate Pi session first. The manifest and ledger advance only when the process succeeds, a Pi session is available, and the packet policy is satisfied. Failed candidate turns are recorded in `attempts.jsonl` instead of mutating the committed session manifest.
+
+When packet policy or skill binding adds server-authored instructions, public events and transcript artifacts render the caller prompt plus compact markers such as `[server_contract] skill_name=pda-lite` or `[server_contract] packet_policy=required contract_packet_v1 instruction applied`. The child still receives the full composed prompt required for current Pi behavior.
 
 Session results keep `subagent_session_id` and `session_established` as committed-state fields. They also expose `attempt_subagent_session_id` and `attempt_session_established` so packet-required failures can show that Pi created a candidate session even when promotion to the committed session was rejected.
 
@@ -218,7 +228,7 @@ Environment overrides:
 - Paths: `SUBAGENT007_CONFIG_PATH`, `SUBAGENT007_RUNS_DIR`, `SUBAGENT007_RUN_TASKS_DIR`, `SUBAGENT007_PI_RAW_SESSIONS_DIR`, `SUBAGENT007_SESSIONS_DIR`, `SUBAGENT007_INPUT_REQUESTS_DIR`, `SUBAGENT007_FAILURE_LOG_PATH`, `SUBAGENT007_MODEL_HEALTH_PATH`
 - Timeouts/progress: `SUBAGENT007_INPUT_REQUEST_TIMEOUT_MS`, `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`, `SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS`, `SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS`, `SUBAGENT007_TIMEOUT_KILL_GRACE_MS`, `SUBAGENT007_TIMEOUT_FORCE_GRACE_MS`, `SUBAGENT007_HEARTBEAT_INTERVAL_MS`, `SUBAGENT007_MAX_TRANSCRIPT_BYTES`, `SUBAGENT007_SESSION_LOCK_LEASE_MS`
 - Pi/runtime: `SUBAGENT007_PI_AGENT_DIR`, `PI_CODING_AGENT_DIR`, `SUBAGENT007_PI_SKILL_PATHS`
-- Failure logging and campaigns: `SUBAGENT007_FAILURE_LOG=off`, `SUBAGENT007_BUILD_SHA`, `GIT_COMMIT`, `SUBAGENT007_RECORD_SOURCE`, `SUBAGENT007_CAMPAIGN_ID`, `SUBAGENT007_CAMPAIGN_LEDGER_PATH`
+- Failure logging and campaigns: `SUBAGENT007_FAILURE_LOG=off`, `SUBAGENT007_BUILD_SHA`, `GIT_COMMIT`, `SUBAGENT007_RECORD_SOURCE`, `SUBAGENT007_CAMPAIGN_ID`, `SUBAGENT007_CAMPAIGN_LEDGER_PATH`, `SUBAGENT007_COVERAGE_MANIFEST_PATH`
 
 `SUBAGENT007_PI_AGENT_DIR` wins over Pi's native `PI_CODING_AGENT_DIR`; otherwise the Pi agent directory defaults to `~/.pi/agent`. The resolved agent directory is used for Pi auth, custom models, settings/resources, and session behavior.
 
@@ -241,10 +251,12 @@ Observed trial reports must record those summary fields for harness-launched pro
 Use the bundled MCP probe when a report needs bundled call-attempt evidence across schema, handler, child, and success paths:
 
 ```sh
-npm run observed-campaign -- --campaign-id campaign.example-1 -- npm run observed-mcp-probe -- --server ./dist/server.js --cwd /absolute/project/path --mode protocol-deterministic --scenario all-bundled
+npm run observed-campaign -- --campaign-id campaign.example-1 -- npm run observed-mcp-probe -- --server ./dist/server.js --cwd /absolute/project/path --profile protocol-core
 ```
 
-Only probe calls recorded in `campaign_ledger_path` should claim MCP call-attempt coverage. Server-side `failures.jsonl` remains handler and child failure telemetry; SDK schema rejections happen before server handlers and are recorded by the probe ledger as `call_schema_error`. The bundled MCP probe defaults to `--mode protocol-deterministic`, injects a deterministic fake child with `SUBAGENT007_PI_CHILD_PATH`, and labels raw ledger records and coverage summaries with `evidence_class: "protocol-deterministic"`. Use `--mode live-model` only for live provider smoke evidence; deterministic-only scenarios such as child failure and packet failure are rejected in live mode. The probe prints `scenario_set`, `mode`, `covered_surfaces`, `covered_surfaces_by_evidence_class`, and `uncovered_surfaces`; `all` is accepted as a compatibility alias for `all-bundled`, not a claim of product-complete E2E coverage.
+Only probe calls recorded in `campaign_ledger_path` should claim MCP call-attempt coverage. Server-side `failures.jsonl` remains handler and child failure telemetry; SDK schema rejections happen before server handlers and are recorded by the probe ledger as `call_schema_error`; structured semantic preflight rejections are recorded as `call_preflight_rejected`. The bundled MCP probe defaults to the `protocol-core` profile, injects a deterministic fake child with `SUBAGENT007_PI_CHILD_PATH`, and labels raw ledger records and coverage summaries with `evidence_class: "protocol-deterministic"`.
+
+Coverage profiles are declared in `scripts/observed-coverage-manifest.json` and fail closed when required surfaces are missing. `protocol-core` is the deterministic profile; `live-smoke` and `stateful-live` are live evidence profiles; `full-current` is a fail-closed aggregate profile and exits nonzero until every required current surface has matching evidence in the selected scenario set. `all` and `all-bundled` remain compatibility aliases for `protocol-core`, not product-complete E2E claims. The probe prints `scenario_set`, `profile`, `mode`, `required_surfaces`, `covered_surfaces`, `covered_surfaces_by_evidence_class`, `missing_required_surfaces`, `skipped_surfaces`, and `out_of_scope_surfaces`. Use `--mode live-model` only for live provider smoke evidence; deterministic-only scenarios such as child failure and packet failure are rejected in live mode.
 
 ## Development
 

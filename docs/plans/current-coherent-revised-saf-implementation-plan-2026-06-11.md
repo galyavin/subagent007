@@ -130,7 +130,7 @@ The target shape is one lifecycle authority for ordinary runs and named-session 
 - **Verification:**
   - `npm run build`
   - `npm test -- tests/observed-campaign.test.ts`
-  - `npm run observed-campaign -- --campaign-id campaign.verify-deterministic -- npm run observed-mcp-probe -- --server ./dist/server.js --cwd "$(pwd)" --mode protocol-deterministic --scenario all-bundled`
+  - `npm run observed-campaign -- --campaign-id campaign.verify-protocol-core -- npm run observed-mcp-probe -- --server ./dist/server.js --cwd "$(pwd)" --profile protocol-core`
 
 ### U2. Shared Public Event Sanitizer And Active Projection
 

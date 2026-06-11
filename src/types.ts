@@ -56,6 +56,15 @@ export interface ResolvedRunSubagentRequest {
   toolProfile: ToolProfile;
 }
 
+export interface PromptProvenance {
+  public_prompt: string;
+  skill_name?: string;
+  skill_marker?: string;
+  packet_policy?: SessionPacketPolicy;
+  packet_marker?: string;
+  composed_child_prompt: string;
+}
+
 export interface SubagentRunResultBase {
   output_path: string;
   success: boolean;
@@ -175,12 +184,51 @@ export interface RunSubagentSessionResult extends SubagentRunResultBase {
   thinking_level_changed_from_manifest: boolean;
 }
 
-export type RunPublicEventKind = "user" | "assistant" | "warning" | "error" | "marker" | "input";
+export interface PreflightRejectedResult {
+  status: "rejected";
+  kind: "preflight_rejected";
+  success: false;
+  child_started: false;
+  error_class: "validation_error";
+  reason_code: string;
+  message: string;
+  retry_guidance?: string;
+}
+
+export type RunPublicEventKind =
+  | "task"
+  | "child"
+  | "user"
+  | "assistant"
+  | "warning"
+  | "error"
+  | "input"
+  | "packet"
+  | "terminal";
+
+export type RunPublicEventName =
+  | "run_started"
+  | "child_spawned"
+  | "input_required"
+  | "input_answered"
+  | "input_timed_out"
+  | "input_closed"
+  | "timeout"
+  | "cancellation_requested"
+  | "cancellation_settled"
+  | "packet_accepted"
+  | "packet_rejected"
+  | "completed"
+  | "failed"
+  | "message";
 
 export interface RunPublicEvent {
+  schema_version?: 1;
   kind: RunPublicEventKind;
+  event?: RunPublicEventName;
   text: string;
   occurred_at: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface ContractPacketFinding {

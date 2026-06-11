@@ -33,7 +33,7 @@ type RunSubagentMetadata = {
   last_progress_at?: string;
   last_progress_message?: string;
   heartbeat_count?: number;
-  recent_events?: Array<{ kind: string; text: string; occurred_at: string }>;
+  recent_events?: Array<{ kind: string; event?: string; text: string; occurred_at: string }>;
   last_public_output_excerpt?: string;
 };
 
@@ -168,7 +168,13 @@ test("runSubagent is ephemeral by default and invokes the Pi child request-file 
       const logs = await readJsonl<{ request: Record<string, unknown> }>(fake.logPath);
       assert.equal(logs.length, 1);
       assert.equal(logs[0].request.sessionMode, "ephemeral");
-      assert.equal(logs[0].request.prompt, "FAST");
+      assert.equal(logs[0].request.prompt, "/skill:pda-lite\n\n<prompt>\nFAST\n</prompt>");
+      assert.deepEqual(logs[0].request.promptProvenance, {
+        public_prompt: "FAST",
+        skill_name: "pda-lite",
+        skill_marker: "[server_contract] skill_name=pda-lite",
+        composed_child_prompt: "/skill:pda-lite\n\n<prompt>\nFAST\n</prompt>",
+      });
       assert.equal(logs[0].request.skill, "pda-lite");
       assert.equal(logs[0].request.cwd, projectDir);
       assert.equal(logs[0].request.toolProfile, "inspect");
@@ -730,7 +736,9 @@ test("MCP run_subagent rejects skill-bound one-shot work before invoking the chi
         skill_name: "pda-lite",
       },
     });
-    assert.equal(response.isError, true);
+    assert.notEqual(response.isError, true);
+    assert.equal((response.structuredContent as { kind?: string }).kind, "preflight_rejected");
+    assert.equal((response.structuredContent as { child_started?: boolean }).child_started, false);
     const content = response.content as Array<{ type: string; text?: string }>;
     assert.match(
       content[0]?.type === "text" ? (content[0].text ?? "") : "",
@@ -799,6 +807,33 @@ test("run_subagent writes public transcripts without thinking event payloads", a
   });
 });
 
+test("run_subagent raw public event file omits thinking payloads", async () => {
+  const runTasksDir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-events-"));
+  await connectFakeClient(
+    async (client, { projectDir }) => {
+      const response = await client.callTool({
+        name: "run_subagent",
+        arguments: {
+          cwd: projectDir,
+          prompt: "RAW_THINKING_TRANSCRIPT",
+          run_kind: "quick_noninteractive",
+        },
+      });
+      assert.notEqual(response.isError, true);
+      const metadata = response.structuredContent as RunSubagentMetadata;
+      const rawEvents = await fs.readFile(path.join(runTasksDir, `${metadata.run_id}.events.jsonl`), "utf8");
+      assert.doesNotMatch(rawEvents, /SECRET_THINKING_SHOULD_NOT_LEAK/);
+      assert.doesNotMatch(rawEvents, /thinking_delta|assistantMessageEvent/);
+      assert.doesNotMatch(JSON.stringify(metadata.recent_events), /SECRET_THINKING_SHOULD_NOT_LEAK/);
+    },
+    {
+      env: {
+        SUBAGENT007_RUN_TASKS_DIR: runTasksDir,
+      },
+    },
+  );
+});
+
 test("MCP run_subagent fails fast for known unhealthy one-shot model class", async () => {
   await connectFakeClient(async (client, { projectDir, fakeLogPath, modelHealthPath }) => {
     await fs.writeFile(
@@ -840,7 +875,9 @@ test("MCP run_subagent fails fast for known unhealthy one-shot model class", asy
         model_class: "A",
       },
     });
-    assert.equal(response.isError, true);
+    assert.notEqual(response.isError, true);
+    assert.equal((response.structuredContent as { kind?: string }).kind, "preflight_rejected");
+    assert.equal((response.structuredContent as { child_started?: boolean }).child_started, false);
     const content = response.content as Array<{ type: string; text?: string }>;
     assert.match(
       content[0]?.type === "text" ? (content[0].text ?? "") : "",
@@ -860,7 +897,9 @@ test("MCP run_subagent rejects broad analysis prompts before invoking the child"
         run_kind: "quick_noninteractive",
       },
     });
-    assert.equal(response.isError, true);
+    assert.notEqual(response.isError, true);
+    assert.equal((response.structuredContent as { kind?: string }).kind, "preflight_rejected");
+    assert.equal((response.structuredContent as { child_started?: boolean }).child_started, false);
     const content = response.content as Array<{ type: string; text?: string }>;
     assert.match(
       content[0]?.type === "text" ? (content[0].text ?? "") : "",
@@ -906,7 +945,7 @@ test("MCP start_run/get_run exposes active liveness and pending-input progress",
       assert.equal(started.heartbeat_count, 0);
       assert.equal(typeof started.elapsed_ms, "number");
       assert.equal(typeof started.last_progress_at, "string");
-      assert.equal(started.last_progress_message, "running");
+      assert.equal(started.last_progress_message, "child process starting");
 
       const heartbeat = await waitForActiveHeartbeat(client, started.run_id);
       assert.equal(heartbeat.status, "working");
@@ -931,7 +970,7 @@ test("MCP start_run/get_run exposes active liveness and pending-input progress",
         });
         assert.notEqual(response.isError, true);
         const metadata = response.structuredContent as RunSubagentMetadata;
-        if (metadata.last_progress_message?.includes("pending input request")) {
+        if (metadata.status === "input_required") {
           pendingView = metadata;
           break;
         }
@@ -943,7 +982,7 @@ test("MCP start_run/get_run exposes active liveness and pending-input progress",
 
       assert.ok(pendingView);
       assert.equal(pendingView.status, "input_required");
-      assert.match(pendingView.last_progress_message ?? "", new RegExp(request.request_id));
+      assert.ok(pendingView.input_requests.some((entry) => entry.request_id === request.request_id));
 
       const answerResponse = await client.callTool({
         name: "answer_run_input",
@@ -1035,7 +1074,54 @@ test("MCP start_session_run returns a durable pollable named-session task", asyn
     assert.equal(terminal.session_key, "mcp-session:T001");
     assert.equal(terminal.packet_parse_status, "valid");
     assert.equal(terminal.run_record?.success, true);
+    assert.ok(terminal.recent_events?.some((event) => event.event === "packet_accepted"));
+    assert.ok(terminal.recent_events?.some((event) => event.text === "[server_contract] packet_policy=required contract_packet_v1 instruction applied"));
+    assert.doesNotMatch(JSON.stringify(terminal.recent_events), /<subagent007_contract_packet>/);
   });
+});
+
+test("answer_run_input records no answer text in raw public event file", async () => {
+  const runTasksDir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-input-events-"));
+  await connectFakeClient(
+    async (client, { projectDir }) => {
+      const startedResponse = await client.callTool({
+        name: "start_run",
+        arguments: {
+          cwd: projectDir,
+          prompt: "HEARTBEAT_LONG_WAIT",
+        },
+      });
+      assert.notEqual(startedResponse.isError, true);
+      const started = startedResponse.structuredContent as RunSubagentMetadata;
+      const mailboxRoot = path.dirname(started.input_requests_dir);
+      const request = await createInputRequest({
+        mailboxRoot,
+        runId: started.run_id,
+        question: "Need secret?",
+      });
+
+      const answerResponse = await client.callTool({
+        name: "answer_run_input",
+        arguments: {
+          run_id: started.run_id,
+          request_id: request.request_id,
+          answer: "SECRET_ANSWER_SHOULD_NOT_LEAK",
+        },
+      });
+      assert.notEqual(answerResponse.isError, true);
+      const rawEvents = await fs.readFile(path.join(runTasksDir, `${started.run_id}.events.jsonl`), "utf8");
+      assert.match(rawEvents, /input_answered/);
+      assert.doesNotMatch(rawEvents, /SECRET_ANSWER_SHOULD_NOT_LEAK/);
+      const terminal = await waitForTerminalRun(client, started.run_id);
+      assert.doesNotMatch(JSON.stringify(terminal.recent_events), /SECRET_ANSWER_SHOULD_NOT_LEAK/);
+    },
+    {
+      env: {
+        SUBAGENT007_RUN_TASKS_DIR: runTasksDir,
+        SUBAGENT007_HEARTBEAT_INTERVAL_MS: "25",
+      },
+    },
+  );
 });
 
 test("MCP start_session_run rejects invalid session input before creating a task", async () => {
@@ -1048,7 +1134,9 @@ test("MCP start_session_run rejects invalid session input before creating a task
         session_key: "bad key with spaces",
       },
     });
-    assert.equal(response.isError, true);
+    assert.notEqual(response.isError, true);
+    assert.equal((response.structuredContent as { kind?: string }).kind, "preflight_rejected");
+    assert.equal((response.structuredContent as { child_started?: boolean }).child_started, false);
     const content = response.content as Array<{ type: string; text?: string }>;
     assert.match(
       content[0]?.type === "text" ? (content[0].text ?? "") : "",
@@ -1057,7 +1145,7 @@ test("MCP start_session_run rejects invalid session input before creating a task
   });
 });
 
-test("MCP run_subagent_session preserves handler validation errors in compatibility mode", async () => {
+test("MCP run_subagent_session returns structured preflight rejection for invalid session input", async () => {
   await connectFakeClient(async (client, { projectDir }) => {
     const response = await client.callTool({
       name: "run_subagent_session",
@@ -1067,7 +1155,9 @@ test("MCP run_subagent_session preserves handler validation errors in compatibil
         session_key: "bad key with spaces",
       },
     });
-    assert.equal(response.isError, true);
+    assert.notEqual(response.isError, true);
+    assert.equal((response.structuredContent as { kind?: string }).kind, "preflight_rejected");
+    assert.equal((response.structuredContent as { child_started?: boolean }).child_started, false);
     const content = response.content as Array<{ type: string; text?: string }>;
     assert.match(
       content[0]?.type === "text" ? (content[0].text ?? "") : "",

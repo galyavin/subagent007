@@ -1,4 +1,4 @@
-import type { RunPublicEventKind } from "./types.js";
+import type { PromptProvenance, RunPublicEventKind, RunPublicEventName } from "./types.js";
 
 const DEFAULT_MAX_TRANSCRIPT_BYTES = 256 * 1024;
 
@@ -29,6 +29,7 @@ function textPartsFromContent(content: unknown): string[] {
 export interface PublicOutputLine {
   text: string;
   kind: RunPublicEventKind;
+  event?: RunPublicEventName;
 }
 
 export interface PublicTranscript {
@@ -87,13 +88,27 @@ function eventMessageLine(event: Record<string, unknown>): PublicOutputLine | nu
 
 function publicLineForEvent(event: Record<string, unknown>): PublicOutputLine | null {
   switch (event.type) {
+    case "subagent007.input_request": {
+      const requestId = typeof event.request_id === "string" ? event.request_id : "unknown";
+      const question = typeof event.question === "string" ? event.question : "";
+      const suffix = question.trim() === "" ? "" : ` ${question.trim()}`;
+      return { text: `[input_required] ${requestId}${suffix}`, kind: "input", event: "input_required" };
+    }
+    case "subagent007.input_timed_out": {
+      const requestId = typeof event.request_id === "string" ? event.request_id : "unknown";
+      return { text: `[input_timed_out] ${requestId}`, kind: "input", event: "input_timed_out" };
+    }
+    case "subagent007.input_closed": {
+      const requestId = typeof event.request_id === "string" ? event.request_id : "unknown";
+      return { text: `[input_closed] ${requestId}`, kind: "input", event: "input_closed" };
+    }
     case "subagent007.error": {
       const error = typeof event.error === "string" ? event.error : "unknown error";
-      return { text: `[subagent007 error] ${error}`, kind: "error" };
+      return { text: `[subagent007 error] ${error}`, kind: "error", event: "failed" };
     }
     case "subagent007.warning": {
       const message = typeof event.message === "string" ? event.message : "warning";
-      return { text: `[subagent007 warning] ${message}`, kind: "warning" };
+      return { text: `[subagent007 warning] ${message}`, kind: "warning", event: "message" };
     }
     case "message_end":
       return eventMessageLine(event);
@@ -105,7 +120,11 @@ function publicLineForEvent(event: Record<string, unknown>): PublicOutputLine | 
 function publicMarkerLine(line: string): PublicOutputLine | null {
   const trimmed = line.trim();
   return trimmed.startsWith("[subagent007 timeout]") || trimmed === "[subagent007 cancelled]"
-    ? { text: trimmed, kind: "marker" }
+    ? {
+        text: trimmed,
+        kind: "terminal",
+        event: trimmed.startsWith("[subagent007 timeout]") ? "timeout" : "cancellation_settled",
+      }
     : null;
 }
 
@@ -119,8 +138,27 @@ function truncateUtf8(value: string, maxBytes: number): string {
   return `${buffer.subarray(0, Math.max(0, maxBytes - markerBytes)).toString("utf8")}${marker}`;
 }
 
-export function preparePublicTranscriptFromProcessOutput(rawOutput: string): PublicTranscript {
-  const publicLines: PublicOutputLine[] = [];
+function provenancePublicLines(promptProvenance?: PromptProvenance): PublicOutputLine[] {
+  if (!promptProvenance) {
+    return [];
+  }
+  return [
+    { kind: "user", event: "message", text: `[user]\n${promptProvenance.public_prompt}` },
+    ...(promptProvenance.skill_marker
+      ? [{ kind: "task" as const, event: "message" as const, text: promptProvenance.skill_marker }]
+      : []),
+    ...(promptProvenance.packet_marker
+      ? [{ kind: "packet" as const, event: "message" as const, text: promptProvenance.packet_marker }]
+      : []),
+  ];
+}
+
+export function preparePublicTranscriptFromProcessOutput(
+  rawOutput: string,
+  options: { promptProvenance?: PromptProvenance } = {},
+): PublicTranscript {
+  const initialPublicLines = provenancePublicLines(options.promptProvenance);
+  const publicLines: PublicOutputLine[] = [...initialPublicLines];
   const rawLines: string[] = [];
   let sawStructuredEvent = false;
 
@@ -139,6 +177,9 @@ export function preparePublicTranscriptFromProcessOutput(rawOutput: string): Pub
           sawStructuredEvent = true;
           const publicLine = publicLineForEvent(parsed as Record<string, unknown>);
           if (publicLine) {
+            if (options.promptProvenance && publicLine.kind === "user") {
+              continue;
+            }
             publicLines.push(publicLine);
           }
           continue;
@@ -154,7 +195,7 @@ export function preparePublicTranscriptFromProcessOutput(rawOutput: string): Pub
 
   const text = sawStructuredEvent
     ? publicLines.map((line) => line.text).join("\n\n")
-    : rawLines.join("\n");
+    : [...initialPublicLines.map((line) => line.text), ...rawLines].join("\n\n");
   const fallback = sawStructuredEvent && text.trim() === ""
     ? "[subagent007 transcript unavailable: no public events captured]"
     : text;

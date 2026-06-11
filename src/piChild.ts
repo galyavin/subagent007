@@ -12,10 +12,9 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { createInputRequest, waitForInputAnswer } from "./inputMailbox.js";
 import { resolvePiAgentDir } from "./piAgentDir.js";
-import { composePrompt } from "./prompt.js";
 import { createSkillScopedResourceLoader } from "./skillResources.js";
 import { toolsForProfile } from "./toolProfile.js";
-import type { OutputMode, ThinkingLevel, ToolProfile } from "./types.js";
+import type { OutputMode, PromptProvenance, ThinkingLevel, ToolProfile } from "./types.js";
 
 interface PiChildRequest {
   prompt: string;
@@ -26,6 +25,7 @@ interface PiChildRequest {
   outputMode: OutputMode;
   toolProfile?: ToolProfile;
   outputLastMessagePath?: string;
+  promptProvenance?: PromptProvenance;
   mailboxRoot: string;
   runId: string;
   inputTimeoutMs: number;
@@ -105,12 +105,30 @@ function createRequestInputTool(request: PiChildRequest): ToolDefinition<typeof 
         choices: params.options ?? [],
         freeform: params.freeform ?? true,
       });
-      const answer = await waitForInputAnswer({
-        mailboxRoot: request.mailboxRoot,
-        runId: request.runId,
-        requestId: inputRequest.request_id,
-        timeoutMs: request.inputTimeoutMs,
+      writeEvent({
+        type: "subagent007.input_request",
+        request_id: inputRequest.request_id,
+        question: params.question,
+        option_count: inputRequest.options.length,
+        freeform: inputRequest.freeform,
       });
+      let answer;
+      try {
+        answer = await waitForInputAnswer({
+          mailboxRoot: request.mailboxRoot,
+          runId: request.runId,
+          requestId: inputRequest.request_id,
+          timeoutMs: request.inputTimeoutMs,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes("timed out")) {
+          writeEvent({ type: "subagent007.input_timed_out", request_id: inputRequest.request_id });
+        } else if (message.includes("closed")) {
+          writeEvent({ type: "subagent007.input_closed", request_id: inputRequest.request_id });
+        }
+        throw error;
+      }
       return {
         content: [{ type: "text", text: answer.answer }],
         details: {
@@ -200,7 +218,7 @@ async function main(): Promise<void> {
 
   const unsubscribe = session.subscribe((event) => writeEvent(event));
   try {
-    await session.prompt(composePrompt({ prompt: request.prompt, skill: request.skill }));
+    await session.prompt(request.prompt);
     const finalText = textFromLastAssistantMessage(session.messages);
     if (request.outputLastMessagePath && request.outputMode === "final") {
       await fs.writeFile(request.outputLastMessagePath, finalText, "utf8");

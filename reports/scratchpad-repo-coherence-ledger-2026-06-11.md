@@ -61,3 +61,73 @@ Impact: documentation incoherence. The file is traceability, but without a super
 Repair: added a supersession pointer to the newer current plan and rewrote the stale named-session boundary claims as historical notes.
 
 Status: repaired and verified by docs scan and full verification.
+
+## F007 - Ignored Finder Metadata Present At Repo Root
+
+Observed during initial repository shape scan: `.DS_Store` exists at the repo root. It is ignored by `.gitignore` and not part of the source, runtime, tests, or documentation contract.
+
+Impact: semantic waste only. It adds local machine metadata to the workspace and can confuse broad file inventories, but it is not tracked.
+
+Repair: remove the ignored `.DS_Store` file.
+
+Status: repaired by deleting the ignored file from the workspace.
+
+## F008 - Unused Public Event Summary Helper
+
+Observed while scanning for dead references: `src/runEvents.ts` exports `publicEventTextSummary`, and its private `singleLine` helper only exists to support that export. No source, script, test, or README reference uses the export.
+
+Impact: low-risk semantic waste. It adds an unused public-looking helper to the new event module, increasing the apparent API surface without carrying behavior.
+
+Repair: remove `publicEventTextSummary` and the now-unused private `singleLine` helper from `src/runEvents.ts`.
+
+Status: repaired by removing the unused export and helper.
+
+## F009 - Stale Test Name Claims Session Handler Errors Are Preserved
+
+Observed while scanning test names against repaired preflight semantics: `tests/run-subagent.test.ts` has a test named "MCP run_subagent_session preserves handler validation errors in compatibility mode", but the test body now correctly asserts `kind:"preflight_rejected"` and `child_started:false`.
+
+Impact: semantic distortion in test documentation. The executable assertion is correct, but the test name advertises the old behavior and can mislead future maintenance.
+
+Repair: rename the test to describe structured session preflight rejection.
+
+Status: repaired by renaming the test.
+
+## F010 - Event Sanitizer Allows `schema_version` Override
+
+Observed while inspecting `src/runEvents.ts`: `sanitizePublicEvent` builds `{ schema_version: 1, ...event, ... }`, so a malformed legacy event read from JSONL or an accidental caller-supplied event value could override the canonical schema version.
+
+Impact: low-risk normalization incoherence. Current internal writes do not intentionally pass a different schema version, but the sanitizer should be the primitive that normalizes public event records.
+
+Repair: move `schema_version: 1` after spreading `event` so sanitization always emits the canonical version.
+
+Status: repaired by normalizing schema version after the event spread.
+
+## F011 - Coverage Summary Counts Selected Scenarios As Covered Even When Evidence Fails
+
+Observed while inspecting `scripts/run-observed-mcp-probe.mjs`: `coverageSummary` computes `covered_surfaces` from selected scenario metadata only. It does not check whether the actual call result matched the scenario's required `result_classes`.
+
+Impact: material coverage incoherence. A scenario can fail or return the wrong result shape while the profile still reports its surfaces covered, which undermines the fail-closed campaign guarantee.
+
+Repair: make coverage projection consume call results and count a scenario's surfaces only when the observed response satisfies at least one declared result class.
+
+Status: repaired by making coverage evidence-based and adding a wrong-result regression.
+
+## F012 - `protocol-core` Plan Claims Transcript-Redaction Coverage That Manifest Does Not Run
+
+Observed while comparing `docs/plans/coherent-revised-saf-implementation-plan-2026-06-11-codex-current.md`, `scripts/observed-coverage-manifest.json`, and `scripts/run-observed-mcp-probe.mjs`: the plan defines `protocol-core` as including deterministic transcript-redaction coverage, but the manifest profile did not include a transcript-redaction scenario.
+
+Impact: coverage-profile incoherence. The unit tests cover transcript redaction, but the observed campaign profile under-claims or contradicts the plan depending on which artifact a maintainer reads.
+
+Repair: add a deterministic `transcript-redaction` observed scenario, make it verify the persisted transcript excludes thinking payloads, and include the surface in `protocol-core`.
+
+Status: repaired and verified by typecheck and full tests.
+
+## F013 - Current Plan Verification Command Uses Superseded Probe Alias
+
+Observed while scanning active planning docs after the coverage-profile repair: `docs/plans/current-coherent-revised-saf-implementation-plan-2026-06-11.md` is marked completed, but its U1 verification command still uses `--mode protocol-deterministic --scenario all-bundled` instead of the canonical `--profile protocol-core` command now documented in README and implemented by the manifest.
+
+Impact: documentation incoherence. `all-bundled` remains a compatibility alias, but the active current plan should not preserve the old vocabulary as the primary verification path because the repair intentionally made `protocol-core` the canonical evidence profile.
+
+Repair: update the active plan verification command to use `--profile protocol-core`.
+
+Status: repaired by replacing the stale verification command with the canonical `protocol-core` profile command.
