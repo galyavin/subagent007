@@ -61,6 +61,7 @@ function summarize(text) {
     by_schema_version: {},
     by_tool: {},
     by_failure_class: {},
+    by_calibration_era: {},
     by_cwd_class: {},
     by_campaign_id: {},
     by_day: {},
@@ -79,6 +80,7 @@ function summarize(text) {
     increment(summary.by_schema_version, String(record.schema_version ?? "missing"));
     increment(summary.by_tool, String(record.tool ?? "missing"));
     increment(summary.by_failure_class, String(record.failure_class ?? "missing"));
+    increment(summary.by_calibration_era, String(record.calibration_era ?? "legacy_unclassified"));
     increment(summary.by_cwd_class, String(record.cwd_class ?? classifyCwd(record.cwd)));
     increment(summary.by_campaign_id, String(record.campaign_id ?? "uncategorized"));
     increment(summary.by_day, String(record.timestamp ?? "missing").slice(0, 10));

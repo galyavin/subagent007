@@ -175,7 +175,7 @@ export function partialOutputAvailableForRun(input: {
   );
 }
 
-export async function runSubagent(
+export async function runSubagentCore(
   request: RunSubagentRequest,
   options: {
     runId?: string;
@@ -357,3 +357,5 @@ export async function runSubagent(
     await childRequest?.cleanup();
   }
 }
+
+export const runSubagent = runSubagentCore;

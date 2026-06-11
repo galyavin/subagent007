@@ -10,13 +10,17 @@ import {
   newRunId,
   type InputRequestView,
 } from "./inputMailbox.js";
-import { runSubagent } from "./runSubagent.js";
+import {
+  runSubagentCore,
+  RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT,
+} from "./runSubagent.js";
 import { DEFAULT_HEARTBEAT_MESSAGE, type HeartbeatNotify } from "./progress.js";
 import type { RunSubagentRequest, RunSubagentResult } from "./types.js";
 import { ValidationError } from "./types.js";
 import { loadConfig } from "./config.js";
 import { validateAndResolveRequest } from "./validate.js";
 import { defaultSubagentStatePath } from "./output.js";
+import { assertModelClassUsableForOneShot } from "./modelHealth.js";
 
 export type RunTaskStatus =
   | "working"
@@ -54,6 +58,7 @@ interface RunTaskState {
   lastProgressAt?: string;
   lastProgressMessage?: string;
   promise: Promise<void>;
+  terminalSnapshotStarted: boolean;
 }
 
 const tasks = new Map<string, RunTaskState>();
@@ -113,6 +118,9 @@ function activeProgressView(state: RunTaskState): Pick<
 }
 
 function setTaskProgress(state: RunTaskState, message: string, heartbeatCount = state.heartbeatCount): void {
+  if (state.terminalSnapshotStarted) {
+    return;
+  }
   state.heartbeatCount = heartbeatCount;
   state.lastProgressAt = new Date().toISOString();
   state.lastProgressMessage = message;
@@ -203,14 +211,16 @@ export async function startRunTask(
     abortController,
     cancelRequested: false,
     heartbeatCount: 0,
+    terminalSnapshotStarted: false,
     promise: Promise.resolve(),
   };
+  setTaskProgress(state, DEFAULT_HEARTBEAT_MESSAGE, 0);
   tasks.set(runId, state);
   await writeTaskSnapshot(await getRunTask(runId));
 
   state.promise = (async () => {
     try {
-      state.result = await runSubagent(request, {
+      state.result = await runSubagentCore(request, {
         runId,
         mailboxRoot,
         runsDir: options.runsDir,
@@ -236,6 +246,7 @@ export async function startRunTask(
         });
       }
     } finally {
+      state.terminalSnapshotStarted = true;
       state.finishedAt = new Date().toISOString();
       await closePendingInputRequestsForRun({
         mailboxRoot: state.mailboxRoot,
@@ -247,6 +258,107 @@ export async function startRunTask(
   })();
 
   return getRunTask(runId);
+}
+
+export async function runSubagentOneShotTask(
+  request: RunSubagentRequest,
+  options: {
+    runsDir?: string;
+    heartbeat?: HeartbeatNotify;
+    heartbeatIntervalMs?: number;
+  } = {},
+): Promise<RunTaskView> {
+  const config = await loadConfig();
+  const resolved = await validateAndResolveRequest(request, config);
+  await assertModelClassUsableForOneShot(resolved.modelClass);
+
+  const runId = newRunId();
+  const mailboxRoot = defaultInputRequestsDir();
+  const abortController = new AbortController();
+  const startedAt = new Date().toISOString();
+  const inputRequestsDir = path.join(mailboxRoot, runId);
+
+  const state: RunTaskState = {
+    runId,
+    startedAt,
+    mailboxRoot,
+    inputRequestsDir,
+    abortController,
+    cancelRequested: false,
+    heartbeatCount: 0,
+    terminalSnapshotStarted: false,
+    promise: Promise.resolve(),
+  };
+  setTaskProgress(state, DEFAULT_HEARTBEAT_MESSAGE, 0);
+  tasks.set(runId, state);
+  await writeTaskSnapshot(await getRunTask(runId));
+
+  state.promise = (async () => {
+    try {
+      state.result = await runSubagentCore(request, {
+        runId,
+        mailboxRoot,
+        runsDir: options.runsDir,
+        failureLogTool: "run_subagent",
+        heartbeat: async (beat, message) => {
+          setTaskProgress(state, message ?? DEFAULT_HEARTBEAT_MESSAGE, beat);
+          await writeTaskSnapshot(await getRunTask(runId));
+          await options.heartbeat?.(beat, message);
+        },
+        heartbeatIntervalMs: options.heartbeatIntervalMs,
+        abortSignal: abortController.signal,
+      });
+    } catch (error) {
+      state.error = error as Error;
+      if (!(error instanceof ValidationError)) {
+        await logFailure({
+          tool: "run_subagent",
+          failure_class: "unknown_error",
+          reason_code: "handler_error",
+          cwd: typeof request.cwd === "string" ? request.cwd : undefined,
+          success: false,
+        });
+      }
+    } finally {
+      state.terminalSnapshotStarted = true;
+      state.finishedAt = new Date().toISOString();
+      await closePendingInputRequestsForRun({
+        mailboxRoot: state.mailboxRoot,
+        runId,
+        reason: "run reached a terminal state",
+      });
+      await writeTaskSnapshot(await getRunTask(runId));
+    }
+  })();
+
+  await state.promise;
+  const view = await getRunTask(runId);
+  if (
+    view.timed_out === true &&
+    view.timeout_recovery_hint === undefined
+  ) {
+    const withHint: RunTaskView = {
+      ...view,
+      timeout_recovery_hint: `${RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT} Inspect this run with get_run using run_id ${runId}.`,
+    };
+    await writeTaskSnapshot(withHint);
+    if (state.result) {
+      state.result = { ...state.result, timeout_recovery_hint: withHint.timeout_recovery_hint };
+    }
+    return withHint;
+  }
+  if (view.timeout_recovery_hint) {
+    const withConcreteHint: RunTaskView = {
+      ...view,
+      timeout_recovery_hint: `${view.timeout_recovery_hint} Inspect this run with get_run using run_id ${runId}.`,
+    };
+    await writeTaskSnapshot(withConcreteHint);
+    if (state.result) {
+      state.result = { ...state.result, timeout_recovery_hint: withConcreteHint.timeout_recovery_hint };
+    }
+    return withConcreteHint;
+  }
+  return view;
 }
 
 export async function cancelRunTask(runId: string): Promise<RunTaskView> {

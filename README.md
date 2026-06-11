@@ -6,8 +6,8 @@ Subagent007 Pi is a private MCP server that delegates work to a separate Pi-back
 
 | Situation | Tool | Key constraints |
 | --- | --- | --- |
-| Quick, bounded, non-interactive one-shot work | `run_subagent` | Requires `run_kind: "quick_noninteractive"`; rejects caller `timeout_ms`; no practical caller-answer loop. |
-| Long, cancellable, polling, or caller-interactive work | `start_run` plus `get_run` | Pass `timeout_ms` when a hard deadline matters; answer pending input with `answer_run_input`; cancel with `cancel_run`. |
+| Quick, bounded, non-interactive one-shot work | `run_subagent` | Requires `run_kind: "quick_noninteractive"`; rejects caller `timeout_ms`; no practical caller-answer loop; timeout results can be inspected later with `get_run`. |
+| Broad, long, cancellable, polling, or caller-interactive work | `start_run` plus `get_run` | Default here for repo audits, implementation work, planning, unclear scope, or anything likely to exceed the one-shot deadline. Pass `timeout_ms` when a hard deadline matters; answer pending input with `answer_run_input`; cancel with `cancel_run`. |
 | Durable continuity by semantic key | `run_subagent_session` | Requires `session_key`; use only when manifest/ledger continuity matters; synchronous call, so gather caller answers first. |
 | Model-class/config health | `list_model_classes` | `list_allowed_models` is a compatibility alias. |
 
@@ -53,13 +53,13 @@ Use model classes instead of concrete model IDs. The default class is `C`; calle
 | `D` | Complex multi-file debugging, planning, synthesis, and high-abstraction work | `openai-codex/gpt-5.5`, `high` |
 | `E` | Highest-abstraction, highest-difficulty work requiring deepest technical judgment | `openai-codex/gpt-5.5`, `xhigh` |
 
-Run `npm run models:reconcile` to compare calibrated concrete models with fresh source data from `pi --list-models`, OpenRouter `GET /api/v1/models`, and local Ollama `GET /api/tags`. The command exits nonzero when a calibrated model is missing or has drifted from a source; unavailable sources are reported as unverified instead of drift.
+Run `npm run models:reconcile` to compare calibrated concrete models with fresh source data from `pi --list-models`, OpenRouter `GET /api/v1/models`, and local Ollama `GET /api/tags`. The command exits nonzero when a calibrated model is missing or has drifted from a source; unavailable sources are reported as unverified instead of drift. Inventory reconciliation is separate from one-shot health.
+
+Run `npm run model-health:probe -- --model-class A --cwd /absolute/project/path` to record whether a class is usable for the `run_subagent` one-shot surface. The health file defaults to `~/.codex/subagent007-pi/model-health.json` and can be overridden with `SUBAGENT007_MODEL_HEALTH_PATH`. Unknown health is reported as unknown and does not block execution; known unhealthy one-shot health fails `run_subagent` before the child process starts.
 
 Run `npm run config:migrate` to canonicalize `default_model_class` or migrate a legacy `default_model` plus `default_thinking_level` pair when it exactly matches a known class calibration. The command honors `SUBAGENT007_CONFIG_PATH`, writes atomically, preserves unknown fields, and is not run automatically by server startup or model-class listing.
 
-`list_model_classes` reports the configured default class, effective default class, whether migration is needed, and the resolved internal default model/thinking pair. Legacy public `model` and `thinking_level` inputs are rejected; use `model_class`.
-
-Override the config file path with `SUBAGENT007_CONFIG_PATH`.
+`list_model_classes` reports the configured default class, effective default class, whether migration is needed, the resolved internal default model/thinking pair, and one-shot health for each class. Legacy public `model` and `thinking_level` inputs are rejected; use `model_class`.
 
 ## Register With Codex
 
@@ -116,7 +116,7 @@ Use `workspace_write` only when the child is expected to modify files. Use `shel
 
 Bind skills with `skill_name`, not prompt syntax. It must be a bare name such as `pda-lite` or `google-drive:google-docs`, not `$skill`, `/skill:name`, markdown, prose, or a path.
 
-Runs that reach child execution return `output_path` on terminal completion; schema and preflight errors do not. `start_run` returns `output_path` only after polling reaches a terminal state. Transcript output redacts internal Pi events. On timeout, `partial_output_available` is true only when the artifact includes child assistant text, a warning/error, or a captured final message; user prompts, markers, and raw process bytes do not count.
+Runs that reach child execution return `output_path` on terminal completion; schema and preflight errors do not. `run_subagent` and `start_run` both create durable run-task snapshots that can be inspected with `get_run` by `run_id`; `start_run` returns `output_path` only after polling reaches a terminal state. Transcript output redacts internal Pi events. On timeout, `partial_output_available` is true only when the artifact includes child assistant text, a warning/error, or a captured final message; user prompts, markers, and raw process bytes do not count.
 
 ## One-Shot Runs
 
@@ -157,7 +157,7 @@ Resume raw Pi session:
 
 `run_kind` is an explicit caller contract that the work is bounded, non-interactive, and compatible with the one-shot deadline. Use `start_run` instead for longer, cancellable, polling, caller-input, exploratory, or write-heavy work.
 
-`run_subagent` rejects caller-provided `timeout_ms`. Its internal default deadline is 110 seconds and can be changed with `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`. If that internal one-shot deadline is hit, the structured result includes `timeout_recovery_hint` pointing the caller to `start_run` with an explicit `timeout_ms`.
+`run_subagent` rejects caller-provided `timeout_ms`. Its internal default deadline is 110 seconds and can be changed with `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`. If that internal one-shot deadline is hit, the structured result includes `timeout_recovery_hint` pointing the caller to `start_run` with an explicit `timeout_ms` and to the concrete `run_id` that `get_run` can inspect.
 
 ## Async Runs And Caller Input
 
@@ -185,7 +185,7 @@ Input requests are stored under `~/.codex/subagent007-pi/input-requests` by defa
 
 `timeout_ms` is optional for `start_run` and `run_subagent_session`; omit it only for deliberately unbounded work. When provided, it is a hard response-budget cap: the child process is stopped before that budget is exhausted so the MCP tool can return timeout metadata and any public transcript. Values must leave at least one millisecond of effective child runtime after configured response headroom, kill grace, and force grace are reserved. It is not a `run_subagent` input, and `run_subagent` rejects calls that provide it.
 
-`start_run` task snapshots are stored under `~/.codex/subagent007-pi/run-tasks` by default. Active runs also expose `elapsed_ms`, `heartbeat_count`, `last_progress_at`, and `last_progress_message` through `get_run`; `status` reflects pending input immediately, and heartbeat progress messages name pending request ids once observed. Completed runs can still be inspected by `get_run` after an MCP server restart. A run that was active during a restart is reported as failed with a clear restart-state error because the new server process cannot safely reattach to the old child process.
+Run task snapshots are stored under `~/.codex/subagent007-pi/run-tasks` by default. Active runs expose `elapsed_ms`, `heartbeat_count`, `last_progress_at`, and `last_progress_message` through `get_run` immediately after task creation; `status` reflects pending input immediately, and heartbeat progress messages name pending request ids once observed. Completed `run_subagent` and `start_run` tasks can still be inspected by `get_run` after an MCP server restart. A run that was active during a restart is reported as failed with a clear restart-state error because the new server process cannot safely reattach to the old child process.
 
 ## Named Sessions
 
@@ -231,7 +231,7 @@ Default state root:
 
 Environment overrides:
 
-- Paths: `SUBAGENT007_CONFIG_PATH`, `SUBAGENT007_RUNS_DIR`, `SUBAGENT007_RUN_TASKS_DIR`, `SUBAGENT007_PI_RAW_SESSIONS_DIR`, `SUBAGENT007_SESSIONS_DIR`, `SUBAGENT007_INPUT_REQUESTS_DIR`, `SUBAGENT007_FAILURE_LOG_PATH`
+- Paths: `SUBAGENT007_CONFIG_PATH`, `SUBAGENT007_RUNS_DIR`, `SUBAGENT007_RUN_TASKS_DIR`, `SUBAGENT007_PI_RAW_SESSIONS_DIR`, `SUBAGENT007_SESSIONS_DIR`, `SUBAGENT007_INPUT_REQUESTS_DIR`, `SUBAGENT007_FAILURE_LOG_PATH`, `SUBAGENT007_MODEL_HEALTH_PATH`
 - Timeouts/progress: `SUBAGENT007_INPUT_REQUEST_TIMEOUT_MS`, `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`, `SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS`, `SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS`, `SUBAGENT007_TIMEOUT_KILL_GRACE_MS`, `SUBAGENT007_TIMEOUT_FORCE_GRACE_MS`, `SUBAGENT007_HEARTBEAT_INTERVAL_MS`, `SUBAGENT007_MAX_TRANSCRIPT_BYTES`
 - Pi/runtime: `SUBAGENT007_PI_AGENT_DIR`, `PI_CODING_AGENT_DIR`, `SUBAGENT007_PI_SKILL_PATHS`
 - Failure logging and campaigns: `SUBAGENT007_FAILURE_LOG=off`, `SUBAGENT007_BUILD_SHA`, `GIT_COMMIT`, `SUBAGENT007_RECORD_SOURCE`, `SUBAGENT007_CAMPAIGN_ID`, `SUBAGENT007_CAMPAIGN_LEDGER_PATH`
@@ -240,7 +240,7 @@ Environment overrides:
 
 `SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS`, `SUBAGENT007_TIMEOUT_KILL_GRACE_MS`, and `SUBAGENT007_TIMEOUT_FORCE_GRACE_MS` reserve time inside caller-provided `timeout_ms` so the MCP server can terminate the child process and return metadata before the caller deadline. `SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS` can raise the accepted floor for timed tools. `SUBAGENT007_HEARTBEAT_INTERVAL_MS` controls active-run snapshot cadence and MCP progress notification cadence when the client provides a progress token.
 
-`SUBAGENT007_BUILD_SHA` or `GIT_COMMIT` is copied into failure-log records when present. `SUBAGENT007_RECORD_SOURCE` may be `production`, `test`, or `unknown`; invalid values default to `production`. `SUBAGENT007_CAMPAIGN_ID` is copied into failure-log records when it is a short token containing only letters, digits, `_`, `-`, `.`, or `:`.
+`SUBAGENT007_BUILD_SHA` or `GIT_COMMIT` is copied into failure-log records when present. `SUBAGENT007_RECORD_SOURCE` may be `production`, `test`, or `unknown`; invalid values default to `production`. `SUBAGENT007_CAMPAIGN_ID` is copied into failure-log records when it is a short token containing only letters, digits, `_`, `-`, `.`, or `:`. New failure records include `calibration_era:"model_class_v1"`; archive summaries classify older records without this field as `legacy_unclassified`.
 
 ## Observed Trial Campaigns
 
@@ -250,23 +250,27 @@ Use the campaign harness for scripted real-use probes so trial activity does not
 npm run observed-campaign -- --campaign-id campaign.example-1 -- node ./your-probe.mjs
 ```
 
-When `--state-root` is omitted, the harness creates a temp campaign state root and sets `SUBAGENT007_FAILURE_LOG_PATH`, `SUBAGENT007_CAMPAIGN_LEDGER_PATH`, `SUBAGENT007_RUNS_DIR`, `SUBAGENT007_RUN_TASKS_DIR`, `SUBAGENT007_INPUT_REQUESTS_DIR`, `SUBAGENT007_SESSIONS_DIR`, `SUBAGENT007_PI_RAW_SESSIONS_DIR`, and `SUBAGENT007_CAMPAIGN_ID` for the probe command. Its JSON summary includes `campaign_id`, `state_root`, `failure_log_path`, `campaign_ledger_path`, and `evidence_class: "campaign-scoped"`.
+When `--state-root` is omitted, the harness creates a temp campaign state root and sets `SUBAGENT007_FAILURE_LOG_PATH`, `SUBAGENT007_CAMPAIGN_LEDGER_PATH`, `SUBAGENT007_RUNS_DIR`, `SUBAGENT007_RUN_TASKS_DIR`, `SUBAGENT007_INPUT_REQUESTS_DIR`, `SUBAGENT007_SESSIONS_DIR`, `SUBAGENT007_PI_RAW_SESSIONS_DIR`, `SUBAGENT007_MODEL_HEALTH_PATH`, and `SUBAGENT007_CAMPAIGN_ID` for the probe command. Its JSON summary includes `campaign_id`, `state_root`, `failure_log_path`, `campaign_ledger_path`, `model_health_path`, and `evidence_class: "campaign-scoped"`.
 
 Observed trial reports must record those summary fields for harness-launched probes. Calls made through an already-running installed MCP server are production-state observations unless that server process was itself launched under the campaign environment; do not label those records as campaign-scoped after the fact.
 
 Use the bundled MCP probe when a report needs complete call-attempt evidence across schema, handler, child, and success paths:
 
 ```sh
-npm run observed-campaign -- --campaign-id campaign.example-1 -- npm run observed-mcp-probe -- --server ./dist/server.js --cwd /absolute/project/path --scenario all
+npm run observed-campaign -- --campaign-id campaign.example-1 -- npm run observed-mcp-probe -- --server ./dist/server.js --cwd /absolute/project/path --scenario all-bundled
 ```
 
-Only probe calls recorded in `campaign_ledger_path` should claim complete MCP call-attempt coverage. Server-side `failures.jsonl` remains handler and child failure telemetry; SDK schema rejections happen before server handlers and are recorded by the probe ledger as `call_schema_error`.
+Only probe calls recorded in `campaign_ledger_path` should claim complete MCP call-attempt coverage. Server-side `failures.jsonl` remains handler and child failure telemetry; SDK schema rejections happen before server handlers and are recorded by the probe ledger as `call_schema_error`. The bundled MCP probe prints `scenario_set`, `covered_surfaces`, and `uncovered_surfaces`; `all` is accepted as a compatibility alias for `all-bundled`, not a claim of product-complete E2E coverage.
 
 ## Development
 
 ```sh
+npm run build
 npm run typecheck
 npm test
+npm run models:reconcile
 ```
+
+Run `npm run build` after changing `src/`; the registered MCP command and package tarball use `dist/server.js`.
 
 Tests use `SUBAGENT007_PI_CHILD_PATH` to replace the real Pi child with a fake child process. Do not set it for normal MCP use.

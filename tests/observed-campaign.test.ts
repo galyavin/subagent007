@@ -23,6 +23,7 @@ type HarnessResult = {
   input_requests_dir: string;
   sessions_dir: string;
   pi_raw_sessions_dir: string;
+  model_health_path: string;
   archive: null | { ok: boolean; result?: Record<string, unknown> };
   command_exit_code: number | null;
   command_signal: string | null;
@@ -72,6 +73,7 @@ test("observed campaign harness supplies isolated state paths by default", async
     "  input_requests_dir: process.env.SUBAGENT007_INPUT_REQUESTS_DIR,",
     "  sessions_dir: process.env.SUBAGENT007_SESSIONS_DIR,",
     "  pi_raw_sessions_dir: process.env.SUBAGENT007_PI_RAW_SESSIONS_DIR,",
+    "  model_health_path: process.env.SUBAGENT007_MODEL_HEALTH_PATH,",
     "};",
     "fs.writeFileSync(out, JSON.stringify(env));",
     "fs.appendFileSync(env.failure_log_path, JSON.stringify({ campaign_id: env.campaign_id }) + '\\n');",
@@ -101,6 +103,7 @@ test("observed campaign harness supplies isolated state paths by default", async
     summary.input_requests_dir,
     summary.sessions_dir,
     summary.pi_raw_sessions_dir,
+    summary.model_health_path,
   ]) {
     assert.equal(statePath.startsWith(`${summary.state_root}${path.sep}`), true, statePath);
   }
@@ -110,6 +113,7 @@ test("observed campaign harness supplies isolated state paths by default", async
   assert.equal(childEnv.input_requests_dir, summary.input_requests_dir);
   assert.equal(childEnv.sessions_dir, summary.sessions_dir);
   assert.equal(childEnv.pi_raw_sessions_dir, summary.pi_raw_sessions_dir);
+  assert.equal(childEnv.model_health_path, summary.model_health_path);
 });
 
 test("observed MCP probe records call attempts and failure-log deltas", async () => {
@@ -210,6 +214,72 @@ test("observed MCP probe records call attempts and failure-log deltas", async ()
       .every((event) => Array.isArray(event.argument_shape?.keys)),
     true,
   );
+});
+
+test("observed MCP probe reports bundled scenario coverage semantics", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-probe-coverage-"));
+  const projectDir = path.join(tmp, "project");
+  const stateDir = path.join(tmp, "state");
+  const configPath = path.join(stateDir, "config.json");
+  const fake = await createFakePiChild();
+  await fs.mkdir(projectDir, { recursive: true });
+  await fs.mkdir(stateDir, { recursive: true });
+  await fs.writeFile(configPath, JSON.stringify({ default_model_class: "C" }));
+
+  const result = await execFileAsync(
+    process.execPath,
+    [
+      probePath,
+      "--server",
+      path.resolve("dist/server.js"),
+      "--cwd",
+      projectDir,
+      "--scenario",
+      "all-bundled",
+    ],
+    {
+      cwd: path.resolve("."),
+      env: {
+        ...process.env,
+        SUBAGENT007_CONFIG_PATH: configPath,
+        SUBAGENT007_PI_CHILD_PATH: fake.childPath,
+        FAKE_PI_LOG_PATH: fake.logPath,
+        SUBAGENT007_FAILURE_LOG_PATH: path.join(stateDir, "failures.jsonl"),
+        SUBAGENT007_CAMPAIGN_LEDGER_PATH: path.join(stateDir, "campaign-ledger.jsonl"),
+        SUBAGENT007_SESSIONS_DIR: path.join(stateDir, "sessions"),
+        SUBAGENT007_RUNS_DIR: path.join(stateDir, "runs"),
+        SUBAGENT007_INPUT_REQUESTS_DIR: path.join(stateDir, "input-requests"),
+        SUBAGENT007_PI_RAW_SESSIONS_DIR: path.join(stateDir, "raw-sessions"),
+        SUBAGENT007_MODEL_HEALTH_PATH: path.join(stateDir, "model-health.json"),
+        SUBAGENT007_RECORD_SOURCE: "test",
+      },
+      maxBuffer: 8 * 1024 * 1024,
+    },
+  );
+
+  const summary = JSON.parse(result.stdout) as {
+    scenario_set: string;
+    scenarios: string[];
+    coverage_summary: {
+      covered_surfaces: string[];
+      uncovered_surfaces: string[];
+      scenarios: Array<{ scenario: string; tool: string; surfaces: string[] }>;
+    };
+  };
+
+  assert.equal(summary.scenario_set, "all-bundled");
+  assert.deepEqual(summary.scenarios.sort(), [
+    "child-failure",
+    "handler-validation",
+    "packet-failure",
+    "schema-error",
+    "success",
+  ]);
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("run_subagent-success"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("run_subagent_session-packet-failure"));
+  assert.ok(summary.coverage_summary.uncovered_surfaces.includes("start_run-async-polling"));
+  assert.ok(summary.coverage_summary.uncovered_surfaces.includes("installed-pi-integration"));
+  assert.equal(summary.coverage_summary.scenarios.every((scenario) => scenario.tool.length > 0), true);
 });
 
 test("observed campaign harness preserves child command exit code", async () => {

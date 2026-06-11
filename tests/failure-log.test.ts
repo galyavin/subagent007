@@ -30,6 +30,7 @@ type FailureRecord = {
   resume_possible?: boolean;
   resolved_timeout_ms?: number | null;
   model?: string;
+  calibration_era?: string;
   thinking_level?: string;
   output_mode?: string;
 };
@@ -66,6 +67,7 @@ async function withFakeClient<T>(
       ...extraEnv,
       SUBAGENT007_CONFIG_PATH: configPath,
       SUBAGENT007_FAILURE_LOG_PATH: failureLogPath,
+      SUBAGENT007_MODEL_HEALTH_PATH: path.join(stateDir, "model-health.json"),
       SUBAGENT007_PI_CHILD_PATH: fake.childPath,
       FAKE_PI_LOG_PATH: fake.logPath,
       SUBAGENT007_RECORD_SOURCE: "test",
@@ -99,6 +101,7 @@ test("run_subagent appends one central record for a nonzero child failure", asyn
     assert.equal(failures[0].tool, "run_subagent");
     assert.equal(failures[0].schema_version, 2);
     assert.equal(failures[0].server_version, "0.1.0");
+    assert.equal(failures[0].calibration_era, "model_class_v1");
     assert.equal(failures[0].record_source, "test");
     assert.equal(failures[0].failure_class, "nonzero_exit");
     assert.equal(failures[0].reason_code, "nonzero_exit");
@@ -176,6 +179,7 @@ test("handler-level validation failures are logged without prompt text", async (
     assert.equal(failures[0].tool, "run_subagent");
     assert.equal(failures[0].failure_class, "validation_error");
     assert.equal(failures[0].reason_code, "cwd_not_absolute");
+    assert.equal(failures[0].calibration_era, "model_class_v1");
     assert.equal(failures[0].cwd, "relative-path");
     assert.equal(failures[0].cwd_class, "relative");
     assert.doesNotMatch(JSON.stringify(failures[0]), /SECRET_PROMPT_SHOULD_NOT_BE_LOGGED/);

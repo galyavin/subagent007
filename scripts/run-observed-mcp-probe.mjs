@@ -6,13 +6,63 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
-const SCENARIOS = new Set([
-  "success",
-  "schema-error",
-  "handler-validation",
-  "child-failure",
-  "packet-failure",
-]);
+const PRODUCT_SURFACES = [
+  "tool-listing",
+  "model-class-listing",
+  "run_subagent-success",
+  "run_subagent-schema-error",
+  "run_subagent-handler-validation",
+  "run_subagent-child-failure",
+  "run_subagent-timeout-recovery",
+  "start_run-async-polling",
+  "answer_run_input-caller-input",
+  "cancel_run-cancellation-settlement",
+  "transcript-redaction",
+  "run_subagent_session-packet-failure",
+  "run_subagent_session-valid-packet-closure",
+  "run_subagent_session-invalid-packet-closure",
+  "installed-pi-integration",
+];
+
+const SCENARIO_REGISTRY = {
+  success: {
+    tool: "run_subagent",
+    evidence_class: "mcp-call-observed",
+    lifecycle_phases: ["one-shot-success"],
+    result_classes: ["success"],
+    surfaces: ["run_subagent-success"],
+  },
+  "schema-error": {
+    tool: "run_subagent",
+    evidence_class: "mcp-call-observed",
+    lifecycle_phases: ["sdk-schema-validation"],
+    result_classes: ["schema_error"],
+    surfaces: ["run_subagent-schema-error"],
+  },
+  "handler-validation": {
+    tool: "run_subagent",
+    evidence_class: "mcp-call-observed",
+    lifecycle_phases: ["handler-validation"],
+    result_classes: ["validation_error"],
+    surfaces: ["run_subagent-handler-validation"],
+  },
+  "child-failure": {
+    tool: "run_subagent",
+    evidence_class: "mcp-call-observed",
+    lifecycle_phases: ["child-process-terminal"],
+    result_classes: ["nonzero_exit"],
+    surfaces: ["run_subagent-child-failure"],
+  },
+  "packet-failure": {
+    tool: "run_subagent_session",
+    evidence_class: "mcp-call-observed",
+    lifecycle_phases: ["session-attempt", "packet-required-gate"],
+    result_classes: ["packet_failed"],
+    surfaces: ["run_subagent_session-packet-failure"],
+  },
+};
+
+const SCENARIOS = new Set(Object.keys(SCENARIO_REGISTRY));
 
 function usage() {
   return [
@@ -23,8 +73,8 @@ function usage() {
     "Options:",
     "  --server <path>       MCP server entrypoint. Default: dist/server.js",
     "  --cwd <path>          Absolute project cwd for successful child-backed probes.",
-    "  --scenario <name>     Scenario to run. May repeat. Default: all.",
-    "                       Names: success, schema-error, handler-validation, child-failure, packet-failure",
+    "  --scenario <name>     Scenario to run. May repeat. Default: all-bundled.",
+    "                       Names: all-bundled, success, schema-error, handler-validation, child-failure, packet-failure",
     "  --quiet               Do not print a JSON summary.",
     "  -h, --help            Show this help.",
   ].join("\n");
@@ -35,6 +85,7 @@ function parseArgs(argv) {
     server: path.resolve("dist/server.js"),
     cwd: undefined,
     scenarios: [],
+    scenarioSet: "custom",
     quiet: false,
     help: false,
   };
@@ -59,8 +110,9 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--scenario") {
       const scenario = nextValue(index, arg);
-      if (scenario === "all") {
+      if (scenario === "all" || scenario === "all-bundled") {
         options.scenarios.push(...SCENARIOS);
+        options.scenarioSet = "all-bundled";
       } else if (!SCENARIOS.has(scenario)) {
         throw new Error(`unknown scenario: ${scenario}`);
       } else {
@@ -79,11 +131,33 @@ function parseArgs(argv) {
   }
   if (options.scenarios.length === 0) {
     options.scenarios = [...SCENARIOS];
+    options.scenarioSet = "all-bundled";
   }
   if (options.scenarios.some((scenario) => scenario !== "schema-error") && !options.cwd) {
     throw new Error("--cwd is required unless only schema-error is being probed");
   }
   return { mode: "run", options };
+}
+
+function unique(values) {
+  return [...new Set(values)].sort();
+}
+
+function coverageSummary(scenarios) {
+  const metadata = scenarios.map((scenario) => ({
+    scenario,
+    ...SCENARIO_REGISTRY[scenario],
+  }));
+  const coveredSurfaces = unique(metadata.flatMap((scenario) => scenario.surfaces));
+  return {
+    scenarios: metadata,
+    covered_surfaces: coveredSurfaces,
+    uncovered_surfaces: PRODUCT_SURFACES.filter((surface) => !coveredSurfaces.includes(surface)),
+    tools: unique(metadata.map((scenario) => scenario.tool)),
+    lifecycle_phases: unique(metadata.flatMap((scenario) => scenario.lifecycle_phases)),
+    result_classes: unique(metadata.flatMap((scenario) => scenario.result_classes)),
+    evidence_classes: unique(metadata.map((scenario) => scenario.evidence_class)),
+  };
 }
 
 function campaignLedgerPath() {
@@ -388,7 +462,9 @@ if (!parsed.options.quiet) {
     {
       campaign_id: process.env.SUBAGENT007_CAMPAIGN_ID ?? null,
       ledger_path: ledgerPath,
+      scenario_set: parsed.options.scenarioSet,
       scenarios: parsed.options.scenarios,
+      coverage_summary: coverageSummary(parsed.options.scenarios),
       calls: results,
       event_counts: eventCounts,
     },

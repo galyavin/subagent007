@@ -36,13 +36,19 @@ type RunSubagentMetadata = {
 };
 
 async function connectFakeClient<T>(
-  run: (client: Client, dirs: { projectDir: string; configPath: string; fakeLogPath: string }) => Promise<T>,
+  run: (client: Client, dirs: {
+    projectDir: string;
+    configPath: string;
+    fakeLogPath: string;
+    modelHealthPath: string;
+  }) => Promise<T>,
   options: { config?: Record<string, unknown>; env?: NodeJS.ProcessEnv } = {},
 ): Promise<T> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-mcp-"));
   const projectDir = path.join(tmp, "project");
   const stateDir = path.join(tmp, "state");
   const configPath = path.join(stateDir, "config.json");
+  const modelHealthPath = path.join(stateDir, "model-health.json");
   const fake = await createFakePiChild();
   await fs.mkdir(projectDir, { recursive: true });
   await fs.mkdir(stateDir, { recursive: true });
@@ -63,6 +69,7 @@ async function connectFakeClient<T>(
       FAKE_PI_LOG_PATH: fake.logPath,
       SUBAGENT007_FAILURE_LOG: "off",
       SUBAGENT007_RECORD_SOURCE: "test",
+      SUBAGENT007_MODEL_HEALTH_PATH: modelHealthPath,
       ...options.env,
     },
   });
@@ -70,7 +77,7 @@ async function connectFakeClient<T>(
 
   try {
     await client.connect(transport);
-    return await run(client, { projectDir, configPath, fakeLogPath: fake.logPath });
+    return await run(client, { projectDir, configPath, fakeLogPath: fake.logPath, modelHealthPath });
   } finally {
     await client.close();
   }
@@ -720,7 +727,14 @@ test("MCP run_subagent timeout returns async recovery guidance", async () => {
       const metadata = response.structuredContent as RunSubagentMetadata;
       assert.equal(metadata.success, false);
       assert.equal(metadata.timed_out, true);
-      assert.equal(metadata.timeout_recovery_hint, RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT);
+      assert.match(metadata.timeout_recovery_hint ?? "", new RegExp(RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT));
+      assert.match(metadata.timeout_recovery_hint ?? "", new RegExp(metadata.run_id));
+      const runView = await client.callTool({
+        name: "get_run",
+        arguments: { run_id: metadata.run_id },
+      });
+      assert.notEqual(runView.isError, true);
+      assert.deepEqual(runView.structuredContent, metadata);
     },
     {
       env: {
@@ -754,6 +768,57 @@ test("run_subagent writes public transcripts without thinking event payloads", a
     assert.doesNotMatch(output, /SECRET_THINKING_SHOULD_NOT_LEAK/);
     assert.doesNotMatch(output, /thinking_delta/);
     assert.doesNotMatch(output, /assistantMessageEvent/);
+  });
+});
+
+test("MCP run_subagent fails fast for known unhealthy one-shot model class", async () => {
+  await connectFakeClient(async (client, { projectDir, fakeLogPath, modelHealthPath }) => {
+    await fs.writeFile(
+      modelHealthPath,
+      `${JSON.stringify([
+        {
+          schema_version: 1,
+          model_class: "A",
+          resolved_model: "ollama/gemma4:12b",
+          surface: "run_subagent_one_shot",
+          checked_at: "2026-06-11T00:00:00.000Z",
+          usable_for_one_shot: false,
+          last_failure_class: "timeout",
+          last_failure_at: "2026-06-11T00:00:00.000Z",
+        },
+      ], null, 2)}\n`,
+    );
+
+    const classes = await client.callTool({
+      name: "list_model_classes",
+      arguments: {},
+    });
+    assert.notEqual(classes.isError, true);
+    const classA = (classes.structuredContent as {
+      model_classes: Array<{
+        class: string;
+        one_shot_health?: { status: string; usable_for_one_shot: boolean | null };
+      }>;
+    }).model_classes.find((entry) => entry.class === "A");
+    assert.equal(classA?.one_shot_health?.status, "unhealthy");
+    assert.equal(classA?.one_shot_health?.usable_for_one_shot, false);
+
+    const response = await client.callTool({
+      name: "run_subagent",
+      arguments: {
+        cwd: projectDir,
+        prompt: "FAST",
+        run_kind: "quick_noninteractive",
+        model_class: "A",
+      },
+    });
+    assert.equal(response.isError, true);
+    const content = response.content as Array<{ type: string; text?: string }>;
+    assert.match(
+      content[0]?.type === "text" ? (content[0].text ?? "") : "",
+      /known unhealthy for run_subagent one-shot/,
+    );
+    await assert.rejects(fs.stat(fakeLogPath), /ENOENT/);
   });
 });
 
@@ -792,6 +857,8 @@ test("MCP start_run/get_run exposes active liveness and pending-input progress",
       assert.equal(["working", "completed"].includes(started.status), true);
       assert.equal(started.heartbeat_count, 0);
       assert.equal(typeof started.elapsed_ms, "number");
+      assert.equal(typeof started.last_progress_at, "string");
+      assert.equal(started.last_progress_message, "running");
 
       const heartbeat = await waitForActiveHeartbeat(client, started.run_id);
       assert.equal(heartbeat.status, "working");

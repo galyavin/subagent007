@@ -18,6 +18,8 @@
     "config:migrate": "node scripts/migrate-config.mjs",
     "premodels:reconcile": "npm run build",
     "models:reconcile": "node scripts/reconcile-models.mjs",
+    "premodel-health:probe": "npm run build",
+    "model-health:probe": "node scripts/probe-model-health.mjs",
     "observed-campaign": "node scripts/run-observed-campaign.mjs",
     "observed-mcp-probe": "node scripts/run-observed-mcp-probe.mjs",
     "failure-log:archive": "node scripts/archive-failure-log.mjs"

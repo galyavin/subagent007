@@ -15,10 +15,16 @@ import {
   modelClassChoices,
   resolveModelClass,
 } from "./modelAllowlist.js";
+import { modelHealthForClass } from "./modelHealth.js";
 import { loadConfigRecord, normalizeConfigRecord } from "./config.js";
 import { heartbeatFromExtra, heartbeatIntervalMsFromEnv, type ServerExtra } from "./progress.js";
-import { runSubagent } from "./runSubagent.js";
-import { answerRunTaskInput, cancelRunTask, getRunTask, startRunTask } from "./runTask.js";
+import {
+  answerRunTaskInput,
+  cancelRunTask,
+  getRunTask,
+  runSubagentOneShotTask,
+  startRunTask,
+} from "./runTask.js";
 import { SERVER_VERSION } from "./runtimeMetadata.js";
 import { runSubagentSession } from "./session.js";
 import {
@@ -176,10 +182,11 @@ async function listModelClassesResult(): Promise<ReturnType<typeof jsonToolResul
       }
     : null;
   const result = {
-    model_classes: modelClassChoices().map((modelClass) => ({
+    model_classes: await Promise.all(modelClassChoices().map(async (modelClass) => ({
       class: modelClass,
       description: MODEL_CLASS_CALIBRATIONS[modelClass].description,
-    })),
+      one_shot_health: await modelHealthForClass(modelClass),
+    }))),
     default_model_class: defaultModelClass,
     default_model_class_configured: rawDefaultModelClass,
     default_model_class_effective: defaultModelClass,
@@ -233,7 +240,7 @@ server.registerTool(
   {
     title: "Get Run",
     description:
-      "Read the current status, pending input requests, and terminal result for a run started with start_run.",
+      "Read the current status, pending input requests, and terminal result for a durable run created by run_subagent or start_run.",
     inputSchema: {
       run_id: z.string().min(1),
     },
@@ -290,7 +297,7 @@ server.registerTool(
     inputSchema: runInputSchema,
   },
   withFailureLogging("run_subagent", async (request, extra) => {
-    const result = await runSubagent(request, {
+    const result = await runSubagentOneShotTask(request, {
       heartbeat: heartbeatFromExtra(extra),
       heartbeatIntervalMs: heartbeatIntervalMsFromEnv(),
     });

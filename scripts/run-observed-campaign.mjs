@@ -177,6 +177,7 @@ const campaignEnv = {
   SUBAGENT007_INPUT_REQUESTS_DIR: path.join(stateRoot, "input-requests"),
   SUBAGENT007_SESSIONS_DIR: path.join(stateRoot, "sessions"),
   SUBAGENT007_PI_RAW_SESSIONS_DIR: path.join(stateRoot, "pi-raw-sessions"),
+  SUBAGENT007_MODEL_HEALTH_PATH: path.join(stateRoot, "model-health.json"),
 };
 
 const [command, ...args] = parsed.command;
@@ -203,6 +204,7 @@ console.log(JSON.stringify(
     input_requests_dir: campaignEnv.SUBAGENT007_INPUT_REQUESTS_DIR,
     sessions_dir: campaignEnv.SUBAGENT007_SESSIONS_DIR,
     pi_raw_sessions_dir: campaignEnv.SUBAGENT007_PI_RAW_SESSIONS_DIR,
+    model_health_path: campaignEnv.SUBAGENT007_MODEL_HEALTH_PATH,
     archive,
     command_exit_code: childResult.code,
     command_signal: childResult.signal,

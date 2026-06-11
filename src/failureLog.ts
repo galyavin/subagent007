@@ -16,6 +16,7 @@ export type FailureLogTool =
   | "answer_run_input";
 export type FailureRecordSource = "production" | "test" | "unknown";
 export type FailureCwdClass = "missing" | "relative" | "temp" | "absolute";
+export const CURRENT_CALIBRATION_ERA = "model_class_v1";
 
 export type FailureClass =
   | "validation_error"
@@ -36,6 +37,7 @@ export type FailureReasonCode =
   | "invalid_packet_policy"
   | "invalid_model"
   | "invalid_model_class"
+  | "model_class_unhealthy"
   | "invalid_resume_mode"
   | "invalid_session_id"
   | "invalid_session_key"
@@ -66,6 +68,7 @@ export interface FailureLogRecord {
   event_id: string;
   timestamp: string;
   server_version: string;
+  calibration_era: string;
   build_sha?: string;
   record_source: FailureRecordSource;
   campaign_id?: string;
@@ -167,7 +170,14 @@ function defaultReasonCode(failureClass: FailureClass): FailureReasonCode {
 export async function logFailure(
   record: Omit<
     FailureLogRecord,
-    "schema_version" | "event_id" | "timestamp" | "server_version" | "build_sha" | "record_source" | "cwd_class"
+    | "schema_version"
+    | "event_id"
+    | "timestamp"
+    | "server_version"
+    | "build_sha"
+    | "record_source"
+    | "cwd_class"
+    | "calibration_era"
   > & { reason_code?: FailureReasonCode },
 ): Promise<void> {
   if (failureLoggingDisabled()) {
@@ -183,6 +193,7 @@ export async function logFailure(
       event_id: eventId(),
       timestamp: new Date().toISOString(),
       server_version: SERVER_VERSION,
+      calibration_era: CURRENT_CALIBRATION_ERA,
       ...(buildSha ? { build_sha: buildSha } : {}),
       record_source: recordSourceFromEnv(),
       ...(campaignId ? { campaign_id: campaignId } : {}),
@@ -233,6 +244,7 @@ export function failureReasonCodeForError(error: unknown): FailureReasonCode {
   }
   if (message.includes("model is no longer a public input")) return "invalid_model";
   if (message.includes("model_class must")) return "invalid_model_class";
+  if (message.includes("known unhealthy for run_subagent one-shot")) return "model_class_unhealthy";
   if (message.includes("thinking_level is calibrated by model_class")) return "invalid_thinking_level";
   if (message.includes("curated Subagent007 Pi allowlist")) return "invalid_model";
   if (message.includes("thinking_level must")) return "invalid_thinking_level";

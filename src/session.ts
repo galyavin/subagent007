@@ -13,7 +13,7 @@ import { resolveAllowedModelRef } from "./modelAllowlist.js";
 import { defaultSessionsDir } from "./output.js";
 import { appendContractPacketInstruction, extractContractPacket } from "./packet.js";
 import type { HeartbeatNotify } from "./progress.js";
-import { runSubagent } from "./runSubagent.js";
+import { runSubagentCore } from "./runSubagent.js";
 import {
   OUTPUT_MODES,
   PACKET_PARSE_STATUSES,
@@ -498,7 +498,7 @@ export async function runSubagentSession(
     const sequence = (manifest?.run_count ?? 0) + 1;
     const runId = `${String(sequence).padStart(4, "0")}-${randomBytes(6).toString("hex")}`;
     const attemptSession = await prepareAttemptSession(sessionDir, runId, manifest);
-    const runResult = await runSubagent(sessionRunRequest(resolved, attemptSession.runManifest), {
+    const runResult = await runSubagentCore(sessionRunRequest(resolved, attemptSession.runManifest), {
       runId,
       runsDir: path.join(sessionDir, "runs"),
       suppressFailureLog: true,
