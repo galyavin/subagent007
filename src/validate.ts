@@ -52,7 +52,7 @@ const ONE_SHOT_WRITE_WORK_PATTERNS = [
   /\bfix\b/i,
 ];
 const ONE_SHOT_GUIDANCE =
-  "This request is incompatible with run_subagent's quick_noninteractive contract; use start_run with explicit timeout_ms for broad, exploratory, skill-bound, cancellable, polling, or long-running work.";
+  "This request is incompatible with run_subagent's quick_noninteractive contract; use schedule_run or start_run with explicit timeout_ms for broad, exploratory, skill-bound, cancellable, polling, or long-running work.";
 
 function trimOptional(value: unknown, key: string): string | undefined {
   if (value === undefined) {

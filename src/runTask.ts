@@ -52,6 +52,7 @@ export type RunTaskStatus =
 export type RunTaskActivePhase =
   | "starting"
   | "awaiting_child_event"
+  | "running_silent"
   | "running"
   | "input_required"
   | "cancelling"
@@ -106,6 +107,7 @@ interface RunTaskState {
 }
 
 const tasks = new Map<string, RunTaskState>();
+const DEFAULT_SCHEDULE_WAIT_MS = 1_000;
 
 function defaultRunTasksDir(): string {
   return defaultSubagentStatePath("SUBAGENT007_RUN_TASKS_DIR", "run-tasks");
@@ -297,6 +299,14 @@ async function appendChildSpawnEvent(state: RunTaskState): Promise<void> {
     text: "[child_spawned] Pi child process starting",
     occurred_at: occurredAt,
   }, "child process starting");
+}
+
+function markChildRunningSilently(state: RunTaskState): void {
+  if (state.activePhase !== "awaiting_child_event") {
+    return;
+  }
+  setTaskPhase(state, "running_silent");
+  setTaskProgress(state, "child process running; waiting for output");
 }
 
 async function appendClosedInputEvents(
@@ -549,6 +559,7 @@ export async function startRunTask(
   state.promise = (async () => {
     try {
       await appendChildSpawnEvent(state);
+      markChildRunningSilently(state);
       await writeTaskSnapshot(await getRunTask(runId));
       state.result = await runSubagentCore(request, {
         runId,
@@ -557,7 +568,7 @@ export async function startRunTask(
         failureLogTool: "start_run",
         allowTimeout: true,
         heartbeat: async (beat, message) => {
-          if (state.activePhase === "awaiting_child_event") {
+          if (state.activePhase === "awaiting_child_event" || state.activePhase === "running_silent") {
             setTaskPhase(state, "running");
           }
           setTaskProgress(state, message ?? DEFAULT_HEARTBEAT_MESSAGE, beat);
@@ -594,6 +605,56 @@ export async function startRunTask(
   })();
 
   return getRunTask(runId);
+}
+
+function scheduleWaitMs(value: unknown): number {
+  if (value === undefined || value === null) {
+    return DEFAULT_SCHEDULE_WAIT_MS;
+  }
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    !Number.isInteger(value) ||
+    value < 0
+  ) {
+    throw new ValidationError("wait_ms must be a nonnegative integer when provided");
+  }
+  return value;
+}
+
+function isTerminalStatus(status: RunTaskStatus): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+function isScheduleReturnableStatus(status: RunTaskStatus): boolean {
+  return isTerminalStatus(status) || status === "input_required";
+}
+
+export async function scheduleRunTask(
+  request: RunSubagentRequest & { wait_ms?: number },
+  options: {
+    runsDir?: string;
+    heartbeat?: HeartbeatNotify;
+    heartbeatIntervalMs?: number;
+  } = {},
+): Promise<RunTaskView> {
+  const waitMs = scheduleWaitMs(request.wait_ms);
+  const runRequest = { ...request };
+  delete runRequest.wait_ms;
+  const started = await startRunTask(runRequest, options);
+  if (isScheduleReturnableStatus(started.status) || waitMs === 0) {
+    return started;
+  }
+  const deadline = Date.now() + waitMs;
+  let latest = started;
+  while (Date.now() < deadline) {
+    latest = await getRunTask(started.run_id);
+    if (isScheduleReturnableStatus(latest.status)) {
+      return latest;
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(25, Math.max(1, deadline - Date.now()))));
+  }
+  return getRunTask(started.run_id);
 }
 
 export async function startSessionRunTask(
@@ -636,11 +697,12 @@ export async function startSessionRunTask(
   state.promise = (async () => {
     try {
       await appendChildSpawnEvent(state);
+      markChildRunningSilently(state);
       await writeTaskSnapshot(await getRunTask(runId));
       state.result = await runSubagentSession(request, {
         sessionsDir: options.sessionsDir,
         heartbeat: async (beat, message) => {
-          if (state.activePhase === "awaiting_child_event") {
+          if (state.activePhase === "awaiting_child_event" || state.activePhase === "running_silent") {
             setTaskPhase(state, "running");
           }
           setTaskProgress(state, message ?? DEFAULT_HEARTBEAT_MESSAGE, beat);
@@ -741,6 +803,7 @@ export async function runSubagentOneShotTask(
   state.promise = (async () => {
     try {
       await appendChildSpawnEvent(state);
+      markChildRunningSilently(state);
       await writeTaskSnapshot(await getRunTask(runId));
       state.result = await runSubagentCore(request, {
         runId,
@@ -748,7 +811,7 @@ export async function runSubagentOneShotTask(
         runsDir: options.runsDir,
         failureLogTool: "run_subagent",
         heartbeat: async (beat, message) => {
-          if (state.activePhase === "awaiting_child_event") {
+          if (state.activePhase === "awaiting_child_event" || state.activePhase === "running_silent") {
             setTaskPhase(state, "running");
           }
           setTaskProgress(state, message ?? DEFAULT_HEARTBEAT_MESSAGE, beat);

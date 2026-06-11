@@ -10,6 +10,8 @@ export const MODEL_HEALTH_SURFACE_ONE_SHOT = "run_subagent_one_shot" as const;
 export const MODEL_HEALTH_STATUSES = ["healthy", "unhealthy", "unknown"] as const;
 export type ModelHealthSurface = typeof MODEL_HEALTH_SURFACE_ONE_SHOT;
 export type ModelHealthStatus = (typeof MODEL_HEALTH_STATUSES)[number];
+export type ModelHealthBasis = "never_probed" | "cached_probe";
+export const MODEL_HEALTH_GATE_BLOCKS_ONLY_KNOWN_UNHEALTHY = "blocks_only_known_unhealthy" as const;
 
 export interface ModelHealthRecord {
   schema_version: 1;
@@ -28,6 +30,9 @@ export interface ModelHealthView {
   status: ModelHealthStatus;
   usable_for_one_shot: boolean | null;
   last_checked_at: string | null;
+  health_basis: ModelHealthBasis;
+  health_gate: typeof MODEL_HEALTH_GATE_BLOCKS_ONLY_KNOWN_UNHEALTHY;
+  health_action: string;
   last_success_latency_ms?: number;
   last_failure_class?: string;
   last_failure_at?: string;
@@ -92,6 +97,10 @@ function sameHealthKey(a: ModelHealthRecord, b: Pick<ModelHealthRecord, "model_c
   return a.model_class === b.model_class && a.resolved_model === b.resolved_model && a.surface === b.surface;
 }
 
+export function modelHealthProbeCommand(modelClass: ModelClass): string {
+  return `npm run model-health:probe -- --model-class ${modelClass} --cwd /absolute/project/path`;
+}
+
 export async function upsertModelHealthRecord(
   record: ModelHealthRecord,
   options: { healthPath?: string } = {},
@@ -121,6 +130,9 @@ export async function modelHealthForClass(
       status: "unknown",
       usable_for_one_shot: null,
       last_checked_at: null,
+      health_basis: "never_probed",
+      health_gate: MODEL_HEALTH_GATE_BLOCKS_ONLY_KNOWN_UNHEALTHY,
+      health_action: modelHealthProbeCommand(modelClass),
     };
   }
   return {
@@ -128,6 +140,9 @@ export async function modelHealthForClass(
     status: record.usable_for_one_shot ? "healthy" : "unhealthy",
     usable_for_one_shot: record.usable_for_one_shot,
     last_checked_at: record.checked_at,
+    health_basis: "cached_probe",
+    health_gate: MODEL_HEALTH_GATE_BLOCKS_ONLY_KNOWN_UNHEALTHY,
+    health_action: modelHealthProbeCommand(modelClass),
     ...(record.last_success_latency_ms !== undefined
       ? { last_success_latency_ms: record.last_success_latency_ms }
       : {}),
@@ -140,7 +155,7 @@ export async function assertModelClassUsableForOneShot(modelClass: ModelClass): 
   const health = await modelHealthForClass(modelClass);
   if (health.status === "unhealthy") {
     throw new ValidationError(
-      `model_class ${modelClass} is known unhealthy for run_subagent one-shot use; refresh model health or use start_run/model_class with healthy one-shot status`,
+      `model_class ${modelClass} is known unhealthy for run_subagent one-shot use; refresh model health or use schedule_run/start_run with a healthy model_class`,
     );
   }
 }

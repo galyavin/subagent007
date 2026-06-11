@@ -9,6 +9,8 @@ Purpose: repair the selected SAF set after adversarial classification. This is a
 
 Status: implemented in the current worktree after this decision record. The implemented changes add deterministic probe evidence modes, active sanitized `get_run` events, a one-shot incompatibility gate, and durable task/lease-backed named-session execution.
 
+Supersession note: this remains the decision record for the earlier current-campaign slice. Scheduler-first execution was selected and implemented later in `reports/full-coherent-revised-saf-set-2026-06-11-codex-current-v2.md` and `docs/plans/2026-06-11-001-refactor-revised-saf-implementation-plan.md`; the current public contract is documented in `README.md`.
+
 ## Repair Rule Applied
 
 A fix remains in the SAF set only when the HORC is stated at the exact level the fix eliminates.

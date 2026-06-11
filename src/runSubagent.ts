@@ -34,7 +34,7 @@ import { validateAndResolveRequest } from "./validate.js";
 
 const DEFAULT_RUN_SUBAGENT_TIMEOUT_MS = 110_000;
 export const RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT =
-  "Use start_run with explicit timeout_ms for broad, exploratory, interactive, cancellable, polling, or long-running work.";
+  "Use schedule_run or start_run with explicit timeout_ms for broad, exploratory, interactive, cancellable, polling, or long-running work.";
 
 type RunSubagentSessionMode =
   | { kind: "ephemeral" }
@@ -202,7 +202,7 @@ export async function runSubagentCore(
   } = {},
 ): Promise<RunSubagentResult> {
   if (!options.allowTimeout && request.timeout_ms !== undefined) {
-    throw new ValidationError("timeout_ms is not supported by run_subagent; use start_run for timed work");
+    throw new ValidationError("timeout_ms is not supported by run_subagent; use schedule_run or start_run for timed work");
   }
   const config = await loadConfig();
   const resolved = await validateAndResolveRequest(request, config);

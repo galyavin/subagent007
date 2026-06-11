@@ -7,6 +7,7 @@
     "run_subagent-preflight-rejection",
     "run_subagent-child-failure",
     "run_subagent-timeout-recovery",
+    "schedule_run-durable-first",
     "start_run-async-polling",
     "answer_run_input-caller-input",
     "cancel_run-cancellation-settlement",
@@ -24,6 +25,7 @@
     "run_subagent-preflight-rejection": { "evidence_classes": ["protocol-deterministic"] },
     "run_subagent-child-failure": { "evidence_classes": ["protocol-deterministic"] },
     "run_subagent-timeout-recovery": { "evidence_classes": ["protocol-deterministic"] },
+    "schedule_run-durable-first": { "evidence_classes": ["protocol-deterministic"] },
     "start_run-async-polling": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
     "answer_run_input-caller-input": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
     "cancel_run-cancellation-settlement": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
@@ -94,6 +96,12 @@
       "result_classes": ["async_polling"],
       "surfaces": ["start_run-async-polling"]
     },
+    "schedule-run-durable-first": {
+      "tool": "schedule_run",
+      "lifecycle_phases": ["scheduler-start", "async-start", "polling", "terminal-snapshot"],
+      "result_classes": ["scheduled_durable"],
+      "surfaces": ["schedule_run-durable-first"]
+    },
     "caller-input": {
       "tool": "answer_run_input",
       "lifecycle_phases": ["async-start", "caller-input", "input-settlement"],
@@ -150,6 +158,7 @@
         "handler-validation",
         "child-failure",
         "timeout-recovery",
+        "schedule-run-durable-first",
         "start-run-async-polling",
         "caller-input",
         "cancellation",
@@ -166,6 +175,7 @@
         "run_subagent-preflight-rejection",
         "run_subagent-child-failure",
         "run_subagent-timeout-recovery",
+        "schedule_run-durable-first",
         "start_run-async-polling",
         "answer_run_input-caller-input",
         "cancel_run-cancellation-settlement",
@@ -187,8 +197,7 @@
     }
   },
   "aliases": {
-    "all": "protocol-core",
-    "all-bundled": "protocol-core",
+    "all": "full-current",
     "live-smoke": "live-current",
     "stateful-live": "live-current"
   }

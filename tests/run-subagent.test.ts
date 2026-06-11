@@ -124,6 +124,43 @@ async function waitForActiveHeartbeat(client: Client, runId: string): Promise<Ru
   throw new Error(`timed out waiting for heartbeat metadata on run ${runId}`);
 }
 
+async function waitForInputRequired(client: Client, runId: string): Promise<RunSubagentMetadata> {
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    const response = await client.callTool({
+      name: "get_run",
+      arguments: { run_id: runId },
+    });
+    assert.notEqual(response.isError, true);
+    const metadata = response.structuredContent as RunSubagentMetadata;
+    if (metadata.status === "input_required") {
+      return metadata;
+    }
+    if (metadata.status === "completed" || metadata.status === "failed" || metadata.status === "cancelled") {
+      throw new Error(`run reached terminal state before input_required: ${metadata.status}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`timed out waiting for input_required on run ${runId}`);
+}
+
+async function waitForFileText(filePath: string, pattern: RegExp): Promise<string> {
+  const deadline = Date.now() + 2000;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      const text = await fs.readFile(filePath, "utf8");
+      if (pattern.test(text)) {
+        return text;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`timed out waiting for ${filePath} to match ${pattern}: ${String(lastError)}`);
+}
+
 test("extracts only Subagent007 Pi session events from child output", () => {
   assert.equal(
     extractSubagentSessionId(
@@ -343,7 +380,7 @@ test("runSubagent rejects timeout_ms unless internal callers opt into timed work
       model_class: "C",
       timeout_ms: 1000,
     }),
-    /timeout_ms is not supported by run_subagent; use start_run for timed work/,
+    /timeout_ms is not supported by run_subagent; use schedule_run or start_run for timed work/,
   );
 });
 
@@ -451,6 +488,7 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.deepEqual(
       [
         "start_run",
+        "schedule_run",
         "get_run",
         "answer_run_input",
         "cancel_run",
@@ -509,7 +547,7 @@ test("MCP run_subagent rejects missing or invalid run_kind before invoking the c
     const invalidContent = invalidResponse.content as Array<{ type: string; text?: string }>;
     assert.match(
       invalidContent[0]?.type === "text" ? (invalidContent[0].text ?? "") : "",
-      /use start_run for longer/,
+      /use schedule_run or start_run for longer/,
     );
     await assert.rejects(fs.stat(fakeLogPath), /ENOENT/);
   });
@@ -575,7 +613,17 @@ test("MCP list_model_classes exposes curated model classes", async () => {
     });
     assert.notEqual(response.isError, true);
     const metadata = response.structuredContent as {
-      model_classes: Array<{ class: string; description: string }>;
+      model_classes: Array<{
+        class: string;
+        description: string;
+        one_shot_health?: {
+          status: string;
+          usable_for_one_shot: boolean | null;
+          health_basis: string;
+          health_gate: string;
+          health_action: string;
+        };
+      }>;
       default_model_class: string;
       default_model_class_configured: string | null;
       default_model_class_effective: string;
@@ -589,9 +637,22 @@ test("MCP list_model_classes exposes curated model classes", async () => {
       };
       resolved_default_model: string;
       resolved_default_thinking_level: string;
+      default_one_shot_health_status: string;
+      default_one_shot_health_basis: string;
+      model_health_probe_command: string;
     };
     assert.deepEqual(metadata.model_classes.map((entry) => entry.class), ["A", "B", "C", "D", "E"]);
     assert.equal(metadata.model_classes.every((entry) => entry.description.length > 0), true);
+    assert.equal(
+      metadata.model_classes.every((entry) =>
+        entry.one_shot_health?.status === "unknown" &&
+          entry.one_shot_health.usable_for_one_shot === null &&
+          entry.one_shot_health.health_basis === "never_probed" &&
+          entry.one_shot_health.health_gate === "blocks_only_known_unhealthy" &&
+          entry.one_shot_health.health_action.includes(`--model-class ${entry.class}`)
+      ),
+      true,
+    );
     assert.equal(metadata.default_model_class, "C");
     assert.equal(metadata.default_model_class_configured, "C");
     assert.equal(metadata.default_model_class_effective, "C");
@@ -599,6 +660,9 @@ test("MCP list_model_classes exposes curated model classes", async () => {
     assert.equal(metadata.config_migration, null);
     assert.equal(metadata.resolved_default_model, "openrouter/deepseek/deepseek-v4-pro");
     assert.equal(metadata.resolved_default_thinking_level, "high");
+    assert.equal(metadata.default_one_shot_health_status, "unknown");
+    assert.equal(metadata.default_one_shot_health_basis, "never_probed");
+    assert.match(metadata.model_health_probe_command, /--model-class C/);
   });
 });
 
@@ -700,6 +764,53 @@ test("MCP list_allowed_models remains a compatibility alias for model classes", 
     assert.notEqual(canonical.isError, true);
     assert.notEqual(alias.isError, true);
     assert.deepEqual(alias.structuredContent, canonical.structuredContent);
+  });
+});
+
+test("MCP list_model_classes exposes cached healthy one-shot health basis", async () => {
+  await connectFakeClient(async (client, { modelHealthPath }) => {
+    await fs.writeFile(
+      modelHealthPath,
+      `${JSON.stringify([
+        {
+          schema_version: 1,
+          model_class: "C",
+          resolved_model: "openrouter/deepseek/deepseek-v4-pro",
+          surface: "run_subagent_one_shot",
+          checked_at: "2026-06-11T00:00:00.000Z",
+          usable_for_one_shot: true,
+          last_success_latency_ms: 1234,
+        },
+      ], null, 2)}\n`,
+    );
+
+    const response = await client.callTool({
+      name: "list_model_classes",
+      arguments: {},
+    });
+    assert.notEqual(response.isError, true);
+    const metadata = response.structuredContent as {
+      model_classes: Array<{
+        class: string;
+        one_shot_health?: {
+          status: string;
+          usable_for_one_shot: boolean | null;
+          health_basis: string;
+          last_checked_at: string | null;
+          last_success_latency_ms?: number;
+        };
+      }>;
+      default_one_shot_health_status: string;
+      default_one_shot_health_basis: string;
+    };
+    const classC = metadata.model_classes.find((entry) => entry.class === "C");
+    assert.equal(classC?.one_shot_health?.status, "healthy");
+    assert.equal(classC?.one_shot_health?.usable_for_one_shot, true);
+    assert.equal(classC?.one_shot_health?.health_basis, "cached_probe");
+    assert.equal(classC?.one_shot_health?.last_checked_at, "2026-06-11T00:00:00.000Z");
+    assert.equal(classC?.one_shot_health?.last_success_latency_ms, 1234);
+    assert.equal(metadata.default_one_shot_health_status, "healthy");
+    assert.equal(metadata.default_one_shot_health_basis, "cached_probe");
   });
 });
 
@@ -862,11 +973,22 @@ test("MCP run_subagent fails fast for known unhealthy one-shot model class", asy
     const classA = (classes.structuredContent as {
       model_classes: Array<{
         class: string;
-        one_shot_health?: { status: string; usable_for_one_shot: boolean | null };
+        one_shot_health?: {
+          status: string;
+          usable_for_one_shot: boolean | null;
+          health_basis: string;
+          health_gate: string;
+          health_action: string;
+          last_failure_class?: string;
+        };
       }>;
     }).model_classes.find((entry) => entry.class === "A");
     assert.equal(classA?.one_shot_health?.status, "unhealthy");
     assert.equal(classA?.one_shot_health?.usable_for_one_shot, false);
+    assert.equal(classA?.one_shot_health?.health_basis, "cached_probe");
+    assert.equal(classA?.one_shot_health?.health_gate, "blocks_only_known_unhealthy");
+    assert.match(classA?.one_shot_health?.health_action ?? "", /--model-class A/);
+    assert.equal(classA?.one_shot_health?.last_failure_class, "timeout");
 
     const response = await client.callTool({
       name: "run_subagent",
@@ -905,9 +1027,136 @@ test("MCP run_subagent rejects broad analysis prompts before invoking the child"
     const content = response.content as Array<{ type: string; text?: string }>;
     assert.match(
       content[0]?.type === "text" ? (content[0].text ?? "") : "",
-      /use start_run with explicit timeout_ms/,
+      /use schedule_run or start_run with explicit timeout_ms/,
     );
     await assert.rejects(fs.stat(fakeLogPath), /ENOENT/);
+  });
+});
+
+test("MCP schedule_run returns completed output when the durable task finishes within wait_ms", async () => {
+  await connectFakeClient(async (client, { projectDir }) => {
+    const response = await client.callTool({
+      name: "schedule_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "FAST",
+        wait_ms: 1000,
+      },
+    });
+    assert.notEqual(response.isError, true);
+    const metadata = response.structuredContent as RunSubagentMetadata;
+    assert.equal(metadata.status, "completed");
+    assert.equal(metadata.success, true);
+    assert.equal(await fs.readFile(metadata.output_path, "utf8"), "FAST FINAL");
+  });
+});
+
+test("MCP schedule_run starts broad work durably without run_subagent preflight rejection", async () => {
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    const response = await client.callTool({
+      name: "schedule_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "HEARTBEAT_LONG_WAIT Investigate HORCs and SAFs into an implementation plan",
+        wait_ms: 0,
+      },
+    });
+    assert.notEqual(response.isError, true);
+    const metadata = response.structuredContent as RunSubagentMetadata;
+    assert.equal(metadata.status, "working");
+    assert.equal(metadata.active_phase, "running_silent");
+    assert.equal(metadata.last_progress_message, "child process running; waiting for output");
+    await waitForFileText(fakeLogPath, /Investigate HORCs and SAFs/);
+    const terminal = await waitForTerminalRun(client, metadata.run_id);
+    assert.equal(terminal.status, "completed");
+  });
+});
+
+test("MCP schedule_run supports caller input through the durable run mailbox", async () => {
+  await connectFakeClient(async (client, { projectDir }) => {
+    const startedResponse = await client.callTool({
+      name: "schedule_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "HEARTBEAT_LONG_WAIT",
+        wait_ms: 0,
+      },
+    });
+    assert.notEqual(startedResponse.isError, true);
+    const started = startedResponse.structuredContent as RunSubagentMetadata;
+    const mailboxRoot = path.dirname(started.input_requests_dir);
+    const request = await createInputRequest({
+      mailboxRoot,
+      runId: started.run_id,
+      question: "Need clarification?",
+    });
+
+    const inputRequired = await waitForInputRequired(client, started.run_id);
+    assert.equal(inputRequired.input_requests.some((input) => input.request_id === request.request_id), true);
+
+    const answerResponse = await client.callTool({
+      name: "answer_run_input",
+      arguments: {
+        run_id: started.run_id,
+        request_id: request.request_id,
+        answer: "continue",
+      },
+    });
+    assert.notEqual(answerResponse.isError, true);
+    const answered = answerResponse.structuredContent as RunSubagentMetadata;
+    assert.equal(answered.status, "working");
+    const terminal = await waitForTerminalRun(client, started.run_id);
+    assert.equal(terminal.status, "completed");
+  });
+});
+
+test("MCP schedule_run returns input_required without waiting for the full grace window", async () => {
+  await connectFakeClient(async (client, { projectDir }) => {
+    const startedAt = Date.now();
+    const startedResponse = await client.callTool({
+      name: "schedule_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "REQUEST_INPUT_WAIT",
+        wait_ms: 1500,
+      },
+    });
+    const elapsedMs = Date.now() - startedAt;
+    assert.notEqual(startedResponse.isError, true);
+    const started = startedResponse.structuredContent as RunSubagentMetadata;
+    assert.equal(started.status, "input_required");
+    assert.equal(started.input_requests.some((input) => input.status === "pending"), true);
+    assert.equal(elapsedMs < 800, true);
+
+    const cancelResponse = await client.callTool({
+      name: "cancel_run",
+      arguments: { run_id: started.run_id },
+    });
+    assert.notEqual(cancelResponse.isError, true);
+  });
+});
+
+test("MCP schedule_run tasks can be cancelled", async () => {
+  await connectFakeClient(async (client, { projectDir }) => {
+    const startedResponse = await client.callTool({
+      name: "schedule_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "CANCEL_WAIT",
+        wait_ms: 0,
+      },
+    });
+    assert.notEqual(startedResponse.isError, true);
+    const started = startedResponse.structuredContent as RunSubagentMetadata;
+
+    const cancelResponse = await client.callTool({
+      name: "cancel_run",
+      arguments: { run_id: started.run_id },
+    });
+    assert.notEqual(cancelResponse.isError, true);
+    const cancelled = cancelResponse.structuredContent as RunSubagentMetadata;
+    assert.equal(cancelled.status, "cancelled");
+    assert.equal(["cancelling", "cancelled"].includes(cancelled.active_phase ?? ""), true);
   });
 });
 
@@ -923,7 +1172,7 @@ test("MCP start_run/get_run completes asynchronously with the same child contrac
     assert.notEqual(startedResponse.isError, true);
     const started = startedResponse.structuredContent as RunSubagentMetadata;
     assert.equal(["working", "completed"].includes(started.status), true);
-    assert.equal(started.active_phase, "awaiting_child_event");
+    assert.equal(["running_silent", "completed"].includes(started.active_phase ?? ""), true);
     assert.equal(typeof started.last_phase_at, "string");
 
     const terminal = await waitForTerminalRun(client, started.run_id);
@@ -948,10 +1197,10 @@ test("MCP start_run/get_run exposes active liveness and pending-input progress",
       const started = startedResponse.structuredContent as RunSubagentMetadata;
       assert.equal(["working", "completed"].includes(started.status), true);
       assert.equal(started.heartbeat_count, 0);
-      assert.equal(started.active_phase, "awaiting_child_event");
+      assert.equal(started.active_phase, "running_silent");
       assert.equal(typeof started.elapsed_ms, "number");
       assert.equal(typeof started.last_progress_at, "string");
-      assert.equal(started.last_progress_message, "child process starting");
+      assert.equal(started.last_progress_message, "child process running; waiting for output");
 
       const heartbeat = await waitForActiveHeartbeat(client, started.run_id);
       assert.equal(heartbeat.status, "working");
@@ -1050,6 +1299,39 @@ test("MCP start_run/get_run exposes sanitized active public events", async () =>
     assert.doesNotMatch(JSON.stringify(eventView.recent_events), /thinking_delta|SECRET_THINKING/);
     await client.callTool({ name: "cancel_run", arguments: { run_id: started.run_id } });
   });
+});
+
+test("MCP start_session_run exposes running_silent before first child output", async () => {
+  await connectFakeClient(
+    async (client, { projectDir }) => {
+      const startedResponse = await client.callTool({
+        name: "start_session_run",
+        arguments: {
+          cwd: projectDir,
+          prompt: "HEARTBEAT_LONG_WAIT",
+          session_key: "mcp-session:silent",
+          resume_mode: "new",
+        },
+      });
+      assert.notEqual(startedResponse.isError, true);
+      const started = startedResponse.structuredContent as RunSubagentMetadata & {
+        task_kind?: string;
+        session_key?: string;
+      };
+      assert.equal(started.task_kind, "session");
+      assert.equal(started.session_key, "mcp-session:silent");
+      assert.equal(started.status, "working");
+      assert.equal(started.active_phase, "running_silent");
+      assert.equal(started.last_progress_message, "child process running; waiting for output");
+      const terminal = await waitForTerminalRun(client, started.run_id);
+      assert.equal(terminal.status, "completed");
+    },
+    {
+      env: {
+        SUBAGENT007_HEARTBEAT_INTERVAL_MS: "1000",
+      },
+    },
+  );
 });
 
 test("MCP start_session_run returns a durable pollable named-session task", async () => {

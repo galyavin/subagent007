@@ -9,6 +9,7 @@ export type FailureLogTool =
   | "run_subagent"
   | "run_subagent_session"
   | "start_session_run"
+  | "schedule_run"
   | "start_run"
   | "list_model_classes"
   | "list_allowed_models"

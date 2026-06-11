@@ -15,7 +15,7 @@ import {
   modelClassChoices,
   resolveModelClass,
 } from "./modelAllowlist.js";
-import { modelHealthForClass } from "./modelHealth.js";
+import { modelHealthForClass, modelHealthProbeCommand } from "./modelHealth.js";
 import { loadConfigRecord, normalizeConfigRecord } from "./config.js";
 import { heartbeatFromExtra, heartbeatIntervalMsFromEnv, type ServerExtra } from "./progress.js";
 import {
@@ -24,6 +24,7 @@ import {
   getRunTask,
   resolveRunOperationContext,
   runSubagentSessionTaskAndWait,
+  scheduleRunTask,
   runSubagentOneShotTask,
   startSessionRunTask,
   startRunTask,
@@ -100,10 +101,10 @@ function withRunFailureLogging<TRequest, TResult>(
 
 function preflightRetryGuidance(message: string): string | undefined {
   if (message.includes("incompatible with run_subagent's quick_noninteractive contract")) {
-    return "Use start_run with explicit timeout_ms for broad, exploratory, skill-bound, cancellable, polling, or long-running work.";
+    return "Use schedule_run or start_run with explicit timeout_ms for broad, exploratory, skill-bound, cancellable, polling, or long-running work.";
   }
   if (message.includes("timeout_ms is not supported by run_subagent")) {
-    return "Use start_run for timed work.";
+    return "Use schedule_run or start_run for timed work.";
   }
   return undefined;
 }
@@ -197,7 +198,7 @@ const skillInputSchema = z
 
 const runKindSchema = z
   .enum(RUN_KINDS, {
-    error: "run_kind must be quick_noninteractive; use start_run for longer, cancellable, polling, or caller-input work",
+    error: "run_kind must be quick_noninteractive; use schedule_run or start_run for longer, cancellable, polling, or caller-input work",
   })
   .describe("Required contract for run_subagent: this call is quick, non-interactive, and deadline-compatible.");
 
@@ -218,7 +219,7 @@ const runInputSchema = z.strictObject({
 }, {
   error: (issue) =>
     issue.code === "unrecognized_keys" && issue.keys.includes("timeout_ms")
-      ? "timeout_ms is not supported by run_subagent; use start_run for timed work"
+      ? "timeout_ms is not supported by run_subagent; use schedule_run or start_run for timed work"
       : undefined,
 });
 
@@ -248,6 +249,21 @@ const startRunInputSchema = z.strictObject(timedRunInputSchema, {
       : undefined,
 });
 
+const scheduleRunInputSchema = z.strictObject({
+  ...timedRunInputSchema,
+  wait_ms: z
+    .number()
+    .int()
+    .nonnegative()
+    .optional()
+    .describe("How long the scheduler should wait for immediate completion before returning the durable run view."),
+}, {
+  error: (issue) =>
+    issue.code === "unrecognized_keys" && issue.keys.includes("session_id")
+      ? "session_id is not a schedule_run input; use continuity.mode fresh or continuity.mode resume with continuity.session_id"
+      : undefined,
+});
+
 const runSessionInputSchema = z.strictObject({
   ...timedSessionInputSchema,
   session_key: z.string().min(1),
@@ -268,6 +284,7 @@ async function listModelClassesResult(): Promise<ReturnType<typeof jsonToolResul
     : null;
   const defaultModelClass = config.default_model_class ?? DEFAULT_MODEL_CLASS;
   const defaultResolution = resolveModelClass(defaultModelClass);
+  const defaultOneShotHealth = await modelHealthForClass(defaultModelClass);
   const legacyConfigDetected =
     configRecord.default_model !== undefined || configRecord.default_thinking_level !== undefined;
   const configMigration =
@@ -293,6 +310,9 @@ async function listModelClassesResult(): Promise<ReturnType<typeof jsonToolResul
     config_migration: configMigration,
     resolved_default_model: defaultResolution.model,
     resolved_default_thinking_level: defaultResolution.thinkingLevel,
+    default_one_shot_health_status: defaultOneShotHealth.status,
+    default_one_shot_health_basis: defaultOneShotHealth.health_basis,
+    model_health_probe_command: modelHealthProbeCommand(defaultModelClass),
   };
   return jsonToolResult(result, result);
 }
@@ -318,6 +338,22 @@ server.registerTool(
 );
 
 server.registerTool(
+  "schedule_run",
+  {
+    title: "Schedule Run",
+    description:
+      "Create a durable Pi-backed run task first, then return a terminal result only if it completes within wait_ms.",
+    inputSchema: scheduleRunInputSchema,
+  },
+  withPreflightRejection("schedule_run", async (request, extra) =>
+    scheduleRunTask(request, {
+      heartbeat: heartbeatFromExtra(extra),
+      heartbeatIntervalMs: heartbeatIntervalMsFromEnv(),
+    }),
+  ),
+);
+
+server.registerTool(
   "start_run",
   {
     title: "Start Run",
@@ -338,7 +374,7 @@ server.registerTool(
   {
     title: "Get Run",
     description:
-      "Read the current status, pending input requests, and terminal result for a durable run created by run_subagent, start_run, start_session_run, or run_subagent_session.",
+      "Read the current status, pending input requests, and terminal result for a durable run created by run_subagent, schedule_run, start_run, start_session_run, or run_subagent_session.",
     inputSchema: {
       run_id: z.string().min(1),
     },

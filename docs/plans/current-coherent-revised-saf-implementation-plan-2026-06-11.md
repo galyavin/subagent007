@@ -13,6 +13,8 @@ Implement the four current-campaign SAFs in a sequence that improves evidence qu
 
 Implementation status: completed in the current worktree. Verification is tracked by the updated targeted tests in `tests/observed-campaign.test.ts`, `tests/run-subagent.test.ts`, and `tests/session.test.ts`.
 
+Supersession note: this file remains the implemented plan for the earlier June 11 active-events, deterministic-probe, one-shot-gate, and durable-session slice. Scheduler-first execution was added later by `docs/plans/2026-06-11-001-refactor-revised-saf-implementation-plan.md`; use `README.md` and `scripts/observed-coverage-manifest.json` for the current public scheduler contract.
+
 ---
 
 ## Problem Frame

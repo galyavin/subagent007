@@ -7,11 +7,11 @@ Subagent007 Pi is a private MCP server that delegates work to a separate Pi-back
 | Situation | Tool | Key constraints |
 | --- | --- | --- |
 | Quick, bounded, non-interactive one-shot work | `run_subagent` | Requires `run_kind: "quick_noninteractive"`; rejects caller `timeout_ms` plus known one-shot-incompatible skill-bound, broad, overlong, or workspace-write edit requests; timeout results can be inspected later with `get_run`. |
-| Broad, long, cancellable, polling, or caller-interactive work | `start_run` plus `get_run` | Default here for repo audits, implementation work, planning, unclear scope, or anything likely to exceed the one-shot deadline. Pass `timeout_ms` when a hard deadline matters; answer pending input with `answer_run_input`; cancel with `cancel_run`. |
+| Broad, long, cancellable, polling, or caller-interactive work | `schedule_run` or `start_run` plus `get_run` | Prefer `schedule_run` for uncertain work: it creates the durable task first and waits briefly for immediate completion. Use `start_run` when the caller always wants an immediate task handle. Pass `timeout_ms` when a hard deadline matters; answer pending input with `answer_run_input`; cancel with `cancel_run`. |
 | Durable continuity by semantic key | `start_session_run` plus `get_run`, or `run_subagent_session` for compatibility | Requires `session_key`; use when manifest/ledger continuity matters. Prefer the async task form for long, cancellable, or abandoned-client-safe work. |
 | Model-class/config health | `list_model_classes` | `list_allowed_models` is a compatibility alias. |
 
-Agent rule of thumb: if the task may need shell/write tools, skills, edits, caller input, or more than a short answer, use a durable task (`start_run` or `start_session_run`) and poll `get_run`. Use `run_subagent` only when you can honestly treat the call as quick, bounded, and non-interactive.
+Agent rule of thumb: if the task may need shell/write tools, skills, edits, caller input, or more than a short answer, use a durable task (`schedule_run`, `start_run`, or `start_session_run`) and poll `get_run`. Use `run_subagent` only when you can honestly treat the call as quick, bounded, and non-interactive.
 
 The default `tool_profile` is `inspect`; set `workspace_write` before expecting the child to edit files.
 
@@ -57,7 +57,7 @@ Use model classes instead of concrete model IDs. The default class is `C`; calle
 
 Run `npm run models:reconcile` to compare calibrated concrete models with fresh source data from `pi --list-models`, OpenRouter `GET /api/v1/models`, and local Ollama `GET /api/tags`. The command exits nonzero when a calibrated model is missing or has drifted from a source; unavailable sources are reported as unverified instead of drift. Inventory reconciliation is separate from one-shot health.
 
-Run `npm run model-health:probe -- --model-class A --cwd /absolute/project/path` to record whether a class is usable for the `run_subagent` one-shot surface. The health file defaults to `~/.codex/subagent007-pi/model-health.json` and can be overridden with `SUBAGENT007_MODEL_HEALTH_PATH`. Unknown health is reported as unknown and does not block execution; known unhealthy one-shot health fails `run_subagent` before the child process starts.
+Run `npm run model-health:probe -- --model-class A --cwd /absolute/project/path` to record whether a class is usable for the `run_subagent` one-shot surface. The health file defaults to `~/.codex/subagent007-pi/model-health.json` and can be overridden with `SUBAGENT007_MODEL_HEALTH_PATH`. Unknown health is reported with `health_basis:"never_probed"` and does not block execution; cached probe results use `health_basis:"cached_probe"`. The health gate is `blocks_only_known_unhealthy`: only known unhealthy one-shot health fails `run_subagent` before the child process starts. Each health view includes `health_action` with the exact probe command to refresh that model class.
 
 Run `npm run config:migrate` to canonicalize `default_model_class` or migrate a legacy `default_model` plus `default_thinking_level` pair when it exactly matches a known class calibration. The command honors `SUBAGENT007_CONFIG_PATH`, writes atomically, preserves unknown fields, and is not run automatically by server startup or model-class listing.
 
@@ -90,11 +90,9 @@ Child-invocation tools require:
 
 Do not pass secrets unless local mailbox and transcript storage are acceptable. `prompt` is copied into run transcripts and public event ledgers. `answer_run_input.answer` is stored in the local mailbox settlement and omitted from input/public event fields, but child output is public transcript material and may contain answer-derived text if the child echoes or uses the answer.
 
-Omit `model_class` for the configured/default class, or pass `A`, `B`, `C`, `D`, or `E` when the task needs a different capability tier. Public concrete `model` and `thinking_level` inputs are intentionally unsupported.
-
 Optional common fields:
 
-- `model_class`: capability tier `A`, `B`, `C`, `D`, or `E`; default is configured `default_model_class` or `C`
+- `model_class`: capability tier `A`, `B`, `C`, `D`, or `E`; omit for configured `default_model_class` or `C`; concrete `model` and `thinking_level` are unsupported
 - `skill_name`: bare skill name only, such as `pda-lite` or `google-drive:google-docs`; null or omission means no skill
 - `skill`: legacy alias for `skill_name`; if both are provided, they must match
 - `output_mode`: `final` or `transcript`; default is `final`; use `transcript` for debugging or audit trails
@@ -105,6 +103,7 @@ Tool-specific input rules:
 | Tool | Required beyond `cwd`/`prompt` | Accepted control fields | Rejected fields |
 | --- | --- | --- | --- |
 | `run_subagent` | `run_kind: "quick_noninteractive"` | `continuity` | `timeout_ms`, top-level `session_id` |
+| `schedule_run` | none | `continuity`, `timeout_ms`, `wait_ms` | top-level `session_id` |
 | `start_run` | none | `continuity`, `timeout_ms` | top-level `session_id` |
 | `start_session_run` | `session_key` | `resume_mode`, `packet_policy`, `timeout_ms` | `continuity`, top-level `session_id` |
 | `run_subagent_session` | `session_key` | `resume_mode`, `packet_policy`, `timeout_ms` | `continuity`, top-level `session_id` |
@@ -125,7 +124,7 @@ Result semantics:
 
 - Runs that reach child execution return `output_path` on terminal completion; schema and preflight rejections do not.
 - Expected handler-level semantic rejections return structured content with `kind:"preflight_rejected"`, `success:false`, and `child_started:false`; SDK schema errors remain MCP input validation errors.
-- `run_subagent`, `start_run`, `start_session_run`, and `run_subagent_session` create durable run-task snapshots inspectable with `get_run` by `run_id`.
+- `run_subagent`, `schedule_run`, `start_run`, `start_session_run`, and `run_subagent_session` create durable run-task snapshots inspectable with `get_run` by `run_id`.
 - Active `get_run` views expose sanitized `recent_events` and `last_public_output_excerpt`; raw thinking, private tool payloads, full packet instructions, composed child prompts, and input answer values are not input/public event fields.
 - On timeout, `partial_output_available` is true only when the artifact includes child assistant text, a warning/error, or a captured final message.
 
@@ -141,27 +140,30 @@ Ephemeral run:
 }
 ```
 
-Raw Pi continuity is accepted through `continuity`, but named sessions are usually the safer continuity primitive because they are keyed by `session_key`, pollable, and ledgered.
+`run_kind` is an explicit caller contract that the work is bounded, non-interactive, and compatible with the one-shot deadline. `run_subagent` rejects high-confidence incompatible shapes before the child starts: any bound skill, prompts over 6000 characters, broad analysis/synthesis markers such as `audit`, `investigate`, `HORC`, `SAF`, or `implementation plan`, and `workspace_write` prompts that imply edits. Use `schedule_run` or `start_run` instead for longer, cancellable, polling, caller-input, exploratory, skill-bound, or write-heavy work.
 
-`run_kind` is an explicit caller contract that the work is bounded, non-interactive, and compatible with the one-shot deadline. `run_subagent` rejects high-confidence incompatible shapes before the child starts: any bound skill, prompts over 6000 characters, broad analysis/synthesis markers such as `audit`, `investigate`, `HORC`, `SAF`, or `implementation plan`, and `workspace_write` prompts that imply edits. Use `start_run` instead for longer, cancellable, polling, caller-input, exploratory, skill-bound, or write-heavy work.
-
-`run_subagent` rejects caller-provided `timeout_ms`. Its internal default deadline is 110 seconds and can be changed with `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`. If that internal one-shot deadline is hit, the structured result includes `timeout_recovery_hint` pointing the caller to `start_run` with an explicit `timeout_ms` and to the concrete `run_id` that `get_run` can inspect.
+`run_subagent` rejects caller-provided `timeout_ms`. Its internal default deadline is 110 seconds and can be changed with `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`. If that internal one-shot deadline is hit, the structured result includes `timeout_recovery_hint` pointing the caller to `schedule_run` or `start_run` with an explicit `timeout_ms` and to the concrete `run_id` that `get_run` can inspect.
 
 ## Async Runs And Caller Input
 
-Use `start_run` for timed, cancellable, or interactive work:
+Use `schedule_run` for the default durable-first path:
 
 ```json
 {
   "cwd": "/absolute/project/path",
   "prompt": "Ask me for the deployment target before editing files.",
+  "wait_ms": 1000,
   "timeout_ms": 600000
 }
 ```
 
+Use `start_run` instead when the caller always wants an immediate task handle; it accepts the same fields except `wait_ms`.
+
+`schedule_run` creates the durable task before waiting. If the child completes or requests caller input within `wait_ms`, it returns that state; otherwise it returns the active run view with the same `run_id`, mailbox, progress fields, and cancellation behavior as `start_run`. Default `wait_ms` is 1000; set `wait_ms:0` to get immediate durable-task behavior without the one-shot preflight restrictions.
+
 Flow:
 
-1. Call `start_run`.
+1. Call `schedule_run` or `start_run`.
 2. Poll `get_run` with the returned `run_id`.
 3. If status is `input_required`, read `input_requests`.
 4. Call `answer_run_input` with `run_id`, `request_id`, and `answer`.
@@ -171,9 +173,9 @@ Flow:
 
 Input requests are stored under `~/.codex/subagent007-pi/input-requests` by default. Each request has one terminal settlement: `answered`, `timed_out`, or `closed`. Cancelling a run or reaching any terminal run state closes remaining pending requests, and late answers to closed or timed-out requests are rejected.
 
-`timeout_ms` is optional for `start_run`, `start_session_run`, and `run_subagent_session`; omit it only for deliberately unbounded work. When provided, it is a hard response-budget cap: the child process is stopped before that budget is exhausted so the MCP tool can return timeout metadata and any public transcript. Values must leave at least one millisecond of effective child runtime after configured response headroom, kill grace, and force grace are reserved.
+`timeout_ms` is optional for `schedule_run`, `start_run`, `start_session_run`, and `run_subagent_session`; omit it only for deliberately unbounded work. When provided, it is a hard response-budget cap: the child process is stopped before that budget is exhausted so the MCP tool can return timeout metadata and any public transcript. Values must leave at least one millisecond of effective child runtime after configured response headroom, kill grace, and force grace are reserved.
 
-Run task snapshots and public event ledgers are stored under `~/.codex/subagent007-pi/run-tasks` by default. Active runs expose progress fields, `active_phase`, `last_phase_at`, and bounded public events immediately after task creation; `status` reflects pending input immediately. Completed `run_subagent`, `start_run`, and session tasks can still be inspected by `get_run` after an MCP server restart. A run that was active during a restart is reported as failed with a clear restart-state error because the new server process cannot safely reattach to the old child process, while previously persisted public events are preserved.
+Run task snapshots and public event ledgers are stored under `~/.codex/subagent007-pi/run-tasks` by default. Active runs expose progress fields, `active_phase`, `last_phase_at`, and bounded public events immediately after task creation; `running_silent` means the child process has spawned and the server is waiting for first child output or heartbeat. `status` reflects pending input immediately. Completed `run_subagent`, `schedule_run`, `start_run`, and session tasks can still be inspected by `get_run` after an MCP server restart. A run that was active during a restart is reported as failed with a clear restart-state error because the new server process cannot safely reattach to the old child process, while previously persisted public events are preserved.
 
 ## Named Sessions
 
@@ -256,7 +258,7 @@ npm run observed-campaign -- --campaign-id campaign.example-1 -- npm run observe
 
 Only probe calls recorded in `campaign_ledger_path` should claim MCP call-attempt coverage. Server-side `failures.jsonl` remains handler and child failure telemetry; SDK schema rejections happen before server handlers and are recorded by the probe ledger as `call_schema_error`; structured semantic preflight rejections are recorded as `call_preflight_rejected`. The bundled MCP probe defaults to the `protocol-core` profile, injects a deterministic fake child with `SUBAGENT007_PI_CHILD_PATH`, and labels raw ledger records and coverage summaries with `evidence_class: "protocol-deterministic"`.
 
-Coverage profiles are declared in `scripts/observed-coverage-manifest.json` and fail closed when required surfaces are unknown, have no selected scenario, or have no evidence-class-compatible selected scenario. `protocol-core` and `full-current` are deterministic profiles; `live-current` is the live evidence profile. `full-current` covers the deterministic current surface set, while `live-current` covers live-only installed Pi integration through a fresh campaign-scoped server process. Profile aliases: `all` and `all-bundled` map to `protocol-core`; `live-smoke` and `stateful-live` map to `live-current`. Scenario aliases are only `all` and `all-bundled`. None of those aliases are product-complete E2E claims by name alone. The probe prints `scenario_set`, `profile`, `mode`, `required_surfaces`, `covered_surfaces`, `covered_surfaces_by_evidence_class`, `missing_required_surfaces`, `skipped_surfaces`, and `out_of_scope_surfaces`. Use `--mode live-model` only for live provider smoke evidence; scenarios whose surfaces are not compatible with live-model evidence are rejected in live mode.
+Coverage profiles are declared in `scripts/observed-coverage-manifest.json` and fail closed when required surfaces are unknown, have no selected scenario, or have no evidence-class-compatible selected scenario. `protocol-core` and `full-current` are deterministic profiles; `live-current` is the live evidence profile. `full-current` covers the deterministic current surface set, while `live-current` covers live-only installed Pi integration through a fresh campaign-scoped server process. Profile and scenario alias `all` maps to `full-current`; `live-smoke` and `stateful-live` map to `live-current`. `all-bundled` is retired and rejects with guidance to use `--profile protocol-core` for the historical bundled protocol-core subset. Aliases are not product-complete E2E claims by name alone. The probe prints `scenario_set`, `profile`, `mode`, `required_surfaces`, `covered_surfaces`, `covered_surfaces_by_evidence_class`, `missing_required_surfaces`, `skipped_surfaces`, and `out_of_scope_surfaces`. Use `--mode live-model` only for live provider smoke evidence; scenarios whose surfaces are not compatible with live-model evidence are rejected in live mode.
 
 ## Development
 

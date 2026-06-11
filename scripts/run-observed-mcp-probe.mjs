@@ -17,6 +17,9 @@ const SCENARIO_REGISTRY = MANIFEST.scenarios;
 const SCENARIOS = new Set(Object.keys(SCENARIO_REGISTRY));
 const PROFILES = new Set(Object.keys(MANIFEST.profiles));
 const PROBE_MODES = new Set(["protocol-deterministic", "live-model"]);
+const RETIRED_BUNDLED_ALIAS = "all-bundled";
+const RETIRED_BUNDLED_ALIAS_MESSAGE =
+  "all-bundled is retired; use --profile protocol-core for the historical bundled protocol-core scenario set";
 
 function usage() {
   return [
@@ -29,9 +32,10 @@ function usage() {
     "  --cwd <path>          Absolute project cwd for successful child-backed probes.",
     "  --profile <name>      Coverage profile. Default: protocol-core.",
     "                       Names: protocol-core, full-current, live-current.",
-    "                       Profile aliases: all, all-bundled -> protocol-core; live-smoke, stateful-live -> live-current.",
+    "                       Profile aliases: all -> full-current; live-smoke, stateful-live -> live-current.",
+    "                       all-bundled is retired; use --profile protocol-core for the historical bundled subset.",
     "  --scenario <name>     Scenario to run. May repeat. Overrides profile scenarios.",
-    "                       Scenario aliases: all, all-bundled -> protocol-core.",
+    "                       Scenario alias: all -> full-current.",
     "  --mode <mode>         Evidence mode: protocol-deterministic or live-model. Default: protocol-deterministic.",
     "  --quiet               Do not print a JSON summary.",
     "  -h, --help            Show this help.",
@@ -70,6 +74,9 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--profile") {
       const profile = nextValue(index, arg);
+      if (profile === RETIRED_BUNDLED_ALIAS) {
+        throw new Error(RETIRED_BUNDLED_ALIAS_MESSAGE);
+      }
       const canonical = MANIFEST.aliases[profile] ?? profile;
       if (!PROFILES.has(canonical)) {
         throw new Error(`unknown profile: ${profile}`);
@@ -80,7 +87,10 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--scenario") {
       const scenario = nextValue(index, arg);
-      if (scenario === "all" || scenario === "all-bundled") {
+      if (scenario === RETIRED_BUNDLED_ALIAS) {
+        throw new Error(RETIRED_BUNDLED_ALIAS_MESSAGE);
+      }
+      if (scenario === "all") {
         const profile = MANIFEST.aliases[scenario];
         options.profile = profile;
         options.scenarios.push(...MANIFEST.profiles[profile].scenarios);
@@ -217,6 +227,9 @@ function responseMatchesResultClass(response, resultClass) {
   }
   if (resultClass === "async_polling") {
     return response.success === true && response.status === "completed" && response.polled === true;
+  }
+  if (resultClass === "scheduled_durable") {
+    return response.success === true && response.status === "completed" && response.polled === true && response.scheduled === true;
   }
   if (resultClass === "input_answered") {
     return response.success === true && response.input_answered === true;
@@ -835,6 +848,32 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
         (pending.failure_log_delta_count ?? 0) +
         (answered.failure_log_delta_count ?? 0) +
         (terminal.failure_log_delta_count ?? 0),
+    };
+  }
+
+  if (scenario === "schedule-run-durable-first") {
+    const started = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "schedule_run",
+      args: {
+        cwd,
+        prompt: "HEARTBEAT_SLEEP Investigate HORCs and SAFs into an implementation plan",
+        wait_ms: 0,
+      },
+    });
+    const terminal = started.response?.run_id
+      ? await waitForRun(client, ledgerPath, evidenceClass, scenario, started.response.run_id, (response) =>
+          response?.status === "completed",
+        )
+      : started;
+    return {
+      ...terminal,
+      tool: "schedule_run",
+      response: {
+        ...(terminal.response ?? {}),
+        polled: true,
+        scheduled: true,
+      },
+      failure_log_delta_count: started.failure_log_delta_count + (terminal.failure_log_delta_count ?? 0),
     };
   }
 

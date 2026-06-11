@@ -219,7 +219,7 @@ test("observed MCP probe records call attempts and failure-log deltas", async ()
   );
 });
 
-test("observed MCP probe reports bundled scenario coverage semantics", async () => {
+test("observed MCP probe maps all scenario alias to full-current coverage", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-probe-coverage-"));
   const projectDir = path.join(tmp, "project");
   const stateDir = path.join(tmp, "state");
@@ -238,7 +238,7 @@ test("observed MCP probe reports bundled scenario coverage semantics", async () 
       "--cwd",
       projectDir,
       "--scenario",
-      "all-bundled",
+      "all",
     ],
     {
       cwd: path.resolve("."),
@@ -281,25 +281,24 @@ test("observed MCP probe reports bundled scenario coverage semantics", async () 
     };
   };
 
-  assert.equal(summary.scenario_set, "protocol-core");
+  assert.equal(summary.scenario_set, "full-current");
   assert.equal(summary.mode, "protocol-deterministic");
-  assert.deepEqual(summary.scenarios.sort(), [
-    "child-failure",
-    "handler-validation",
-    "model-listing",
-    "packet-failure",
-    "schema-error",
-      "success",
-      "tool-listing",
-      "transcript-redaction",
-    ]);
+  assert.ok(summary.scenarios.includes("start-run-async-polling"));
+  assert.ok(summary.scenarios.includes("schedule-run-durable-first"));
+  assert.ok(summary.scenarios.includes("caller-input"));
+  assert.ok(summary.scenarios.includes("cancellation"));
+  assert.ok(summary.scenarios.includes("session-valid-closure"));
+  assert.ok(summary.scenarios.includes("session-invalid-closure"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("run_subagent-success"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("tool-listing"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("model-class-listing"));
   assert.ok(summary.coverage_summary.covered_surfaces_by_evidence_class["protocol-deterministic"].includes("run_subagent-success"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("run_subagent_session-packet-failure"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("start_run-async-polling"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("schedule_run-durable-first"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("answer_run_input-caller-input"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("cancel_run-cancellation-settlement"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("transcript-redaction"));
-  assert.ok(summary.coverage_summary.uncovered_surfaces.includes("start_run-async-polling"));
   assert.ok(summary.coverage_summary.uncovered_surfaces.includes("installed-pi-integration"));
   assert.deepEqual(summary.coverage_summary.missing_required_surfaces, []);
   assert.equal(summary.coverage_summary.scenarios.every((scenario) => scenario.tool.length > 0), true);
@@ -313,6 +312,35 @@ test("observed MCP probe reports bundled scenario coverage semantics", async () 
     summary.coverage_summary.scenarios.every((scenario) => scenario.evidence_class === "protocol-deterministic"),
     true,
   );
+});
+
+test("observed MCP probe rejects retired all-bundled alias with protocol-core guidance", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-probe-retired-alias-"));
+  const projectDir = path.join(tmp, "project");
+  await fs.mkdir(projectDir, { recursive: true });
+
+  for (const args of [
+    ["--profile", "all-bundled"],
+    ["--scenario", "all-bundled"],
+  ]) {
+    await assert.rejects(
+      execFileAsync(
+        process.execPath,
+        [
+          probePath,
+          "--server",
+          path.resolve("dist/server.js"),
+          "--cwd",
+          projectDir,
+          ...args,
+        ],
+        {
+          cwd: path.resolve("."),
+        },
+      ),
+      /all-bundled is retired; use --profile protocol-core/,
+    );
+  }
 });
 
 test("observed MCP probe separates live-model mode from deterministic-only scenarios", async () => {
@@ -539,6 +567,7 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
   assert.deepEqual(summary.coverage_summary.missing_required_surfaces, []);
   for (const surface of [
     "run_subagent-timeout-recovery",
+    "schedule_run-durable-first",
     "start_run-async-polling",
     "answer_run_input-caller-input",
     "cancel_run-cancellation-settlement",
@@ -556,7 +585,7 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
     .split(/\r?\n/)
     .filter((line) => line.trim() !== "")
     .map((line) => JSON.parse(line)) as Array<{ event: string; scenario: string; tool: string }>;
-  for (const tool of ["start_run", "get_run", "answer_run_input", "cancel_run", "run_subagent_session"]) {
+  for (const tool of ["schedule_run", "start_run", "get_run", "answer_run_input", "cancel_run", "run_subagent_session"]) {
     assert.ok(events.some((event) => event.tool === tool), tool);
   }
 });
