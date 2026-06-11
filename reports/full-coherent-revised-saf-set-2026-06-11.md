@@ -59,7 +59,7 @@ Minimum required behavior:
 
 ### Intraframe Candidate
 
-Change class `A` calibration from `ollama/gemma4:12b` to a model that already passed installed one-shot smoke, or remove/demote class `A` from one-shot recommendations.
+Change class `A` calibration from `ollama/gemma4:12b-mlx` to a model that already passed installed one-shot smoke, or remove/demote class `A` from one-shot recommendations.
 
 ### Transframe Candidate
 

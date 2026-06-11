@@ -7,7 +7,7 @@ export const OPENAI_CODEX_GPT54_PLUS_REF = "openai-codex/gpt-5.4+";
 export const OPENAI_CODEX_MIN_GPT5_MINOR = 4;
 
 export const CURATED_EXACT_MODEL_REFS = [
-  "ollama/gemma4:12b",
+  "ollama/gemma4:12b-mlx",
   "openrouter/deepseek/deepseek-v4-flash",
   "openrouter/deepseek/deepseek-v4-pro",
 ] as const;
@@ -28,7 +28,7 @@ export const MODEL_CLASS_CALIBRATIONS: Record<ModelClass, {
   description: string;
 }> = {
   A: {
-    model: "ollama/gemma4:12b",
+    model: "ollama/gemma4:12b-mlx",
     thinkingLevel: "high",
     description: "Simplest mechanistic tasks with low abstraction and low technical difficulty.",
   },

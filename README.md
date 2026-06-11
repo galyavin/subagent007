@@ -47,7 +47,7 @@ Use model classes instead of concrete model IDs. The default class is `C`; calle
 
 | Class | Use when | Current calibration |
 | --- | --- | --- |
-| `A` | Simplest mechanistic tasks with low abstraction and low technical difficulty | `ollama/gemma4:12b`, `high` |
+| `A` | Simplest mechanistic tasks with low abstraction and low technical difficulty | `ollama/gemma4:12b-mlx`, `high` |
 | `B` | Simple coding, review, or search tasks with limited ambiguity | `openrouter/deepseek/deepseek-v4-flash`, `high` |
 | `C` | Default class for ordinary software engineering and technical reasoning | `openrouter/deepseek/deepseek-v4-pro`, `high` |
 | `D` | Complex multi-file debugging, planning, synthesis, and high-abstraction work | `openai-codex/gpt-5.5`, `high` |
@@ -114,7 +114,7 @@ Tool profiles:
 
 Use `workspace_write` only when the child is expected to modify files. Use `shell` only when command execution is necessary. The default `inspect` profile is intended for review, research, and report-only delegation.
 
-Bind skills with `skill_name`, not prompt syntax. It must be a bare name such as `pda-lite` or `google-drive:google-docs`, not `$skill`, `/skill:name`, markdown, prose, or a path.
+Bind skills with `skill_name`, not prompt syntax. It must be a bare name such as `pda-lite` or `google-drive:google-docs`, not `$skill`, `/skill:name`, markdown, prose, or a path. Child runs receive no ambient skill catalog; omission means no skills, and a provided name must resolve to exactly one skill before model invocation.
 
 Runs that reach child execution return `output_path` on terminal completion; schema and preflight errors do not. `run_subagent` and `start_run` both create durable run-task snapshots that can be inspected with `get_run` by `run_id`; `start_run` returns `output_path` only after polling reaches a terminal state. Transcript output redacts internal Pi events. On timeout, `partial_output_available` is true only when the artifact includes child assistant text, a warning/error, or a captured final message; user prompts, markers, and raw process bytes do not count.
 

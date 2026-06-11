@@ -63,7 +63,7 @@ Result: pass. Pi reported 263 models, OpenRouter 337, Ollama 1. All curated refs
 
 - `openai-codex/gpt-5.4+`
 - `openai-codex/gpt-5.5`
-- `ollama/gemma4:12b`
+- `ollama/gemma4:12b-mlx`
 - `openrouter/deepseek/deepseek-v4-flash`
 - `openrouter/deepseek/deepseek-v4-pro`
 
@@ -149,11 +149,11 @@ Observed result:
 - `status:failed`
 - `timed_out:true`
 - `duration_ms:103018`
-- `resolved_model:ollama/gemma4:12b`
+- `resolved_model:ollama/gemma4:12b-mlx`
 - `partial_output_available:false`
 - `timeout_recovery_hint` present
 
-Output file contained only the user prompt and timeout marker. `pi --list-models` showed `ollama/gemma4:12b` is present, so this is not an inventory/auth miss.
+Output file contained only the user prompt and timeout marker. `pi --list-models` showed `ollama/gemma4:12b-mlx` is present, so this is not an inventory/auth miss.
 
 #### Async class B smoke
 
@@ -237,7 +237,7 @@ Observed evidence:
 
 - `list_model_classes` advertises class `A` as suitable for the simplest mechanistic tasks.
 - `run_subagent` with class `A` and a trivial exact-reply prompt timed out after 103 seconds.
-- `pi --list-models` confirmed `ollama/gemma4:12b` exists, so the failure is not merely missing inventory.
+- `pi --list-models` confirmed `ollama/gemma4:12b-mlx` exists, so the failure is not merely missing inventory.
 
 Why it matters:
 
@@ -311,7 +311,7 @@ This is not a current runtime bug, but longitudinal failure-log analysis can con
 
 Malformed primitive:
 
-`MODEL_CLASS_CALIBRATIONS` maps class `A` to `ollama/gemma4:12b` as a static capability tier, and `list_model_classes` reports availability/config health, not real task latency or smoke-test health.
+`MODEL_CLASS_CALIBRATIONS` maps class `A` to `ollama/gemma4:12b-mlx` as a static capability tier, and `list_model_classes` reports availability/config health, not real task latency or smoke-test health.
 
 Downstream effects:
 
@@ -321,7 +321,7 @@ Downstream effects:
 
 Intraframe SAF candidate:
 
-Change class `A` calibration from `ollama/gemma4:12b` to a model that passes a live trivial smoke within the one-shot budget in this environment, or demote `A` behind an explicit health-gated warning in `list_model_classes` until it passes.
+Change class `A` calibration from `ollama/gemma4:12b-mlx` to a model that passes a live trivial smoke within the one-shot budget in this environment, or demote `A` behind an explicit health-gated warning in `list_model_classes` until it passes.
 
 Transframe SAF candidate:
 

@@ -1,12 +1,9 @@
 #!/usr/bin/env node
 import fs from "node:fs/promises";
-import fsSync from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import {
   AuthStorage,
   createAgentSession,
-  DefaultResourceLoader,
   ModelRegistry,
   SessionManager,
   type ToolDefinition,
@@ -16,6 +13,7 @@ import { Type } from "typebox";
 import { createInputRequest, waitForInputAnswer } from "./inputMailbox.js";
 import { resolvePiAgentDir } from "./piAgentDir.js";
 import { composePrompt } from "./prompt.js";
+import { createSkillScopedResourceLoader } from "./skillResources.js";
 import { toolsForProfile } from "./toolProfile.js";
 import type { OutputMode, ThinkingLevel, ToolProfile } from "./types.js";
 
@@ -44,20 +42,6 @@ const requestInputParameters = Type.Object({
 
 function writeEvent(event: unknown): void {
   process.stdout.write(`${JSON.stringify(event)}\n`);
-}
-
-function defaultSkillPaths(): string[] {
-  const envPaths = process.env.SUBAGENT007_PI_SKILL_PATHS
-    ?.split(path.delimiter)
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0) ?? [];
-  const home = os.homedir();
-  return [
-    ...envPaths,
-    path.join(home, ".codex", "skills"),
-    path.join(home, ".codex", "plugins", "cache"),
-    path.join(home, ".codex", "gstack", ".agents", "skills"),
-  ].filter((entry, index, all) => fsSync.existsSync(entry) && all.indexOf(entry) === index);
 }
 
 function resolveRequestedModel(modelRef: string, registry: ModelRegistry): Model<Api> {
@@ -167,6 +151,11 @@ async function main(): Promise<void> {
   const request = await readRequest();
   const agentDir = resolvePiAgentDir();
   process.env.PI_CODING_AGENT_DIR = agentDir;
+  const resourceLoader = createSkillScopedResourceLoader({
+    cwd: request.cwd,
+    agentDir,
+    skill: request.skill,
+  });
   const authStorage = AuthStorage.create(path.join(agentDir, "auth.json"));
   const modelRegistry = ModelRegistry.create(authStorage, path.join(agentDir, "models.json"));
   const model = resolveRequestedModel(request.model, modelRegistry);
@@ -183,11 +172,6 @@ async function main(): Promise<void> {
           )
         : SessionManager.create(request.cwd, request.sessionDir);
 
-  const resourceLoader = new DefaultResourceLoader({
-    cwd: request.cwd,
-    agentDir,
-    additionalSkillPaths: defaultSkillPaths(),
-  });
   await resourceLoader.reload();
 
   const { session, modelFallbackMessage } = await createAgentSession({

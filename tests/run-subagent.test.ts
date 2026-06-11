@@ -779,7 +779,7 @@ test("MCP run_subagent fails fast for known unhealthy one-shot model class", asy
         {
           schema_version: 1,
           model_class: "A",
-          resolved_model: "ollama/gemma4:12b",
+          resolved_model: "ollama/gemma4:12b-mlx",
           surface: "run_subagent_one_shot",
           checked_at: "2026-06-11T00:00:00.000Z",
           usable_for_one_shot: false,
