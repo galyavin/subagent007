@@ -211,10 +211,6 @@ export function publicTranscriptFromProcessOutput(rawOutput: string): string {
 }
 
 export function publicOutputLineFromProcessLine(line: string): PublicOutputLine | null {
-  const markerLine = publicMarkerLine(line);
-  if (markerLine) {
-    return markerLine;
-  }
   const trimmed = line.trim();
   if (!trimmed.startsWith("{")) {
     return null;

@@ -21,6 +21,8 @@ type FailureRecord = {
   reason_code: string;
   cwd_class: string;
   cwd?: string;
+  run_id?: string;
+  task_kind?: "run" | "session";
   output_path?: string;
   session_key?: string;
   session_dir?: string;
@@ -314,6 +316,100 @@ test("cancelled start_run tasks do not append unknown failure records", async ()
       SUBAGENT007_TIMEOUT_FORCE_GRACE_MS: "10",
     },
   );
+});
+
+test("run-scoped input failures log resolved run context", async () => {
+  await withFakeClient(
+    async (client, { projectDir, failureLogPath }) => {
+      const startedResponse = await client.callTool({
+        name: "start_run",
+        arguments: {
+          cwd: projectDir,
+          prompt: "CANCEL_WAIT",
+          timeout_ms: 6000,
+        },
+      });
+      assert.notEqual(startedResponse.isError, true);
+      const started = startedResponse.structuredContent as {
+        run_id: string;
+        input_requests_dir: string;
+      };
+      const requestId = `${started.run_id}-abcdef123456`;
+      await fs.mkdir(started.input_requests_dir, { recursive: true });
+      await fs.writeFile(
+        path.join(started.input_requests_dir, `${requestId}.json`),
+        `${JSON.stringify({
+          schema_version: 1,
+          request_id: requestId,
+          run_id: started.run_id,
+          session_id: null,
+          created_at: new Date().toISOString(),
+          question: "Answer me",
+          options: [],
+          freeform: true,
+        })}\n`,
+      );
+
+      const firstAnswer = await client.callTool({
+        name: "answer_run_input",
+        arguments: {
+          run_id: started.run_id,
+          request_id: requestId,
+          answer: "first",
+        },
+      });
+      assert.notEqual(firstAnswer.isError, true);
+
+      const duplicateAnswer = await client.callTool({
+        name: "answer_run_input",
+        arguments: {
+          run_id: started.run_id,
+          request_id: requestId,
+          answer: "second",
+        },
+      });
+      assert.equal(duplicateAnswer.isError, true);
+
+      const failures = await readJsonl<FailureRecord>(failureLogPath);
+      assert.equal(failures.length, 1);
+      assert.equal(failures[0].tool, "answer_run_input");
+      assert.equal(failures[0].failure_class, "validation_error");
+      assert.equal(failures[0].reason_code, "input_request_already_answered");
+      assert.equal(failures[0].run_id, started.run_id);
+      assert.equal(failures[0].task_kind, "run");
+      assert.equal(failures[0].cwd, projectDir);
+      assert.equal(failures[0].cwd_class, "temp");
+      assert.doesNotMatch(JSON.stringify(failures[0]), /first|second/);
+
+      await client.callTool({
+        name: "cancel_run",
+        arguments: { run_id: started.run_id },
+      });
+    },
+    {
+      SUBAGENT007_TIMEOUT_KILL_GRACE_MS: "10",
+      SUBAGENT007_TIMEOUT_FORCE_GRACE_MS: "10",
+    },
+  );
+});
+
+test("unknown run-scoped tools log run_not_found without cwd", async () => {
+  await withFakeClient(async (client, { failureLogPath }) => {
+    const response = await client.callTool({
+      name: "get_run",
+      arguments: { run_id: "missing-run" },
+    });
+    assert.equal(response.isError, true);
+
+    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].tool, "get_run");
+    assert.equal(failures[0].failure_class, "validation_error");
+    assert.equal(failures[0].reason_code, "run_not_found");
+    assert.equal(failures[0].run_id, "missing-run");
+    assert.equal(failures[0].cwd, undefined);
+    assert.equal(failures[0].cwd_class, "missing");
+  });
 });
 
 test("failure logging can be disabled", async () => {

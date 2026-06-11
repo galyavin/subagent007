@@ -33,6 +33,9 @@ type RunSubagentMetadata = {
   kill_grace_ms: number;
   force_grace_ms: number;
   written_output_mode: "final" | "transcript";
+  active_phase?: string;
+  last_phase_at?: string;
+  recent_events?: Array<{ kind: string; event?: string; text: string; occurred_at: string }>;
 };
 
 function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -170,6 +173,8 @@ test("start_run returns timeout metadata and transcript before caller deadline",
 
     assert.equal(metadata.success, false);
     assert.equal(metadata.timed_out, true);
+    assert.equal(metadata.active_phase, "timed_out");
+    assert.equal(typeof metadata.last_phase_at, "string");
     assert.equal(metadata.timeout_recovery_hint, undefined);
     assert.equal(metadata.partial_output_available, false);
     assert.equal(metadata.resume_possible, false);
@@ -181,6 +186,14 @@ test("start_run returns timeout metadata and transcript before caller deadline",
     assert.equal(metadata.kill_grace_ms, 100);
     assert.equal(metadata.force_grace_ms, 100);
     assert.equal(metadata.written_output_mode, "transcript");
+    assert.equal(
+      (metadata.recent_events ?? []).filter((event) => event.event === "timeout").length,
+      1,
+    );
+    assert.equal(
+      (metadata.recent_events ?? []).filter((event) => event.text.startsWith("[subagent007 timeout]")).length,
+      0,
+    );
     assert.equal(path.dirname(metadata.output_path), runsDir);
     assert.equal(elapsedMs < 2300, true);
 

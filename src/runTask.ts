@@ -49,6 +49,17 @@ export type RunTaskStatus =
   | "failed"
   | "cancelled";
 
+export type RunTaskActivePhase =
+  | "starting"
+  | "awaiting_child_event"
+  | "running"
+  | "input_required"
+  | "cancelling"
+  | "timed_out"
+  | "cancelled"
+  | "completed"
+  | "failed";
+
 type RunTaskTerminalResult = RunSubagentResult | RunSubagentSessionResult;
 
 export interface RunTaskView extends Partial<RunSubagentResult>, Partial<RunSubagentSessionResult> {
@@ -64,6 +75,8 @@ export interface RunTaskView extends Partial<RunSubagentResult>, Partial<RunSuba
   last_progress_at?: string;
   last_progress_message?: string;
   heartbeat_count?: number;
+  active_phase?: RunTaskActivePhase;
+  last_phase_at?: string;
   recent_events?: RunPublicEvent[];
   last_public_output_excerpt?: string;
   error?: string;
@@ -83,6 +96,8 @@ interface RunTaskState {
   heartbeatCount: number;
   lastProgressAt?: string;
   lastProgressMessage?: string;
+  activePhase: RunTaskActivePhase;
+  lastPhaseAt: string;
   recentEvents: RunPublicEvent[];
   lastPublicOutputExcerpt?: string;
   promise: Promise<void>;
@@ -123,9 +138,27 @@ function taskNotFound(runId: string): ValidationError {
   return new ValidationError(`run not found: ${runId}`);
 }
 
+function setTaskPhase(state: RunTaskState, phase: RunTaskActivePhase, occurredAt = new Date().toISOString()): void {
+  if (state.terminalSnapshotStarted) {
+    return;
+  }
+  state.activePhase = phase;
+  state.lastPhaseAt = occurredAt;
+}
+
 function terminalStatus(result: RunTaskTerminalResult): RunTaskStatus {
   if ("status" in result && result.status === "cancelled") {
     return "cancelled";
+  }
+  return result.success ? "completed" : "failed";
+}
+
+function terminalPhase(result: RunTaskTerminalResult): RunTaskActivePhase {
+  if (result.stop_reason === "cancelled") {
+    return "cancelled";
+  }
+  if (result.stop_reason === "timeout") {
+    return "timed_out";
   }
   return result.success ? "completed" : "failed";
 }
@@ -140,6 +173,8 @@ function activeProgressView(state: RunTaskState): Pick<
   | "last_progress_at"
   | "last_progress_message"
   | "heartbeat_count"
+  | "active_phase"
+  | "last_phase_at"
   | "recent_events"
   | "last_public_output_excerpt"
 > {
@@ -148,6 +183,8 @@ function activeProgressView(state: RunTaskState): Pick<
     ...(state.lastProgressAt ? { last_progress_at: state.lastProgressAt } : {}),
     ...(state.lastProgressMessage ? { last_progress_message: state.lastProgressMessage } : {}),
     heartbeat_count: state.heartbeatCount,
+    active_phase: state.activePhase,
+    last_phase_at: state.lastPhaseAt,
     recent_events: state.recentEvents,
     ...(state.lastPublicOutputExcerpt ? { last_public_output_excerpt: state.lastPublicOutputExcerpt } : {}),
   };
@@ -162,6 +199,8 @@ function terminalProgressView(
   | "last_progress_at"
   | "last_progress_message"
   | "heartbeat_count"
+  | "active_phase"
+  | "last_phase_at"
   | "recent_events"
   | "last_public_output_excerpt"
 > {
@@ -170,6 +209,8 @@ function terminalProgressView(
     ...(state.lastProgressAt ? { last_progress_at: state.lastProgressAt } : {}),
     ...(state.lastProgressMessage ? { last_progress_message: state.lastProgressMessage } : {}),
     heartbeat_count: state.heartbeatCount,
+    active_phase: state.activePhase,
+    last_phase_at: state.lastPhaseAt,
     recent_events: state.recentEvents,
     ...(state.lastPublicOutputExcerpt ? { last_public_output_excerpt: state.lastPublicOutputExcerpt } : {}),
   };
@@ -209,7 +250,7 @@ async function appendRunStartedEvent(
   await appendStatusEvent(state, {
     kind: "task",
     event: "run_started",
-    text: `[run_started] ${state.taskKind} run ${state.runId}`,
+    text: `[run_started] ${state.taskKind} ${state.runId}`,
     occurred_at: state.startedAt,
     metadata: {
       task_kind: state.taskKind,
@@ -248,11 +289,13 @@ async function appendRunStartedEvent(
 }
 
 async function appendChildSpawnEvent(state: RunTaskState): Promise<void> {
+  const occurredAt = new Date().toISOString();
+  setTaskPhase(state, "awaiting_child_event", occurredAt);
   await appendStatusEvent(state, {
     kind: "child",
     event: "child_spawned",
     text: "[child_spawned] Pi child process starting",
-    occurred_at: new Date().toISOString(),
+    occurred_at: occurredAt,
   }, "child process starting");
 }
 
@@ -301,6 +344,7 @@ async function appendTerminalEvent(state: RunTaskState): Promise<void> {
         : result.success
           ? "completed"
           : "failed";
+    setTaskPhase(state, terminalPhase(result), occurredAt);
     const text = event === "cancellation_settled"
       ? "[cancellation_settled] run cancelled"
       : event === "timeout"
@@ -323,6 +367,7 @@ async function appendTerminalEvent(state: RunTaskState): Promise<void> {
     return;
   }
   if (state.error) {
+    setTaskPhase(state, state.cancelRequested ? "cancelled" : "failed", occurredAt);
     await appendStatusEvent(state, {
       kind: "terminal",
       event: state.cancelRequested ? "cancellation_settled" : "failed",
@@ -344,6 +389,13 @@ async function observeOutputLine(state: RunTaskState, line: string): Promise<voi
   if (publicLine.kind === "user") {
     return;
   }
+  if (publicLine.event === "input_required") {
+    setTaskPhase(state, "input_required");
+  } else if (publicLine.kind === "assistant" || publicLine.kind === "warning" || publicLine.kind === "error") {
+    setTaskPhase(state, "running");
+  } else if (publicLine.event === "input_timed_out" || publicLine.event === "input_closed") {
+    setTaskPhase(state, "running");
+  }
   await appendPublicEvent(state, {
     kind: publicLine.kind,
     event: publicLine.event ?? "message",
@@ -356,10 +408,6 @@ async function observeOutputLine(state: RunTaskState, line: string): Promise<voi
     setTaskProgress(state, "input timed out");
   } else if (publicLine.event === "input_closed") {
     setTaskProgress(state, "input request closed");
-  } else if (publicLine.event === "timeout") {
-    setTaskProgress(state, "run timed out");
-  } else if (publicLine.event === "cancellation_settled") {
-    setTaskProgress(state, "run cancelled");
   }
   await writeTaskSnapshot(await getRunTask(state.runId));
 }
@@ -400,6 +448,8 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
         ...eventProjection,
         status: "failed",
         finished_at: snapshot.finished_at ?? new Date().toISOString(),
+        active_phase: "failed",
+        last_phase_at: snapshot.last_phase_at ?? snapshot.finished_at ?? new Date().toISOString(),
         input_requests: inputRequests,
         success: false,
         error: "run is not active in this MCP server process; the server may have restarted",
@@ -408,7 +458,7 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
     return { ...snapshot, ...eventProjection, input_requests: inputRequests };
   }
   const inputRequests = await taskInputRequests(state);
-  if (state.result) {
+  if (state.result && state.terminalSnapshotStarted) {
     return {
       ...state.result,
       run_id: state.runId,
@@ -438,6 +488,10 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
       error: state.error.message,
     };
   }
+  const hasPendingInput = inputRequests.some((request) => request.status === "pending");
+  if (hasPendingInput) {
+    setTaskPhase(state, "input_required");
+  }
   return {
     run_id: state.runId,
     task_id: state.runId,
@@ -445,7 +499,7 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
     ...(state.sessionKey ? { session_key: state.sessionKey } : {}),
     status: state.cancelRequested
       ? "cancelled"
-      : inputRequests.some((request) => request.status === "pending")
+      : hasPendingInput
         ? "input_required"
         : "working",
     started_at: state.startedAt,
@@ -481,6 +535,8 @@ export async function startRunTask(
     taskKind: "run",
     cancelRequested: false,
     heartbeatCount: 0,
+    activePhase: "starting",
+    lastPhaseAt: startedAt,
     recentEvents: [],
     terminalSnapshotStarted: false,
     promise: Promise.resolve(),
@@ -501,6 +557,9 @@ export async function startRunTask(
         failureLogTool: "start_run",
         allowTimeout: true,
         heartbeat: async (beat, message) => {
+          if (state.activePhase === "awaiting_child_event") {
+            setTaskPhase(state, "running");
+          }
           setTaskProgress(state, message ?? DEFAULT_HEARTBEAT_MESSAGE, beat);
           await writeTaskSnapshot(await getRunTask(runId));
           await options.heartbeat?.(beat, message);
@@ -562,6 +621,8 @@ export async function startSessionRunTask(
     taskKind: "session",
     cancelRequested: false,
     heartbeatCount: 0,
+    activePhase: "starting",
+    lastPhaseAt: startedAt,
     recentEvents: [],
     terminalSnapshotStarted: false,
     promise: Promise.resolve(),
@@ -579,6 +640,9 @@ export async function startSessionRunTask(
       state.result = await runSubagentSession(request, {
         sessionsDir: options.sessionsDir,
         heartbeat: async (beat, message) => {
+          if (state.activePhase === "awaiting_child_event") {
+            setTaskPhase(state, "running");
+          }
           setTaskProgress(state, message ?? DEFAULT_HEARTBEAT_MESSAGE, beat);
           await writeTaskSnapshot(await getRunTask(runId));
           await options.heartbeat?.(beat, message);
@@ -663,6 +727,8 @@ export async function runSubagentOneShotTask(
     taskKind: "run",
     cancelRequested: false,
     heartbeatCount: 0,
+    activePhase: "starting",
+    lastPhaseAt: startedAt,
     recentEvents: [],
     terminalSnapshotStarted: false,
     promise: Promise.resolve(),
@@ -682,6 +748,9 @@ export async function runSubagentOneShotTask(
         runsDir: options.runsDir,
         failureLogTool: "run_subagent",
         heartbeat: async (beat, message) => {
+          if (state.activePhase === "awaiting_child_event") {
+            setTaskPhase(state, "running");
+          }
           setTaskProgress(state, message ?? DEFAULT_HEARTBEAT_MESSAGE, beat);
           await writeTaskSnapshot(await getRunTask(runId));
           await options.heartbeat?.(beat, message);
@@ -752,6 +821,7 @@ export async function cancelRunTask(runId: string): Promise<RunTaskView> {
   }
   if (!state.result && !state.error) {
     state.cancelRequested = true;
+    setTaskPhase(state, "cancelling");
     await appendStatusEvent(state, {
       kind: "terminal",
       event: "cancellation_requested",
@@ -769,6 +839,48 @@ export async function cancelRunTask(runId: string): Promise<RunTaskView> {
   const view = await getRunTask(runId);
   await writeTaskSnapshot(view);
   return view;
+}
+
+export interface RunOperationContext {
+  runId: string;
+  taskKind?: "run" | "session";
+  sessionKey?: string;
+  cwd?: string;
+  snapshot?: RunTaskView;
+}
+
+function cwdFromRunStartedEvent(events: RunPublicEvent[]): string | undefined {
+  for (const event of events) {
+    if (event.event === "run_started" && typeof event.metadata?.cwd === "string") {
+      return event.metadata.cwd;
+    }
+  }
+  return undefined;
+}
+
+export async function resolveRunOperationContext(runId: string): Promise<RunOperationContext> {
+  const state = tasks.get(runId);
+  if (state) {
+    const startedEvent = state.recentEvents.find((event) => event.event === "run_started");
+    return {
+      runId,
+      taskKind: state.taskKind,
+      ...(state.sessionKey ? { sessionKey: state.sessionKey } : {}),
+      ...(typeof startedEvent?.metadata?.cwd === "string" ? { cwd: startedEvent.metadata.cwd } : {}),
+    };
+  }
+  const snapshot = await readTaskSnapshot(runId);
+  if (!snapshot) {
+    return { runId };
+  }
+  const events = await readRunPublicEvents(defaultRunTasksDir(), runId);
+  return {
+    runId,
+    ...(snapshot.task_kind ? { taskKind: snapshot.task_kind } : {}),
+    ...(snapshot.session_key ? { sessionKey: snapshot.session_key } : {}),
+    ...(cwdFromRunStartedEvent(events) ? { cwd: cwdFromRunStartedEvent(events) } : {}),
+    snapshot,
+  };
 }
 
 export async function answerRunTaskInput(options: {
@@ -795,11 +907,18 @@ export async function answerRunTaskInput(options: {
     requestId: options.requestId,
     answer: options.answer,
   });
+  const occurredAt = new Date().toISOString();
+  const remainingPending = await listInputRequests({
+    mailboxRoot: state.mailboxRoot,
+    runId: state.runId,
+    status: "pending",
+  });
+  setTaskPhase(state, remainingPending.length > 0 ? "input_required" : "running", occurredAt);
   await appendStatusEvent(state, {
     kind: "input",
     event: "input_answered",
     text: `[input_answered] ${options.requestId}`,
-    occurred_at: new Date().toISOString(),
+    occurred_at: occurredAt,
     metadata: {
       request_id: options.requestId,
       status: "answered",

@@ -22,6 +22,7 @@ import {
   answerRunTaskInput,
   cancelRunTask,
   getRunTask,
+  resolveRunOperationContext,
   runSubagentSessionTaskAndWait,
   runSubagentOneShotTask,
   startSessionRunTask,
@@ -57,6 +58,39 @@ function withFailureLogging<TRequest, TResult>(
         failure_class: failureClassForToolHandlerError(tool, error),
         reason_code: failureReasonCodeForError(error),
         cwd: cwdFromRequest(request),
+        success: false,
+      });
+      throw error;
+    }
+  };
+}
+
+function runIdFromRequest(request: unknown): string | undefined {
+  if (typeof request !== "object" || request === null) {
+    return undefined;
+  }
+  const runId = (request as { run_id?: unknown }).run_id;
+  return typeof runId === "string" && runId.trim() !== "" ? runId.trim() : undefined;
+}
+
+function withRunFailureLogging<TRequest, TResult>(
+  tool: Extract<FailureLogTool, "get_run" | "answer_run_input" | "cancel_run">,
+  handler: (request: TRequest, extra: ServerExtra) => Promise<TResult>,
+): (request: TRequest, extra: ServerExtra) => Promise<TResult> {
+  return async (request, extra) => {
+    const runId = runIdFromRequest(request);
+    const context = runId ? await resolveRunOperationContext(runId) : undefined;
+    try {
+      return await handler(request, extra);
+    } catch (error) {
+      await logFailure({
+        tool,
+        failure_class: failureClassForToolHandlerError(tool, error),
+        reason_code: failureReasonCodeForError(error),
+        cwd: context?.cwd,
+        run_id: runId,
+        task_kind: context?.taskKind,
+        session_key: context?.sessionKey,
         success: false,
       });
       throw error;
@@ -309,7 +343,7 @@ server.registerTool(
       run_id: z.string().min(1),
     },
   },
-  withFailureLogging("get_run", async (request) => {
+  withRunFailureLogging("get_run", async (request) => {
     const result = await getRunTask(request.run_id);
     return jsonToolResult(result, { ...result });
   }),
@@ -327,7 +361,7 @@ server.registerTool(
       answer: z.string().min(1),
     },
   },
-  withFailureLogging("answer_run_input", async (request) => {
+  withRunFailureLogging("answer_run_input", async (request) => {
     const result = await answerRunTaskInput({
       runId: request.run_id,
       requestId: request.request_id,
@@ -346,7 +380,7 @@ server.registerTool(
       run_id: z.string().min(1),
     },
   },
-  withFailureLogging("cancel_run", async (request) => {
+  withRunFailureLogging("cancel_run", async (request) => {
     const result = await cancelRunTask(request.run_id);
     return jsonToolResult(result, { ...result });
   }),

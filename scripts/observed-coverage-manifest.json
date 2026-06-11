@@ -81,6 +81,48 @@
       "lifecycle_phases": ["transcript-rendering"],
       "result_classes": ["transcript_redacted"],
       "surfaces": ["transcript-redaction"]
+    },
+    "timeout-recovery": {
+      "tool": "run_subagent",
+      "lifecycle_phases": ["one-shot-timeout", "timeout-recovery"],
+      "result_classes": ["timeout_recovered"],
+      "surfaces": ["run_subagent-timeout-recovery"]
+    },
+    "start-run-async-polling": {
+      "tool": "start_run",
+      "lifecycle_phases": ["async-start", "polling", "terminal-snapshot"],
+      "result_classes": ["async_polling"],
+      "surfaces": ["start_run-async-polling"]
+    },
+    "caller-input": {
+      "tool": "answer_run_input",
+      "lifecycle_phases": ["async-start", "caller-input", "input-settlement"],
+      "result_classes": ["input_answered"],
+      "surfaces": ["answer_run_input-caller-input"]
+    },
+    "cancellation": {
+      "tool": "cancel_run",
+      "lifecycle_phases": ["async-start", "cancellation", "terminal-snapshot"],
+      "result_classes": ["cancelled"],
+      "surfaces": ["cancel_run-cancellation-settlement"]
+    },
+    "session-valid-closure": {
+      "tool": "run_subagent_session",
+      "lifecycle_phases": ["session-attempt", "packet-required-gate", "packet-closure"],
+      "result_classes": ["valid_packet_closure"],
+      "surfaces": ["run_subagent_session-valid-packet-closure"]
+    },
+    "session-invalid-closure": {
+      "tool": "run_subagent_session",
+      "lifecycle_phases": ["session-attempt", "packet-required-gate", "packet-closure"],
+      "result_classes": ["invalid_packet_closure"],
+      "surfaces": ["run_subagent_session-invalid-packet-closure"]
+    },
+    "installed-pi-integration": {
+      "tool": "run_subagent",
+      "lifecycle_phases": ["installed-pi-child", "one-shot-success"],
+      "result_classes": ["success"],
+      "surfaces": ["installed-pi-integration"]
     }
   },
   "profiles": {
@@ -98,19 +140,24 @@
         "transcript-redaction"
       ]
     },
-    "live-smoke": {
-      "mode": "live-model",
-      "scenarios": ["tool-listing", "model-listing", "success"],
-      "required_surfaces": ["tool-listing", "model-class-listing", "run_subagent-success"]
-    },
-    "stateful-live": {
-      "mode": "live-model",
-      "scenarios": ["tool-listing", "model-listing", "success"],
-      "required_surfaces": ["tool-listing", "model-class-listing", "run_subagent-success"]
-    },
     "full-current": {
       "mode": "protocol-deterministic",
-      "scenarios": ["tool-listing", "model-listing", "success", "schema-error", "handler-validation", "child-failure", "packet-failure", "transcript-redaction"],
+      "scenarios": [
+        "tool-listing",
+        "model-listing",
+        "success",
+        "schema-error",
+        "handler-validation",
+        "child-failure",
+        "timeout-recovery",
+        "start-run-async-polling",
+        "caller-input",
+        "cancellation",
+        "packet-failure",
+        "session-valid-closure",
+        "session-invalid-closure",
+        "transcript-redaction"
+      ],
       "required_surfaces": [
         "tool-listing",
         "model-class-listing",
@@ -125,13 +172,24 @@
         "transcript-redaction",
         "run_subagent_session-packet-failure",
         "run_subagent_session-valid-packet-closure",
-        "run_subagent_session-invalid-packet-closure",
+        "run_subagent_session-invalid-packet-closure"
+      ]
+    },
+    "live-current": {
+      "mode": "live-model",
+      "scenarios": ["tool-listing", "model-listing", "success", "installed-pi-integration"],
+      "required_surfaces": [
+        "tool-listing",
+        "model-class-listing",
+        "run_subagent-success",
         "installed-pi-integration"
       ]
     }
   },
   "aliases": {
     "all": "protocol-core",
-    "all-bundled": "protocol-core"
+    "all-bundled": "protocol-core",
+    "live-smoke": "live-current",
+    "stateful-live": "live-current"
   }
 }

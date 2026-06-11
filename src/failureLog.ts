@@ -52,8 +52,14 @@ export type FailureReasonCode =
   | "packet_required_missing"
   | "prompt_missing"
   | "raw_session_id_unsupported"
+  | "run_not_accepting_input"
+  | "run_not_found"
   | "run_subagent_incompatible_workload"
   | "run_subagent_timeout_unsupported"
+  | "input_request_already_answered"
+  | "input_request_already_closed"
+  | "input_request_already_timed_out"
+  | "input_request_not_part_of_run"
   | "session_already_exists"
   | "session_already_running"
   | "session_cwd_mismatch"
@@ -79,6 +85,8 @@ export interface FailureLogRecord {
   reason_code: FailureReasonCode;
   cwd_class: FailureCwdClass;
   cwd?: string;
+  run_id?: string;
+  task_kind?: "run" | "session";
   output_path?: string | null;
   session_key?: string;
   session_dir?: string;
@@ -258,6 +266,12 @@ export function failureReasonCodeForError(error: unknown): FailureReasonCode {
   if (message.includes("resume session ")) return "invalid_session_id";
   if (message.includes("session_id is not supported")) return "raw_session_id_unsupported";
   if (message.includes("session_id")) return "invalid_session_id";
+  if (message.includes("run not found")) return "run_not_found";
+  if (message.includes("run is not accepting input")) return "run_not_accepting_input";
+  if (message.includes("input request is not part of run")) return "input_request_not_part_of_run";
+  if (message.includes("input request is already answered")) return "input_request_already_answered";
+  if (message.includes("input request is already timed out")) return "input_request_already_timed_out";
+  if (message.includes("input request is already closed")) return "input_request_already_closed";
   if (message.includes("session_key must")) return "invalid_session_key";
   if (message.includes("resume_mode must")) return "invalid_resume_mode";
   if (message.includes("packet_policy must")) return "invalid_packet_policy";

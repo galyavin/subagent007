@@ -88,7 +88,7 @@ Child-invocation tools require:
 - `cwd`: absolute directory path
 - `prompt`: nonempty string
 
-Treat `prompt` as public within Subagent007 artifacts: it is copied into run transcripts and public event ledgers. `answer_run_input.answer` is stored in local mailbox records but omitted from public events.
+Do not pass secrets unless local mailbox and transcript storage are acceptable. `prompt` is copied into run transcripts and public event ledgers. `answer_run_input.answer` is stored in the local mailbox settlement and omitted from input/public event fields, but child output is public transcript material and may contain answer-derived text if the child echoes or uses the answer.
 
 Omit `model_class` for the configured/default class, or pass `A`, `B`, `C`, `D`, or `E` when the task needs a different capability tier. Public concrete `model` and `thinking_level` inputs are intentionally unsupported.
 
@@ -126,7 +126,7 @@ Result semantics:
 - Runs that reach child execution return `output_path` on terminal completion; schema and preflight rejections do not.
 - Expected handler-level semantic rejections return structured content with `kind:"preflight_rejected"`, `success:false`, and `child_started:false`; SDK schema errors remain MCP input validation errors.
 - `run_subagent`, `start_run`, `start_session_run`, and `run_subagent_session` create durable run-task snapshots inspectable with `get_run` by `run_id`.
-- Active `get_run` views expose sanitized `recent_events` and `last_public_output_excerpt`; raw thinking, private tool payloads, full packet instructions, composed child prompts, and input answer text are not public events.
+- Active `get_run` views expose sanitized `recent_events` and `last_public_output_excerpt`; raw thinking, private tool payloads, full packet instructions, composed child prompts, and input answer values are not input/public event fields.
 - On timeout, `partial_output_available` is true only when the artifact includes child assistant text, a warning/error, or a captured final message.
 
 ## One-Shot Runs
@@ -171,9 +171,9 @@ Flow:
 
 Input requests are stored under `~/.codex/subagent007-pi/input-requests` by default. Each request has one terminal settlement: `answered`, `timed_out`, or `closed`. Cancelling a run or reaching any terminal run state closes remaining pending requests, and late answers to closed or timed-out requests are rejected.
 
-`timeout_ms` is optional for `start_run`, `start_session_run`, and `run_subagent_session`; omit it only for deliberately unbounded work. When provided, it is a hard response-budget cap: the child process is stopped before that budget is exhausted so the MCP tool can return timeout metadata and any public transcript. Values must leave at least one millisecond of effective child runtime after configured response headroom, kill grace, and force grace are reserved. It is not a `run_subagent` input, and `run_subagent` rejects calls that provide it.
+`timeout_ms` is optional for `start_run`, `start_session_run`, and `run_subagent_session`; omit it only for deliberately unbounded work. When provided, it is a hard response-budget cap: the child process is stopped before that budget is exhausted so the MCP tool can return timeout metadata and any public transcript. Values must leave at least one millisecond of effective child runtime after configured response headroom, kill grace, and force grace are reserved.
 
-Run task snapshots and public event ledgers are stored under `~/.codex/subagent007-pi/run-tasks` by default. Active runs expose progress fields and bounded public events immediately after task creation; `status` reflects pending input immediately. Completed `run_subagent`, `start_run`, and session tasks can still be inspected by `get_run` after an MCP server restart. A run that was active during a restart is reported as failed with a clear restart-state error because the new server process cannot safely reattach to the old child process, while previously persisted public events are preserved.
+Run task snapshots and public event ledgers are stored under `~/.codex/subagent007-pi/run-tasks` by default. Active runs expose progress fields, `active_phase`, `last_phase_at`, and bounded public events immediately after task creation; `status` reflects pending input immediately. Completed `run_subagent`, `start_run`, and session tasks can still be inspected by `get_run` after an MCP server restart. A run that was active during a restart is reported as failed with a clear restart-state error because the new server process cannot safely reattach to the old child process, while previously persisted public events are preserved.
 
 ## Named Sessions
 
@@ -256,7 +256,7 @@ npm run observed-campaign -- --campaign-id campaign.example-1 -- npm run observe
 
 Only probe calls recorded in `campaign_ledger_path` should claim MCP call-attempt coverage. Server-side `failures.jsonl` remains handler and child failure telemetry; SDK schema rejections happen before server handlers and are recorded by the probe ledger as `call_schema_error`; structured semantic preflight rejections are recorded as `call_preflight_rejected`. The bundled MCP probe defaults to the `protocol-core` profile, injects a deterministic fake child with `SUBAGENT007_PI_CHILD_PATH`, and labels raw ledger records and coverage summaries with `evidence_class: "protocol-deterministic"`.
 
-Coverage profiles are declared in `scripts/observed-coverage-manifest.json` and fail closed when required surfaces are missing. `protocol-core` is the deterministic profile; `live-smoke` and `stateful-live` are live evidence profiles; `full-current` is a fail-closed aggregate profile and exits nonzero until every required current surface has matching evidence in the selected scenario set. `all` and `all-bundled` remain compatibility aliases for `protocol-core`, not product-complete E2E claims. The probe prints `scenario_set`, `profile`, `mode`, `required_surfaces`, `covered_surfaces`, `covered_surfaces_by_evidence_class`, `missing_required_surfaces`, `skipped_surfaces`, and `out_of_scope_surfaces`. Use `--mode live-model` only for live provider smoke evidence; deterministic-only scenarios such as child failure and packet failure are rejected in live mode.
+Coverage profiles are declared in `scripts/observed-coverage-manifest.json` and fail closed when required surfaces are unknown, have no selected scenario, or have no evidence-class-compatible selected scenario. `protocol-core` and `full-current` are deterministic profiles; `live-current` is the live evidence profile. `full-current` covers the deterministic current surface set, while `live-current` covers live-only installed Pi integration through a fresh campaign-scoped server process. Profile aliases: `all` and `all-bundled` map to `protocol-core`; `live-smoke` and `stateful-live` map to `live-current`. Scenario aliases are only `all` and `all-bundled`. None of those aliases are product-complete E2E claims by name alone. The probe prints `scenario_set`, `profile`, `mode`, `required_surfaces`, `covered_surfaces`, `covered_surfaces_by_evidence_class`, `missing_required_surfaces`, `skipped_surfaces`, and `out_of_scope_surfaces`. Use `--mode live-model` only for live provider smoke evidence; scenarios whose surfaces are not compatible with live-model evidence are rejected in live mode.
 
 ## Development
 

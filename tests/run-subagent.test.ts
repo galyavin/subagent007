@@ -33,6 +33,8 @@ type RunSubagentMetadata = {
   last_progress_at?: string;
   last_progress_message?: string;
   heartbeat_count?: number;
+  active_phase?: string;
+  last_phase_at?: string;
   recent_events?: Array<{ kind: string; event?: string; text: string; occurred_at: string }>;
   last_public_output_excerpt?: string;
 };
@@ -921,9 +923,12 @@ test("MCP start_run/get_run completes asynchronously with the same child contrac
     assert.notEqual(startedResponse.isError, true);
     const started = startedResponse.structuredContent as RunSubagentMetadata;
     assert.equal(["working", "completed"].includes(started.status), true);
+    assert.equal(started.active_phase, "awaiting_child_event");
+    assert.equal(typeof started.last_phase_at, "string");
 
     const terminal = await waitForTerminalRun(client, started.run_id);
     assert.equal(terminal.status, "completed");
+    assert.equal(terminal.active_phase, "completed");
     assert.equal(terminal.success, true);
     assert.equal(await fs.readFile(terminal.output_path, "utf8"), "FAST FINAL");
   });
@@ -943,12 +948,14 @@ test("MCP start_run/get_run exposes active liveness and pending-input progress",
       const started = startedResponse.structuredContent as RunSubagentMetadata;
       assert.equal(["working", "completed"].includes(started.status), true);
       assert.equal(started.heartbeat_count, 0);
+      assert.equal(started.active_phase, "awaiting_child_event");
       assert.equal(typeof started.elapsed_ms, "number");
       assert.equal(typeof started.last_progress_at, "string");
       assert.equal(started.last_progress_message, "child process starting");
 
       const heartbeat = await waitForActiveHeartbeat(client, started.run_id);
       assert.equal(heartbeat.status, "working");
+      assert.equal(heartbeat.active_phase, "running");
       assert.equal((heartbeat.heartbeat_count ?? 0) > 0, true);
       assert.equal(typeof heartbeat.elapsed_ms, "number");
       assert.equal(typeof heartbeat.last_progress_at, "string");
@@ -982,6 +989,7 @@ test("MCP start_run/get_run exposes active liveness and pending-input progress",
 
       assert.ok(pendingView);
       assert.equal(pendingView.status, "input_required");
+      assert.equal(pendingView.active_phase, "input_required");
       assert.ok(pendingView.input_requests.some((entry) => entry.request_id === request.request_id));
 
       const answerResponse = await client.callTool({
@@ -993,6 +1001,9 @@ test("MCP start_run/get_run exposes active liveness and pending-input progress",
         },
       });
       assert.notEqual(answerResponse.isError, true);
+      const answeredView = answerResponse.structuredContent as RunSubagentMetadata;
+      assert.equal(answeredView.status, "working");
+      assert.equal(answeredView.active_phase, "running");
 
       const terminal = await waitForTerminalRun(client, started.run_id);
       assert.equal(terminal.status, "completed");
@@ -1308,6 +1319,7 @@ test("cancel_run closes pending input requests and rejects late answers", async 
       assert.notEqual(cancelResponse.isError, true);
       const cancelled = cancelResponse.structuredContent as RunSubagentMetadata;
       assert.equal(cancelled.status, "cancelled");
+      assert.equal(["cancelling", "cancelled"].includes(cancelled.active_phase ?? ""), true);
       assert.equal(cancelled.input_requests.some((input) => input.status === "pending"), false);
 
       const closed = await listInputRequests({ mailboxRoot, runId: started.run_id, status: "closed" });
@@ -1327,6 +1339,18 @@ test("cancel_run closes pending input requests and rejects late answers", async 
       assert.match(
         content[0]?.type === "text" ? (content[0].text ?? "") : "",
         /not accepting input|already closed/,
+      );
+
+      const terminal = await waitForTerminalRun(client, started.run_id);
+      assert.equal(terminal.status, "cancelled");
+      assert.equal(terminal.active_phase, "cancelled");
+      assert.equal(
+        (terminal.recent_events ?? []).filter((event) => event.event === "cancellation_settled").length,
+        1,
+      );
+      assert.equal(
+        (terminal.recent_events ?? []).filter((event) => event.text === "[subagent007 cancelled]").length,
+        0,
       );
     },
     {

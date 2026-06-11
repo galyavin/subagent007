@@ -28,9 +28,10 @@ function usage() {
     "  --server <path>       MCP server entrypoint. Default: dist/server.js",
     "  --cwd <path>          Absolute project cwd for successful child-backed probes.",
     "  --profile <name>      Coverage profile. Default: protocol-core.",
-    "                       Names: protocol-core, live-smoke, stateful-live, full-current.",
+    "                       Names: protocol-core, full-current, live-current.",
+    "                       Profile aliases: all, all-bundled -> protocol-core; live-smoke, stateful-live -> live-current.",
     "  --scenario <name>     Scenario to run. May repeat. Overrides profile scenarios.",
-    "                       Compatibility scenario aliases: all, all-bundled -> protocol-core.",
+    "                       Scenario aliases: all, all-bundled -> protocol-core.",
     "  --mode <mode>         Evidence mode: protocol-deterministic or live-model. Default: protocol-deterministic.",
     "  --quiet               Do not print a JSON summary.",
     "  -h, --help            Show this help.",
@@ -116,11 +117,11 @@ function parseArgs(argv) {
   if (options.scenarios.some((scenario) => scenario !== "schema-error") && !options.cwd) {
     throw new Error("--cwd is required unless only schema-error is being probed");
   }
-  if (
-    options.mode === "live-model" &&
-    options.scenarios.some((scenario) => ["child-failure", "packet-failure"].includes(scenario))
-  ) {
-    throw new Error("live-model mode cannot run deterministic-only scenarios: child-failure, packet-failure");
+  const incompatible = options.scenarios.filter((scenario) =>
+    !scenarioEvidenceCompatible(scenario, evidenceClassForMode(options.mode)),
+  );
+  if (incompatible.length > 0) {
+    throw new Error(`${options.mode} mode cannot run incompatible scenarios: ${incompatible.join(", ")}`);
   }
   return { mode: "run", options };
 }
@@ -133,15 +134,58 @@ function evidenceClassForMode(mode) {
   return mode === "protocol-deterministic" ? "protocol-deterministic" : "live-model-smoke";
 }
 
+function scenarioEvidenceCompatible(scenarioName, evidenceClass) {
+  const scenario = SCENARIO_REGISTRY[scenarioName];
+  if (!scenario) {
+    return false;
+  }
+  return scenario.surfaces.every((surfaceName) =>
+    MANIFEST.surfaces[surfaceName]?.evidence_classes?.includes(evidenceClass),
+  );
+}
+
 function assertManifestComplete() {
   const missing = MANIFEST.saf_required_surfaces.filter((surface) => !MANIFEST.surfaces[surface]);
   if (missing.length > 0) {
     throw new Error(`coverage manifest omits SAF-required surfaces: ${missing.join(", ")}`);
   }
+  for (const [alias, target] of Object.entries(MANIFEST.aliases)) {
+    if (!MANIFEST.profiles[target]) {
+      throw new Error(`coverage alias ${alias} targets unknown profile: ${target}`);
+    }
+  }
+  for (const [scenarioName, scenario] of Object.entries(MANIFEST.scenarios)) {
+    const unknownSurfaces = scenario.surfaces.filter((surface) => !MANIFEST.surfaces[surface]);
+    if (unknownSurfaces.length > 0) {
+      throw new Error(`coverage scenario ${scenarioName} covers unknown surfaces: ${unknownSurfaces.join(", ")}`);
+    }
+  }
   for (const [profileName, profile] of Object.entries(MANIFEST.profiles)) {
+    const evidenceClass = evidenceClassForMode(profile.mode);
+    const unknownScenarios = profile.scenarios.filter((scenario) => !MANIFEST.scenarios[scenario]);
+    if (unknownScenarios.length > 0) {
+      throw new Error(`coverage profile ${profileName} selects unknown scenarios: ${unknownScenarios.join(", ")}`);
+    }
     const missingRequired = profile.required_surfaces.filter((surface) => !MANIFEST.surfaces[surface]);
     if (missingRequired.length > 0) {
       throw new Error(`coverage profile ${profileName} requires unknown surfaces: ${missingRequired.join(", ")}`);
+    }
+    const incompatibleScenarios = profile.scenarios.filter((scenario) =>
+      !scenarioEvidenceCompatible(scenario, evidenceClass),
+    );
+    if (incompatibleScenarios.length > 0) {
+      throw new Error(
+        `coverage profile ${profileName} selects scenarios incompatible with ${evidenceClass}: ${incompatibleScenarios.join(", ")}`,
+      );
+    }
+    const unsatisfied = profile.required_surfaces.filter((surface) =>
+      !profile.scenarios.some((scenarioName) =>
+        MANIFEST.scenarios[scenarioName].surfaces.includes(surface) &&
+          MANIFEST.surfaces[surface].evidence_classes.includes(evidenceClass),
+      ),
+    );
+    if (unsatisfied.length > 0) {
+      throw new Error(`coverage profile ${profileName} has no compatible scenario for required surfaces: ${unsatisfied.join(", ")}`);
     }
   }
 }
@@ -167,6 +211,24 @@ function responseMatchesResultClass(response, resultClass) {
   }
   if (resultClass === "transcript_redacted") {
     return response.success === true && response.transcript_redacted === true;
+  }
+  if (resultClass === "timeout_recovered") {
+    return response.success === false && response.timed_out === true && response.timeout_recovery_hint === true;
+  }
+  if (resultClass === "async_polling") {
+    return response.success === true && response.status === "completed" && response.polled === true;
+  }
+  if (resultClass === "input_answered") {
+    return response.success === true && response.input_answered === true;
+  }
+  if (resultClass === "cancelled") {
+    return response.status === "cancelled" && response.cancellation_settled === true;
+  }
+  if (resultClass === "valid_packet_closure") {
+    return response.success === true && response.packet_parse_status === "valid" && response.packet_closure_valid === true;
+  }
+  if (resultClass === "invalid_packet_closure") {
+    return response.success === false && response.packet_parse_status === "invalid" && response.packet_closure_invalid === true;
   }
   return false;
 }
@@ -255,11 +317,46 @@ async function createDeterministicFakeChild() {
       "if (request.sessionMode === 'fresh') sessionFile = sessionFileForFresh();",
       "if (request.sessionMode === 'resume') sessionFile = request.sessionFile;",
       "if (sessionFile) writeEvent({ type: 'subagent007.session', session_id: sessionFile });",
+      "function packetFinal(packet) {",
+      "  return '```contract_packet_v1\\n' + JSON.stringify(packet) + '\\n```';",
+      "}",
+      "function writeInputRequest() {",
+      "  const runDir = path.join(request.mailboxRoot, request.runId);",
+      "  fs.mkdirSync(runDir, { recursive: true });",
+      "  const requestId = request.runId + '-abcdef123456';",
+      "  const requestPath = path.join(runDir, requestId + '.json');",
+      "  fs.writeFileSync(requestPath, JSON.stringify({ schema_version: 1, request_id: requestId, run_id: request.runId, session_id: null, created_at: new Date().toISOString(), question: 'Need campaign input?', options: [], freeform: true }) + '\\n');",
+      "  writeEvent({ type: 'subagent007.input_request', request_id: requestId, question: 'Need campaign input?', option_count: 0, freeform: true });",
+      "  const terminalPath = path.join(runDir, requestId + '.terminal.json');",
+      "  const deadline = Date.now() + 10000;",
+      "  while (Date.now() < deadline) {",
+      "    if (fs.existsSync(terminalPath)) {",
+      "      const terminal = JSON.parse(fs.readFileSync(terminalPath, 'utf8'));",
+      "      writeFinal('ANSWERED ' + terminal.status);",
+      "      return;",
+      "    }",
+      "    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);",
+      "  }",
+      "  process.exit(43);",
+      "}",
       "if (request.prompt.includes('FAIL_EXIT')) {",
       "  process.stderr.write('FAKE PI FAILURE\\n');",
       "  process.exit(42);",
+      "} else if (request.prompt.includes('TIMEOUT_ASSISTANT_EVENT')) {",
+      "  writeEvent({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'PUBLIC PARTIAL ASSISTANT' }] } });",
+      "  setInterval(() => {}, 1000);",
+      "} else if (request.prompt.includes('HEARTBEAT_SLEEP')) {",
+      "  setTimeout(() => writeFinal('HEARTBEAT DONE'), 160);",
+      "} else if (request.prompt.includes('CANCEL_WAIT')) {",
+      "  setInterval(() => {}, 1000);",
+      "} else if (request.prompt.includes('REQUEST_INPUT_WAIT')) {",
+      "  writeInputRequest();",
       "} else if (request.prompt.includes('PACKET_INCONCLUSIVE')) {",
-      "  writeFinal('```contract_packet_v1\\n' + JSON.stringify({ verdict: 'inconclusive', summary: 'not ready', findings: [], blockers: ['needs evidence'], next_step: 'repair' }) + '\\n```');",
+      "  writeFinal(packetFinal({ verdict: 'inconclusive', summary: 'not ready', findings: [], blockers: ['needs evidence'], next_step: 'repair' }));",
+      "} else if (request.prompt.includes('PACKET_VALID_WITH_CLOSURE')) {",
+      "  writeFinal(packetFinal({ verdict: 'ready', summary: 'ok with closure', findings: [], blockers: [], next_step: 'done', closure: { canonical_closure_source: 'scripts/run-observed-mcp-probe.mjs', artifact_roles: [{ path: 'scripts/run-observed-mcp-probe.mjs', role: 'fake packet producer' }], validation: ['closure shape parsed'], claim_ceiling: 'fake child packet only' } }));",
+      "} else if (request.prompt.includes('PACKET_INVALID_CLOSURE_SHAPE')) {",
+      "  writeFinal(packetFinal({ verdict: 'ready', summary: 'bad closure shape', findings: [], blockers: [], next_step: 'repair closure', closure: { canonical_closure_source: 'scripts/run-observed-mcp-probe.mjs', artifact_roles: { 'scripts/run-observed-mcp-probe.mjs': 'fake packet producer' }, validation: 'closure shape parsed', claim_ceiling: 'fake child packet only' } }));",
       "} else if (request.prompt.includes('RAW_THINKING_TRANSCRIPT')) {",
       "  writeEvent({ type: 'message_end', message: { role: 'user', content: [{ type: 'text', text: 'user prompt' }] } });",
       "  writeEvent({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: 'SECRET_THINKING_SHOULD_NOT_LEAK' } });",
@@ -379,6 +476,7 @@ function responseSummary(response) {
     success: typeof structured.success === "boolean" ? structured.success : null,
     status: typeof structured.status === "string" ? structured.status : null,
     kind: typeof structured.kind === "string" ? structured.kind : null,
+    run_id: typeof structured.run_id === "string" ? structured.run_id : undefined,
     child_started: typeof structured.child_started === "boolean" ? structured.child_started : undefined,
     exit_code: typeof structured.exit_code === "number" || structured.exit_code === null
       ? structured.exit_code
@@ -386,6 +484,17 @@ function responseSummary(response) {
     timed_out: typeof structured.timed_out === "boolean" ? structured.timed_out : undefined,
     packet_parse_status: typeof structured.packet_parse_status === "string"
       ? structured.packet_parse_status
+      : undefined,
+    packet_error: typeof structured.packet_error === "string" ? structured.packet_error : undefined,
+    packet_closure_valid: Boolean(structured.claimed_packet?.closure),
+    packet_closure_invalid: typeof structured.packet_error === "string" && /closure/i.test(structured.packet_error),
+    cancellation_settled: Array.isArray(structured.recent_events) &&
+      structured.recent_events.some((event) => event?.event === "cancellation_settled"),
+    timeout_recovery_hint: typeof structured.timeout_recovery_hint === "string" &&
+      structured.timeout_recovery_hint.length > 0,
+    input_request_count: Array.isArray(structured.input_requests) ? structured.input_requests.length : undefined,
+    pending_input_count: Array.isArray(structured.input_requests)
+      ? structured.input_requests.filter((request) => request?.status === "pending").length
       : undefined,
     session_established: typeof structured.session_established === "boolean"
       ? structured.session_established
@@ -490,6 +599,51 @@ function scenarioCall(scenario, cwd) {
       },
     };
   }
+  if (scenario === "timeout-recovery") {
+    return {
+      tool: "run_subagent",
+      args: {
+        cwd,
+        prompt: "TIMEOUT_ASSISTANT_EVENT",
+        run_kind: "quick_noninteractive",
+        output_mode: "transcript",
+      },
+    };
+  }
+  if (scenario === "session-valid-closure") {
+    return {
+      tool: "run_subagent_session",
+      args: {
+        cwd,
+        prompt: "PACKET_VALID_WITH_CLOSURE",
+        session_key: `campaign-probe-valid:${Date.now()}:${randomUUID().slice(0, 8)}`,
+        resume_mode: "new",
+        packet_policy: "required",
+      },
+    };
+  }
+  if (scenario === "session-invalid-closure") {
+    return {
+      tool: "run_subagent_session",
+      args: {
+        cwd,
+        prompt: "PACKET_INVALID_CLOSURE_SHAPE",
+        session_key: `campaign-probe-invalid:${Date.now()}:${randomUUID().slice(0, 8)}`,
+        resume_mode: "new",
+        packet_policy: "required",
+      },
+    };
+  }
+  if (scenario === "installed-pi-integration") {
+    return {
+      tool: "run_subagent",
+      args: {
+        cwd,
+        prompt: "Reply with the single word READY.",
+        run_kind: "quick_noninteractive",
+      },
+    };
+  }
   throw new Error(`unknown scenario: ${scenario}`);
 }
 
@@ -586,6 +740,133 @@ async function runCall(client, ledgerPath, evidenceClass, scenario, call) {
   };
 }
 
+async function waitForRun(client, ledgerPath, evidenceClass, scenario, runId, predicate, options = {}) {
+  const deadline = Date.now() + 5000;
+  let latest;
+  while (Date.now() < deadline) {
+    latest = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "get_run",
+      args: { run_id: runId },
+    });
+    if (predicate(latest.response)) {
+      return latest;
+    }
+    if (options.stopOnTerminal !== false && ["completed", "failed", "cancelled"].includes(latest.response?.status)) {
+      return latest;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return latest;
+}
+
+async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
+  if (scenario === "start-run-async-polling") {
+    const started = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "start_run",
+      args: { cwd, prompt: "HEARTBEAT_SLEEP" },
+    });
+    const terminal = started.response?.run_id
+      ? await waitForRun(client, ledgerPath, evidenceClass, scenario, started.response.run_id, (response) =>
+          response?.status === "completed",
+        )
+      : started;
+    return {
+      ...terminal,
+      tool: "start_run",
+      response: {
+        ...(terminal.response ?? {}),
+        polled: true,
+      },
+      failure_log_delta_count: started.failure_log_delta_count + (terminal.failure_log_delta_count ?? 0),
+    };
+  }
+
+  if (scenario === "caller-input") {
+    const started = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "start_run",
+      args: { cwd, prompt: "REQUEST_INPUT_WAIT" },
+    });
+    if (!started.response?.run_id) {
+      return started;
+    }
+    const pending = await waitForRun(client, ledgerPath, evidenceClass, scenario, started.response.run_id, (response) =>
+      (response?.pending_input_count ?? 0) > 0,
+    );
+    const getResponse = await client.callTool({
+      name: "get_run",
+      arguments: { run_id: started.response.run_id },
+    });
+    const structured = getResponse.structuredContent && typeof getResponse.structuredContent === "object"
+      ? getResponse.structuredContent
+      : {};
+    const requestId = Array.isArray(structured.input_requests)
+      ? structured.input_requests.find((request) => request?.status === "pending")?.request_id
+      : undefined;
+    if (!requestId) {
+      return {
+        ...pending,
+        tool: "answer_run_input",
+        response: { ...(pending.response ?? {}), input_answered: false },
+      };
+    }
+    const answered = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "answer_run_input",
+      args: {
+        run_id: started.response.run_id,
+        request_id: requestId,
+        answer: "SECRET_CAMPAIGN_INPUT_ANSWER",
+      },
+    });
+    const terminal = await waitForRun(client, ledgerPath, evidenceClass, scenario, started.response.run_id, (response) =>
+      response?.status === "completed",
+    );
+    return {
+      ...terminal,
+      tool: "answer_run_input",
+      response: {
+        ...(terminal.response ?? answered.response ?? {}),
+        input_answered: answered.response?.status === "working" ||
+          answered.response?.status === "input_required" ||
+          answered.response?.success === true ||
+          answered.response?.input_request_count !== undefined,
+      },
+      failure_log_delta_count:
+        started.failure_log_delta_count +
+        (pending.failure_log_delta_count ?? 0) +
+        (answered.failure_log_delta_count ?? 0) +
+        (terminal.failure_log_delta_count ?? 0),
+    };
+  }
+
+  if (scenario === "cancellation") {
+    const started = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "start_run",
+      args: { cwd, prompt: "CANCEL_WAIT", timeout_ms: 6000 },
+    });
+    if (!started.response?.run_id) {
+      return started;
+    }
+    const cancelled = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "cancel_run",
+      args: { run_id: started.response.run_id },
+    });
+    const settled = await waitForRun(client, ledgerPath, evidenceClass, scenario, started.response.run_id, (response) =>
+      response?.cancellation_settled === true,
+    { stopOnTerminal: false });
+    return {
+      ...settled,
+      tool: "cancel_run",
+      response: settled.response ?? cancelled.response,
+      failure_log_delta_count:
+        started.failure_log_delta_count +
+        cancelled.failure_log_delta_count +
+        (settled.failure_log_delta_count ?? 0),
+    };
+  }
+
+  return runCall(client, ledgerPath, evidenceClass, scenario, scenarioCall(scenario, cwd));
+}
+
 let parsed;
 try {
   assertManifestComplete();
@@ -613,6 +894,11 @@ const serverEnv = {
     ? {
         SUBAGENT007_PI_CHILD_PATH: deterministicChild.childPath,
         FAKE_PI_LOG_PATH: deterministicChild.logPath,
+        SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS: process.env.SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS ?? "1000",
+        SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS: process.env.SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS ?? "0",
+        SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS: process.env.SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS ?? "100",
+        SUBAGENT007_TIMEOUT_KILL_GRACE_MS: process.env.SUBAGENT007_TIMEOUT_KILL_GRACE_MS ?? "50",
+        SUBAGENT007_TIMEOUT_FORCE_GRACE_MS: process.env.SUBAGENT007_TIMEOUT_FORCE_GRACE_MS ?? "50",
       }
     : {}),
 };
@@ -628,12 +914,12 @@ try {
   await client.connect(transport);
   for (const scenario of parsed.options.scenarios) {
     results.push(
-      await runCall(
+      await runScenario(
         client,
         ledgerPath,
         evidenceClass,
         scenario,
-        scenarioCall(scenario, parsed.options.cwd),
+        parsed.options.cwd,
       ),
     );
   }

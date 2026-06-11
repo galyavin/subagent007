@@ -338,8 +338,37 @@ test("observed MCP probe separates live-model mode from deterministic-only scena
         cwd: path.resolve("."),
       },
     ),
-    /deterministic-only scenarios/,
+    /incompatible scenarios/,
   );
+});
+
+test("observed MCP probe keeps old live profile names as compatibility aliases", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-probe-live-alias-"));
+  const projectDir = path.join(tmp, "project");
+  await fs.mkdir(projectDir, { recursive: true });
+
+  for (const profile of ["live-smoke", "stateful-live"]) {
+    await assert.rejects(
+      execFileAsync(
+        process.execPath,
+        [
+          probePath,
+          "--server",
+          path.resolve("dist/server.js"),
+          "--cwd",
+          projectDir,
+          "--profile",
+          profile,
+          "--scenario",
+          "child-failure",
+        ],
+        {
+          cwd: path.resolve("."),
+        },
+      ),
+      /live-model mode cannot run incompatible scenarios: child-failure/,
+    );
+  }
 });
 
 test("observed MCP probe self-check fails when manifest omits a SAF-required surface", async () => {
@@ -370,6 +399,166 @@ test("observed MCP probe self-check fails when manifest omits a SAF-required sur
     ),
     /coverage manifest omits SAF-required surfaces/,
   );
+});
+
+test("observed MCP probe self-check fails when an alias targets a missing profile", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-probe-bad-alias-"));
+  const manifestPath = path.join(tmp, "bad-alias-manifest.json");
+  await fs.writeFile(
+    manifestPath,
+    JSON.stringify({
+      saf_required_surfaces: [],
+      surfaces: {},
+      scenarios: {},
+      profiles: {
+        "protocol-core": {
+          mode: "protocol-deterministic",
+          scenarios: [],
+          required_surfaces: [],
+        },
+      },
+      aliases: {
+        stale: "missing-profile",
+      },
+    }),
+  );
+
+  await assert.rejects(
+    execFileAsync(
+      process.execPath,
+      [probePath, "--help"],
+      {
+        cwd: path.resolve("."),
+        env: {
+          ...process.env,
+          SUBAGENT007_COVERAGE_MANIFEST_PATH: manifestPath,
+        },
+      },
+    ),
+    /coverage alias stale targets unknown profile: missing-profile/,
+  );
+});
+
+test("observed MCP probe self-check fails when a profile has no compatible scenario for a required surface", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-probe-unsatisfied-profile-"));
+  const manifestPath = path.join(tmp, "bad-profile-manifest.json");
+  await fs.writeFile(
+    manifestPath,
+    JSON.stringify({
+      saf_required_surfaces: ["run_subagent-success"],
+      surfaces: {
+        "run_subagent-success": { evidence_classes: ["protocol-deterministic"] },
+      },
+      scenarios: {
+        "schema-error": {
+          tool: "run_subagent",
+          lifecycle_phases: ["sdk-schema-validation"],
+          result_classes: ["schema_error"],
+          surfaces: [],
+        },
+      },
+      profiles: {
+        "protocol-core": {
+          mode: "protocol-deterministic",
+          scenarios: ["schema-error"],
+          required_surfaces: ["run_subagent-success"],
+        },
+      },
+      aliases: {},
+    }),
+  );
+
+  await assert.rejects(
+    execFileAsync(
+      process.execPath,
+      [probePath, "--help"],
+      {
+        cwd: path.resolve("."),
+        env: {
+          ...process.env,
+          SUBAGENT007_COVERAGE_MANIFEST_PATH: manifestPath,
+        },
+      },
+    ),
+    /no compatible scenario for required surfaces: run_subagent-success/,
+  );
+});
+
+test("observed MCP probe full-current covers all deterministic current surfaces", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-full-current-"));
+  const projectDir = path.join(tmp, "project");
+  const stateDir = path.join(tmp, "state");
+  const configPath = path.join(stateDir, "config.json");
+  await fs.mkdir(projectDir, { recursive: true });
+  await fs.mkdir(stateDir, { recursive: true });
+  await fs.writeFile(configPath, JSON.stringify({ default_model_class: "C" }));
+
+  const result = await execFileAsync(
+    process.execPath,
+    [
+      probePath,
+      "--server",
+      path.resolve("dist/server.js"),
+      "--cwd",
+      projectDir,
+      "--profile",
+      "full-current",
+    ],
+    {
+      cwd: path.resolve("."),
+      env: {
+        ...process.env,
+        SUBAGENT007_CONFIG_PATH: configPath,
+        SUBAGENT007_FAILURE_LOG_PATH: path.join(stateDir, "failures.jsonl"),
+        SUBAGENT007_CAMPAIGN_LEDGER_PATH: path.join(stateDir, "campaign-ledger.jsonl"),
+        SUBAGENT007_SESSIONS_DIR: path.join(stateDir, "sessions"),
+        SUBAGENT007_RUNS_DIR: path.join(stateDir, "runs"),
+        SUBAGENT007_RUN_TASKS_DIR: path.join(stateDir, "run-tasks"),
+        SUBAGENT007_INPUT_REQUESTS_DIR: path.join(stateDir, "input-requests"),
+        SUBAGENT007_PI_RAW_SESSIONS_DIR: path.join(stateDir, "raw-sessions"),
+        SUBAGENT007_MODEL_HEALTH_PATH: path.join(stateDir, "model-health.json"),
+        SUBAGENT007_RECORD_SOURCE: "test",
+      },
+      maxBuffer: 12 * 1024 * 1024,
+    },
+  );
+
+  const summary = JSON.parse(result.stdout) as {
+    scenario_set: string;
+    mode: string;
+    coverage_summary: {
+      covered_surfaces: string[];
+      missing_required_surfaces: string[];
+      uncovered_surfaces: string[];
+      scenarios: Array<{ scenario: string; evidence_satisfied: boolean }>;
+    };
+  };
+
+  assert.equal(summary.scenario_set, "full-current");
+  assert.equal(summary.mode, "protocol-deterministic");
+  assert.deepEqual(summary.coverage_summary.missing_required_surfaces, []);
+  for (const surface of [
+    "run_subagent-timeout-recovery",
+    "start_run-async-polling",
+    "answer_run_input-caller-input",
+    "cancel_run-cancellation-settlement",
+    "run_subagent_session-valid-packet-closure",
+    "run_subagent_session-invalid-packet-closure",
+  ]) {
+    assert.ok(summary.coverage_summary.covered_surfaces.includes(surface), surface);
+  }
+  assert.ok(summary.coverage_summary.uncovered_surfaces.includes("installed-pi-integration"));
+  assert.equal(summary.coverage_summary.scenarios.every((scenario) => scenario.evidence_satisfied), true);
+
+  const ledgerText = await fs.readFile(path.join(stateDir, "campaign-ledger.jsonl"), "utf8");
+  assert.doesNotMatch(ledgerText, /SECRET_CAMPAIGN_INPUT_ANSWER/);
+  const events = ledgerText
+    .split(/\r?\n/)
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line)) as Array<{ event: string; scenario: string; tool: string }>;
+  for (const tool of ["start_run", "get_run", "answer_run_input", "cancel_run", "run_subagent_session"]) {
+    assert.ok(events.some((event) => event.tool === tool), tool);
+  }
 });
 
 test("observed MCP probe fails required coverage when selected scenario has wrong result class", async () => {
