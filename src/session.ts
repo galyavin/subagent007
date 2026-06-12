@@ -135,29 +135,27 @@ function validateSessionKey(value: unknown): string {
   return key;
 }
 
-function validateResumeMode(value: unknown): ResumeMode {
+function validateOptionalChoice<T extends string>(
+  value: unknown,
+  key: string,
+  choices: readonly T[],
+  defaultValue: T,
+): T {
   if (value === undefined) {
-    return "resume_or_new";
+    return defaultValue;
   }
-  if (typeof value !== "string" || !RESUME_MODES.includes(value as ResumeMode)) {
-    throw new ValidationError(`resume_mode must be one of: ${RESUME_MODES.join(", ")}`);
+  if (typeof value !== "string" || !choices.includes(value as T)) {
+    throw new ValidationError(`${key} must be one of: ${choices.join(", ")}`);
   }
-  return value as ResumeMode;
+  return value as T;
+}
+
+function validateResumeMode(value: unknown): ResumeMode {
+  return validateOptionalChoice(value, "resume_mode", RESUME_MODES, "resume_or_new");
 }
 
 function validateSessionPacketPolicy(value: unknown): SessionPacketPolicy {
-  if (value === undefined) {
-    return "none";
-  }
-  if (
-    typeof value !== "string" ||
-    !SESSION_PACKET_POLICIES.includes(value as SessionPacketPolicy)
-  ) {
-    throw new ValidationError(
-      `packet_policy must be one of: ${SESSION_PACKET_POLICIES.join(", ")}`,
-    );
-  }
-  return value as SessionPacketPolicy;
+  return validateOptionalChoice(value, "packet_policy", SESSION_PACKET_POLICIES, "none");
 }
 
 function assertNoRawSessionId(request: RunSubagentSessionRequest): void {

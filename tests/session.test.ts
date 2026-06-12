@@ -82,6 +82,46 @@ test("run_subagent_session rejects raw continuity", async () => {
   );
 });
 
+test("run_subagent_session rejects invalid resume mode and packet policy", async () => {
+  const fixture = await createSessionFixture();
+  await withEnv(
+    {
+      SUBAGENT007_PI_CHILD_PATH: fixture.fakeChildPath,
+      FAKE_PI_LOG_PATH: fixture.fakeLogPath,
+      SUBAGENT007_FAILURE_LOG: "off",
+    },
+    async () => {
+      await assert.rejects(
+        runSubagentSession(
+          {
+            cwd: fixture.projectDir,
+            prompt: "FAST",
+            session_key: "coherent-execution:T000-invalid-resume",
+            model_class: "C",
+            resume_mode: "invalid" as never,
+          },
+          { sessionsDir: fixture.sessionsDir },
+        ),
+        /resume_mode must be one of: new, resume_or_new, require_existing/,
+      );
+
+      await assert.rejects(
+        runSubagentSession(
+          {
+            cwd: fixture.projectDir,
+            prompt: "FAST",
+            session_key: "coherent-execution:T000-invalid-packet",
+            model_class: "C",
+            packet_policy: "invalid" as never,
+          },
+          { sessionsDir: fixture.sessionsDir },
+        ),
+        /packet_policy must be one of: none, required, best_effort/,
+      );
+    },
+  );
+});
+
 test("run_subagent_session creates, resumes, and appends an auditable Pi ledger", async () => {
   const fixture = await createSessionFixture();
   await withEnv(

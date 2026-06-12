@@ -920,6 +920,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 129/129.
 
+## Loop 59 - Share Session Enum Validation
+
+Finding: `src/session.ts` has two near-identical enum validators, `validateResumeMode` and `validateSessionPacketPolicy`, each checking `undefined`, string type, membership, and rendering a `must be one of` error from the corresponding canonical tuple.
+
+Behavior check: extracting a local `validateOptionalChoice` helper should not change observable behavior if `resume_mode` still defaults to `resume_or_new`, `packet_policy` still defaults to `none`, invalid values keep their exact error messages, and valid session/packet flows are unchanged.
+
+Oracle: existing session tests cover valid resume modes and required packet policy behavior. Add focused invalid `resume_mode` and invalid `packet_policy` assertions before extracting the shared helper.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added invalid `resume_mode` and `packet_policy` pinning assertions, then introduced `validateOptionalChoice` for the two session enum fields.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/session.test.ts tests/run-subagent.test.ts tests/failure-log.test.ts` passed; targeted tests passed 67/67.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 130/130.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
