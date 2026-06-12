@@ -118,6 +118,7 @@ export async function modelHealthForClass(
 ): Promise<ModelHealthView> {
   const surface = options.surface ?? MODEL_HEALTH_SURFACE_ONE_SHOT;
   const { model: resolvedModel } = resolveModelClass(modelClass);
+  const healthAction = modelHealthProbeCommand(modelClass);
   const records = await readRecords(options.healthPath);
   const record = records.find((candidate) =>
     candidate.model_class === modelClass &&
@@ -132,7 +133,7 @@ export async function modelHealthForClass(
       last_checked_at: null,
       health_basis: "never_probed",
       health_gate: MODEL_HEALTH_GATE_BLOCKS_ONLY_KNOWN_UNHEALTHY,
-      health_action: modelHealthProbeCommand(modelClass),
+      health_action: healthAction,
     };
   }
   return {
@@ -142,7 +143,7 @@ export async function modelHealthForClass(
     last_checked_at: record.checked_at,
     health_basis: "cached_probe",
     health_gate: MODEL_HEALTH_GATE_BLOCKS_ONLY_KNOWN_UNHEALTHY,
-    health_action: modelHealthProbeCommand(modelClass),
+    health_action: healthAction,
     ...(record.last_success_latency_ms !== undefined
       ? { last_success_latency_ms: record.last_success_latency_ms }
       : {}),
