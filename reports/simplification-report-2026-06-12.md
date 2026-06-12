@@ -128,6 +128,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `npm test` passed 125/125.
 
+## Loop 9 - Single Snapshot Excerpt Projection
+
+Finding: `loadSnapshotEvents` in `src/runTask.ts` computes `publicOutputExcerptProjection(events)` twice when a persisted event file exists. That repeats the same projection over the same event array while rebuilding a `get_run` view after restart.
+
+Behavior check: storing the excerpt in a local variable should not change observable behavior. It preserves the same input events, omission when the projection is undefined, and the same returned `last_public_output_excerpt` value.
+
+Oracle: existing lifecycle tests cover sanitized public event projection and completed-run snapshot reads after MCP server restart. No new pinning test is needed for this expression-level simplification.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch attempted: stored `publicOutputExcerptProjection(events)` in a local `lastPublicOutputExcerpt` and reused it in the returned projection object.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts` passed; targeted tests passed 41/41.
+
+Full oracle result: `npm test` failed because `scripts/run-tests-with-ledger-guard.mjs` detected that the default failure ledger at `/Users/rgalyavin/.codex/subagent007-pi/failures.jsonl` changed during the full run. Per the loop rule, the code patch was reverted and this simplification was not retried.
+
 ## Current Constraints
 
-The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage.
+The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The loop-9 full-oracle failure also exposed an incoherent constraint in the current oracle: the ledger guard can fail a behavior-preserving code change because a default user-level telemetry file changed during the run, even when the targeted isolated tests passed.
