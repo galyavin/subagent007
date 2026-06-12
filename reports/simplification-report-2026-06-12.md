@@ -80,8 +80,6 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `npm test` passed 125/125.
 
-## Current Constraints
-
 ## Loop 6 - Shared Child-Spawn Prelude
 
 Finding: `src/runTask.ts` still repeats the same child-spawn prelude in `startRunTask`, `startSessionRunTask`, and `runSubagentOneShotTask`: append the child-spawn event, move to `running_silent` if no child output has arrived, and persist the updated task snapshot. This is internal lifecycle bookkeeping that must stay identical across all three public run paths.
@@ -95,6 +93,22 @@ Decision: patch minimally. If any test fails, revert this loop and do not retry 
 Patch: added `prepareChildRun` and replaced the three repeated child-spawn prelude blocks. The helper preserves the prior order: append child-spawn event, mark silent running, then persist the task snapshot.
 
 Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts` passed; targeted tests passed 41/41.
+
+Full oracle result: `npm test` passed 125/125.
+
+## Loop 7 - Shared Background Handler Failure Logging
+
+Finding: `src/runTask.ts` repeats the same non-validation catch logging block in `startRunTask`, `startSessionRunTask`, and `runSubagentOneShotTask`: set `state.error`, skip `ValidationError`, and append a failure-log record with `failure_class:"unknown_error"`, `reason_code:"handler_error"`, request cwd, and `success:false`. Only the public tool name differs.
+
+Behavior check: extracting the log call behind a helper should not change observable behavior if `state.error` remains assigned in each catch, validation errors remain skipped, and the emitted record fields are identical.
+
+Oracle: existing failure-log tests cover task failure logging, validation non-logging, cancellation non-logging, and session failure logging. No new pinning test is needed for this helper extraction.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added `logBackgroundHandlerError` and replaced the three repeated catch logging blocks. Each catch still assigns `state.error`; the helper still skips `ValidationError` and emits the same `unknown_error`/`handler_error` record fields for non-validation failures.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/failure-log.test.ts tests/run-subagent.test.ts` passed; targeted tests passed 54/54.
 
 Full oracle result: `npm test` passed 125/125.
 

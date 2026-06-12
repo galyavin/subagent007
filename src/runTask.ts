@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { logFailure } from "./failureLog.js";
+import { logFailure, type FailureLogTool } from "./failureLog.js";
 import {
   answerInputRequest,
   closePendingInputRequestsForRun,
@@ -384,6 +384,23 @@ async function finalizeRunTask(state: RunTaskState, closeReason: string): Promis
   await writeTaskSnapshot(await getRunTask(state.runId));
 }
 
+async function logBackgroundHandlerError(
+  tool: Extract<FailureLogTool, "run_subagent" | "start_run" | "start_session_run">,
+  request: RunSubagentRequest | RunSubagentSessionRequest,
+  error: unknown,
+): Promise<void> {
+  if (error instanceof ValidationError) {
+    return;
+  }
+  await logFailure({
+    tool,
+    failure_class: "unknown_error",
+    reason_code: "handler_error",
+    cwd: typeof request.cwd === "string" ? request.cwd : undefined,
+    success: false,
+  });
+}
+
 async function appendTerminalEvent(state: RunTaskState): Promise<void> {
   const result = state.result;
   const occurredAt = state.finishedAt ?? new Date().toISOString();
@@ -610,15 +627,7 @@ export async function startRunTask(
       });
     } catch (error) {
       state.error = error as Error;
-      if (!(error instanceof ValidationError)) {
-        await logFailure({
-          tool: "start_run",
-          failure_class: "unknown_error",
-          reason_code: "handler_error",
-          cwd: typeof request.cwd === "string" ? request.cwd : undefined,
-          success: false,
-        });
-      }
+      await logBackgroundHandlerError("start_run", request, error);
     } finally {
       await finalizeRunTask(
         state,
@@ -715,15 +724,7 @@ export async function startSessionRunTask(
       });
     } catch (error) {
       state.error = error as Error;
-      if (!(error instanceof ValidationError)) {
-        await logFailure({
-          tool: "start_session_run",
-          failure_class: "unknown_error",
-          reason_code: "handler_error",
-          cwd: typeof request.cwd === "string" ? request.cwd : undefined,
-          success: false,
-        });
-      }
+      await logBackgroundHandlerError("start_session_run", request, error);
     } finally {
       await finalizeRunTask(
         state,
@@ -787,15 +788,7 @@ export async function runSubagentOneShotTask(
       });
     } catch (error) {
       state.error = error as Error;
-      if (!(error instanceof ValidationError)) {
-        await logFailure({
-          tool: "run_subagent",
-          failure_class: "unknown_error",
-          reason_code: "handler_error",
-          cwd: typeof request.cwd === "string" ? request.cwd : undefined,
-          success: false,
-        });
-      }
+      await logBackgroundHandlerError("run_subagent", request, error);
     } finally {
       await finalizeRunTask(state, "run reached a terminal state");
     }
