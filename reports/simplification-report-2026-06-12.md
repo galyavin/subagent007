@@ -1482,4 +1482,13 @@ Full oracle result: `npm test` passed 136/136.
 
 ## Current Constraints
 
-The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle has historically had an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run; the latest sequential `npm test` completed cleanly, but the constraint is still part of the oracle design.
+Loop status: closed after Loop 93. The final scan covered low-reference `src` functions, duplicated Subagent007 state-path construction, active TODO/dead/legacy markers, exported low-use helpers, and the failure-ledger guard scripts. I found no remaining material, risk-free simplification that can be patched without changing the public MCP/API surface, standalone CLI/script behavior, compatibility readers, or named policy boundaries.
+
+Remaining low-reference functions are intentionally retained because they are one of:
+
+- exported or CLI-facing surfaces (`publicTranscriptFromProcessOutput`, `upsertModelHealthRecord`, prompt marker helpers, output helpers);
+- compatibility or defensive readers for persisted state and historical records;
+- single-use but load-bearing policy boundaries where inlining would reduce auditability more than it removes waste;
+- standalone script-local path helpers that avoid coupling scripts to built `dist` output.
+
+The known test-oracle constraint remains: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, `scripts/run-tests-with-ledger-guard.mjs` still fingerprints the user-level default failure ledger. Loop 10 attempted to make the guard allocate a private temp ledger by default, but the targeted pinning test failed and the loop rule forbids retrying the same patch. The latest accepted runtime change, Loop 93, passed `npm run typecheck`, `npm run build`, targeted failure/archive tests, and full `npm test` at 136/136.
