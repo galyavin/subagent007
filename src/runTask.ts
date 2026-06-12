@@ -269,6 +269,20 @@ async function appendPublicEvent(state: RunTaskState, event: RunPublicEvent): Pr
   return written;
 }
 
+async function handleTaskHeartbeat(
+  state: RunTaskState,
+  beat: number,
+  message: string | undefined,
+  notify: HeartbeatNotify | undefined,
+): Promise<void> {
+  if (state.activePhase === "awaiting_child_event" || state.activePhase === "running_silent") {
+    setTaskPhase(state, "running");
+  }
+  setTaskProgress(state, message ?? DEFAULT_HEARTBEAT_MESSAGE, beat);
+  await writeTaskSnapshot(await getRunTask(state.runId));
+  await notify?.(beat, message);
+}
+
 async function appendRunStartedEvent(
   state: RunTaskState,
   request: RunSubagentRequest | RunSubagentSessionRequest,
@@ -571,12 +585,7 @@ export async function startRunTask(
         failureLogTool: "start_run",
         allowTimeout: true,
         heartbeat: async (beat, message) => {
-          if (state.activePhase === "awaiting_child_event" || state.activePhase === "running_silent") {
-            setTaskPhase(state, "running");
-          }
-          setTaskProgress(state, message ?? DEFAULT_HEARTBEAT_MESSAGE, beat);
-          await writeTaskSnapshot(await getRunTask(state.runId));
-          await options.heartbeat?.(beat, message);
+          await handleTaskHeartbeat(state, beat, message, options.heartbeat);
         },
         heartbeatIntervalMs: options.heartbeatIntervalMs,
         abortSignal: state.abortController.signal,
@@ -686,12 +695,7 @@ export async function startSessionRunTask(
       state.result = await runSubagentSession(request, {
         sessionsDir: options.sessionsDir,
         heartbeat: async (beat, message) => {
-          if (state.activePhase === "awaiting_child_event" || state.activePhase === "running_silent") {
-            setTaskPhase(state, "running");
-          }
-          setTaskProgress(state, message ?? DEFAULT_HEARTBEAT_MESSAGE, beat);
-          await writeTaskSnapshot(await getRunTask(state.runId));
-          await options.heartbeat?.(beat, message);
+          await handleTaskHeartbeat(state, beat, message, options.heartbeat);
         },
         heartbeatIntervalMs: options.heartbeatIntervalMs,
         abortSignal: state.abortController.signal,
@@ -774,12 +778,7 @@ export async function runSubagentOneShotTask(
         runsDir: options.runsDir,
         failureLogTool: "run_subagent",
         heartbeat: async (beat, message) => {
-          if (state.activePhase === "awaiting_child_event" || state.activePhase === "running_silent") {
-            setTaskPhase(state, "running");
-          }
-          setTaskProgress(state, message ?? DEFAULT_HEARTBEAT_MESSAGE, beat);
-          await writeTaskSnapshot(await getRunTask(state.runId));
-          await options.heartbeat?.(beat, message);
+          await handleTaskHeartbeat(state, beat, message, options.heartbeat);
         },
         heartbeatIntervalMs: options.heartbeatIntervalMs,
         abortSignal: state.abortController.signal,
