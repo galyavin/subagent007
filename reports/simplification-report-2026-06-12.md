@@ -462,6 +462,20 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 30 - Single Session Enum Choice Validator
+
+Finding: `validateResumeMode` and `validateSessionPacketPolicy` in `src/session.ts` repeat the same defaulted enum validation pattern: accept `undefined` as a field-specific default, require a string in an allowed list, and emit `<field> must be one of: ...`.
+
+Behavior check: extracting a local session-choice validator should not change observable behavior if each caller keeps the same default, allowed choices, returned type, and exact error message text.
+
+Oracle: existing session tests cover valid defaults and valid non-default packet/resume flows, but they do not directly pin invalid `resume_mode` and `packet_policy` messages. Add focused preflight assertions for those public validation contracts before extracting the helper.
+
+Decision: patch minimally after adding the missing pinning assertions. If any test fails, revert this loop and do not retry it.
+
+Targeted oracle result: failed at `npm run typecheck`. The proposed pinning tests used direct typed casts for intentionally invalid `resume_mode` and `packet_policy` values, producing TypeScript TS2352 errors before runtime assertions could execute.
+
+Reversion: reverted the `validateSessionChoice` helper and the invalid-choice tests. Do not retry this session enum validator extraction in this campaign.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
