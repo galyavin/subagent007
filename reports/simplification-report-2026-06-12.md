@@ -446,6 +446,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 29 - Single Failure-Log Private-Path Normalization
+
+Finding: `classifyFailureCwd` in `src/failureLog.ts` repeats the same `/private/` prefix normalization for both the candidate cwd and `os.tmpdir()` before classifying temp-directory failure records. This is one path-normalization rule duplicated inside production failure telemetry.
+
+Behavior check: extracting the normalization into a helper should not change observable behavior if both paths are still passed through `path.normalize` first and the helper preserves the exact `/private/` stripping condition.
+
+Oracle: existing failure-log tests assert temp cwd classification for generated failure records. No new pinning test is needed for this local classifier extraction.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added `withoutPrivatePrefix` in `failureLog.ts` and reused it for normalized cwd and temp paths.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/failure-log.test.ts` passed; targeted tests passed 13/13.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

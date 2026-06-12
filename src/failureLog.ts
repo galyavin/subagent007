@@ -139,6 +139,10 @@ export function campaignIdFromEnv(): string | undefined {
   return /^[A-Za-z0-9_.:-]{1,128}$/.test(value) ? value : undefined;
 }
 
+function withoutPrivatePrefix(value: string): string {
+  return value.startsWith("/private/") ? value.slice("/private".length) : value;
+}
+
 function classifyFailureCwd(cwd: string | undefined): FailureCwdClass {
   if (!cwd) {
     return "missing";
@@ -148,12 +152,8 @@ function classifyFailureCwd(cwd: string | undefined): FailureCwdClass {
   }
   const normalizedCwd = path.normalize(cwd);
   const normalizedTmp = path.normalize(os.tmpdir());
-  const tmpWithoutPrivate = normalizedTmp.startsWith("/private/")
-    ? normalizedTmp.slice("/private".length)
-    : normalizedTmp;
-  const cwdWithoutPrivate = normalizedCwd.startsWith("/private/")
-    ? normalizedCwd.slice("/private".length)
-    : normalizedCwd;
+  const tmpWithoutPrivate = withoutPrivatePrefix(normalizedTmp);
+  const cwdWithoutPrivate = withoutPrivatePrefix(normalizedCwd);
   return cwdWithoutPrivate === tmpWithoutPrivate || cwdWithoutPrivate.startsWith(`${tmpWithoutPrivate}${path.sep}`)
     ? "temp"
     : "absolute";
