@@ -1528,9 +1528,25 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `npm test` passed 142/142.
 
+## Loop 97 - Single Ledger-Guard Nested Test Env Cleanup
+
+Finding: `tests/test-ledger-guard.test.ts` duplicated the same Node test-runner environment cleanup in `envWithoutInheritedFailureLog()` and `nestedCliEnv()`: delete `NODE_TEST_CONTEXT` and `NODE_TEST_WORKER_ID` before spawning a nested `node --test` process. This is one test harness rule introduced by the ledger-guard hardening work.
+
+Behavior check: extracting the cleanup should not change externally observable server behavior because it touches only test harness setup. It must preserve that `envWithoutInheritedFailureLog()` also removes `SUBAGENT007_FAILURE_LOG_PATH`, while `nestedCliEnv()` preserves explicit failure-log paths.
+
+Oracle: `tests/test-ledger-guard.test.ts` directly covers both env builders through private-ledger, explicit-ledger, and mutating-ledger cases. No new pinning test is needed for this helper extraction.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added `removeNodeTestEnv()` and reused it from `nestedCliEnv()`, while making `envWithoutInheritedFailureLog()` build from `nestedCliEnv()` and then delete the inherited failure-log path.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/test-ledger-guard.test.ts` passed; targeted tests passed 3/3.
+
+Full oracle result: `npm test` passed 142/142.
+
 ## Current Constraints
 
-Loop status: continuing after Loop 96. The Loop 93 closure scan covered low-reference `src` functions, duplicated Subagent007 state-path construction, active TODO/dead/legacy markers, exported low-use helpers, and the failure-ledger guard scripts. Loops 94 through 96 addressed fresh test duplication introduced after that closure point.
+Loop status: continuing after Loop 97. The Loop 93 closure scan covered low-reference `src` functions, duplicated Subagent007 state-path construction, active TODO/dead/legacy markers, exported low-use helpers, and the failure-ledger guard scripts. Loops 94 through 97 addressed fresh test duplication introduced after that closure point.
 
 Remaining low-reference functions are intentionally retained because they are one of:
 
@@ -1539,4 +1555,4 @@ Remaining low-reference functions are intentionally retained because they are on
 - single-use but load-bearing policy boundaries where inlining would reduce auditability more than it removes waste;
 - standalone script-local path helpers that avoid coupling scripts to built `dist` output.
 
-The earlier default-ledger oracle constraint has been removed by the current test guard: when no `SUBAGENT007_FAILURE_LOG_PATH` is inherited, `scripts/run-tests-with-ledger-guard.mjs` now gives child tests a private temporary failure ledger. The latest accepted loop, Loop 96, passed `npm run typecheck`, `git diff --check`, targeted session tests, and full `npm test` at 142/142.
+The earlier default-ledger oracle constraint has been removed by the current test guard: when no `SUBAGENT007_FAILURE_LOG_PATH` is inherited, `scripts/run-tests-with-ledger-guard.mjs` now gives child tests a private temporary failure ledger. The latest accepted loop, Loop 97, passed `npm run typecheck`, `git diff --check`, targeted ledger-guard tests, and full `npm test` at 142/142.

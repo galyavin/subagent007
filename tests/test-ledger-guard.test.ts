@@ -38,18 +38,20 @@ async function runGuard(
 }
 
 function envWithoutInheritedFailureLog(extra: Record<string, string>): NodeJS.ProcessEnv {
-  const env = { ...process.env, ...extra };
+  const env = nestedCliEnv(extra);
   delete env.SUBAGENT007_FAILURE_LOG_PATH;
-  delete env.NODE_TEST_CONTEXT;
-  delete env.NODE_TEST_WORKER_ID;
   return env;
 }
 
 function nestedCliEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
   const env = { ...process.env, ...extra };
+  removeNodeTestEnv(env);
+  return env;
+}
+
+function removeNodeTestEnv(env: NodeJS.ProcessEnv): void {
   delete env.NODE_TEST_CONTEXT;
   delete env.NODE_TEST_WORKER_ID;
-  return env;
 }
 
 test("ledger guard gives child tests a private failure ledger when none is inherited", async () => {
