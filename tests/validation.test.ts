@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { loadConfig, loadConfigRecord } from "../src/config.js";
+import { defaultConfigPath, loadConfig, loadConfigRecord } from "../src/config.js";
 import { modelHealthForClass } from "../src/modelHealth.js";
 import { stripAnsiAndControls } from "../src/output.js";
 import { resolvePiAgentDir } from "../src/piAgentDir.js";
@@ -12,6 +12,16 @@ import { computeTimeoutBudget } from "../src/timeoutBudget.js";
 import { ValidationError } from "../src/types.js";
 import { validateAndResolveRequest, validateSkillName } from "../src/validate.js";
 import { withEnv } from "./helpers/testUtils.js";
+
+test("config path uses the shared Subagent007 state path shape", async () => {
+  await withEnv({ SUBAGENT007_CONFIG_PATH: undefined }, async () => {
+    assert.equal(defaultConfigPath(), path.join(os.homedir(), ".codex", "subagent007-pi", "config.json"));
+  });
+
+  await withEnv({ SUBAGENT007_CONFIG_PATH: " ./custom-config.json " }, async () => {
+    assert.equal(defaultConfigPath(), path.resolve(" ./custom-config.json "));
+  });
+});
 
 test("loads Pi runner config defaults from JSON and ignores unknown keys", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-config-"));

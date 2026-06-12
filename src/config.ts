@@ -1,6 +1,4 @@
 import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import {
   MODEL_CLASSES,
   THINKING_LEVELS,
@@ -10,11 +8,10 @@ import {
 } from "./types.js";
 import { ValidationError } from "./types.js";
 import { modelClassForResolvedPair } from "./modelAllowlist.js";
+import { defaultSubagentStatePath } from "./output.js";
 
 export function defaultConfigPath(): string {
-  return process.env.SUBAGENT007_CONFIG_PATH
-    ? path.resolve(process.env.SUBAGENT007_CONFIG_PATH)
-    : path.join(os.homedir(), ".codex", "subagent007-pi", "config.json");
+  return defaultSubagentStatePath("SUBAGENT007_CONFIG_PATH", "config.json");
 }
 
 function nonEmptyString(value: unknown, key: string): string | undefined {

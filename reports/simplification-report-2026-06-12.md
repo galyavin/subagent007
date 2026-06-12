@@ -936,6 +936,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 130/130.
 
+## Loop 60 - Reuse Shared State Path For Config
+
+Finding: `src/config.ts` manually builds the same `~/.codex/subagent007-pi/<leaf>` state path shape already captured by `defaultSubagentStatePath` in `src/output.ts`.
+
+Behavior check: replacing `defaultConfigPath` with `defaultSubagentStatePath("SUBAGENT007_CONFIG_PATH", "config.json")` should not change observable behavior if the default still resolves to `<homedir>/.codex/subagent007-pi/config.json` and explicit `SUBAGENT007_CONFIG_PATH` values are still resolved with `path.resolve`.
+
+Oracle: add a direct pure path-construction assertion for default and env override behavior before replacing the manual implementation.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added a default/env config path assertion and rewired `defaultConfigPath` through `defaultSubagentStatePath`.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/validation.test.ts tests/config-migrate.test.ts` passed; targeted tests passed 28/28.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 131/131.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
