@@ -18,11 +18,6 @@ function legacyNonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
 }
 
-function legacyThinkingLevel(value: unknown): ThinkingLevel | undefined {
-  const level = legacyNonEmptyString(value);
-  return level && THINKING_LEVELS.includes(level as ThinkingLevel) ? level as ThinkingLevel : undefined;
-}
-
 function modelClass(value: unknown, key: string): ModelClass | undefined {
   if (value === undefined) {
     return undefined;
@@ -44,7 +39,12 @@ export function normalizeConfigRecord(record: Record<string, unknown>): RunnerCo
   }
 
   const legacyDefaultModel = legacyNonEmptyString(record.default_model);
-  const legacyDefaultThinkingLevel = legacyThinkingLevel(record.default_thinking_level);
+  const legacyDefaultThinkingLevelValue = legacyNonEmptyString(record.default_thinking_level);
+  const legacyDefaultThinkingLevel =
+    legacyDefaultThinkingLevelValue &&
+    THINKING_LEVELS.includes(legacyDefaultThinkingLevelValue as ThinkingLevel)
+      ? legacyDefaultThinkingLevelValue as ThinkingLevel
+      : undefined;
   if (legacyDefaultModel !== undefined && legacyDefaultThinkingLevel !== undefined) {
     const migratedModelClass = modelClassForResolvedPair(legacyDefaultModel, legacyDefaultThinkingLevel);
     if (migratedModelClass !== null) {
