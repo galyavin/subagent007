@@ -132,6 +132,21 @@ function publicMarkerLine(line: string): PublicOutputLine | null {
     : null;
 }
 
+function eventObjectFromJsonLine(line: string): Record<string, unknown> | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("{")) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    return typeof parsed === "object" && parsed !== null
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function truncateUtf8(value: string, maxBytes: number): string {
   const buffer = Buffer.from(value, "utf8");
   if (buffer.byteLength <= maxBytes) {
@@ -167,30 +182,23 @@ export function preparePublicTranscriptFromProcessOutput(
   let sawStructuredEvent = false;
 
   for (const line of rawOutput.split(/\r?\n/)) {
-    const trimmed = line.trim();
     const markerLine = publicMarkerLine(line);
     if (markerLine) {
       publicLines.push(markerLine);
       rawLines.push(markerLine.text);
       continue;
     }
-    if (trimmed.startsWith("{")) {
-      try {
-        const parsed = JSON.parse(trimmed) as unknown;
-        if (typeof parsed === "object" && parsed !== null) {
-          sawStructuredEvent = true;
-          const publicLine = publicLineForEvent(parsed as Record<string, unknown>);
-          if (publicLine) {
-            if (options.promptProvenance && publicLine.kind === "user") {
-              continue;
-            }
-            publicLines.push(publicLine);
-          }
+    const parsedEvent = eventObjectFromJsonLine(line);
+    if (parsedEvent) {
+      sawStructuredEvent = true;
+      const publicLine = publicLineForEvent(parsedEvent);
+      if (publicLine) {
+        if (options.promptProvenance && publicLine.kind === "user") {
           continue;
         }
-      } catch {
-        // Fall through and keep non-JSON text below.
+        publicLines.push(publicLine);
       }
+      continue;
     }
     if (line.trim() !== "") {
       rawLines.push(line);
@@ -215,16 +223,6 @@ export function publicTranscriptFromProcessOutput(rawOutput: string): string {
 }
 
 export function publicOutputLineFromProcessLine(line: string): PublicOutputLine | null {
-  const trimmed = line.trim();
-  if (!trimmed.startsWith("{")) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    return typeof parsed === "object" && parsed !== null
-      ? publicLineForEvent(parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
+  const parsedEvent = eventObjectFromJsonLine(line);
+  return parsedEvent ? publicLineForEvent(parsedEvent) : null;
 }

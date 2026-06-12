@@ -1144,6 +1144,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 134/134.
 
+## Loop 73 - Share Transcript JSON Event Parsing
+
+Finding: `src/transcript.ts` parses candidate JSON event lines in two places: `preparePublicTranscriptFromProcessOutput` and `publicOutputLineFromProcessLine` both trim a line, require it to start with `{`, parse JSON, require an object, and then pass it to `publicLineForEvent`.
+
+Behavior check: extracting that line-to-object parser should not change observable behavior if malformed JSON still falls through in transcript rendering, non-object JSON is ignored, and valid public event lines still project the same public transcript lines.
+
+Oracle: existing transcript tests cover structured event rendering, marker handling, malformed/non-public fallback classes, and MCP active public event projection through `publicOutputLineFromProcessLine`. No new pinning test is needed.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: introduced `eventObjectFromJsonLine` and reused it for both transcript rendering and active output-line projection.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts tests/timeout-budget.test.ts tests/validation.test.ts` passed; targeted tests passed 71/71.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 134/134.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
