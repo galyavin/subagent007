@@ -330,22 +330,22 @@ export async function runSubagentCore(
     if (!result.success && !processResult.cancelled && !options.suppressFailureLog) {
       const missingSessionId =
         sessionMode.kind === "fresh" && !sessionEstablished && result.exit_code === 0;
+      const failureClass = result.timed_out
+        ? "timeout"
+        : missingSessionId
+          ? "missing_session_id"
+          : failureClassForProcessResult(result);
+      const reasonCode = failureClass === "timeout"
+        ? "timeout"
+        : failureClass === "missing_session_id"
+          ? "missing_session_id"
+          : failureClass === "nonzero_exit"
+            ? "nonzero_exit"
+            : "unknown_error";
       await logFailure({
         tool: options.failureLogTool ?? "run_subagent",
-        failure_class:
-          result.timed_out
-            ? "timeout"
-            : missingSessionId
-              ? "missing_session_id"
-              : failureClassForProcessResult(result),
-        reason_code:
-          result.timed_out
-            ? "timeout"
-            : missingSessionId
-              ? "missing_session_id"
-              : failureClassForProcessResult(result) === "nonzero_exit"
-                ? "nonzero_exit"
-                : "unknown_error",
+        failure_class: failureClass,
+        reason_code: reasonCode,
         cwd: resolved.cwd,
         output_path: result.output_path,
         success: result.success,

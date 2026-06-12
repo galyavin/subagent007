@@ -476,6 +476,22 @@ Targeted oracle result: failed at `npm run typecheck`. The proposed pinning test
 
 Reversion: reverted the `validateSessionChoice` helper and the invalid-choice tests. Do not retry this session enum validator extraction in this campaign.
 
+## Loop 31 - Single Run Failure Classification Calculation
+
+Finding: `runSubagentCore` in `src/runSubagent.ts` repeats the same failure classification decision inside the `logFailure` call: timeout, missing fresh session id, otherwise `failureClassForProcessResult(result)`. The same classification primitive feeds both `failure_class` and `reason_code`.
+
+Behavior check: extracting the classification into locals should not change observable behavior if the log record still receives the same `failure_class`, same `reason_code`, and same field insertion order.
+
+Oracle: existing failure-log and run-subagent tests assert nonzero-exit, missing-session-id, timeout, and unknown validation failure records. No new pinning test is needed for this local failure-log projection.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: introduced `failureClass` and `reasonCode` locals in `runSubagentCore` and reused them in the failure log record.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/failure-log.test.ts tests/run-subagent.test.ts tests/timeout-budget.test.ts` passed; targeted tests passed 61/61.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
