@@ -27,6 +27,12 @@ function selectProfile(options, profile) {
   options.mode = MANIFEST.profiles[profile].mode;
 }
 
+function assertNotRetiredAlias(value) {
+  if (value === RETIRED_BUNDLED_ALIAS) {
+    throw new Error(RETIRED_BUNDLED_ALIAS_MESSAGE);
+  }
+}
+
 function usage() {
   return [
     "usage: node scripts/run-observed-mcp-probe.mjs [options]",
@@ -80,9 +86,7 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--profile") {
       const profile = nextValue(index, arg);
-      if (profile === RETIRED_BUNDLED_ALIAS) {
-        throw new Error(RETIRED_BUNDLED_ALIAS_MESSAGE);
-      }
+      assertNotRetiredAlias(profile);
       const canonical = MANIFEST.aliases[profile] ?? profile;
       if (!PROFILES.has(canonical)) {
         throw new Error(`unknown profile: ${profile}`);
@@ -91,9 +95,7 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--scenario") {
       const scenario = nextValue(index, arg);
-      if (scenario === RETIRED_BUNDLED_ALIAS) {
-        throw new Error(RETIRED_BUNDLED_ALIAS_MESSAGE);
-      }
+      assertNotRetiredAlias(scenario);
       if (scenario === "all") {
         const profile = MANIFEST.aliases[scenario];
         selectProfile(options, profile);
