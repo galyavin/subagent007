@@ -10,6 +10,7 @@ import {
   type OutputMode,
   type ResolvedRunSubagentRequest,
   type RunContinuity,
+  type RunSubagentPromotionReasonCode,
   type RunSubagentRequest,
   type RunnerConfig,
   type ToolProfile,
@@ -53,6 +54,12 @@ const ONE_SHOT_WRITE_WORK_PATTERNS = [
 ];
 const ONE_SHOT_GUIDANCE =
   "This request is incompatible with run_subagent's quick_noninteractive contract; use schedule_run or start_run with explicit timeout_ms for broad, exploratory, skill-bound, cancellable, polling, or long-running work.";
+
+export interface RunSubagentOneShotIncompatibility {
+  reason_code: RunSubagentPromotionReasonCode;
+  message: string;
+  safe_to_promote: true;
+}
 
 function trimOptional(value: unknown, key: string): string | undefined {
   if (value === undefined) {
@@ -277,24 +284,40 @@ export async function validateAndResolveRequest(
   };
 }
 
-function oneShotIncompatibilityReason(
+export function runSubagentOneShotIncompatibility(
   request: RunSubagentRequest,
   resolved: ResolvedRunSubagentRequest,
-): string | null {
+): RunSubagentOneShotIncompatibility | null {
   if (resolved.skill) {
-    return "skill-bound work needs a durable, pollable run";
+    return {
+      reason_code: "skill_bound",
+      message: "skill-bound work needs a durable, pollable run",
+      safe_to_promote: true,
+    };
   }
   if (resolved.prompt.length > ONE_SHOT_MAX_PROMPT_CHARS) {
-    return `prompt exceeds ${ONE_SHOT_MAX_PROMPT_CHARS} characters`;
+    return {
+      reason_code: "prompt_too_long",
+      message: `prompt exceeds ${ONE_SHOT_MAX_PROMPT_CHARS} characters`,
+      safe_to_promote: true,
+    };
   }
   if (ONE_SHOT_BROAD_WORK_PATTERNS.some((pattern) => pattern.test(resolved.prompt))) {
-    return "prompt asks for broad, exploratory, or synthesis work";
+    return {
+      reason_code: "broad_work",
+      message: "prompt asks for broad, exploratory, or synthesis work",
+      safe_to_promote: true,
+    };
   }
   if (
     request.tool_profile === "workspace_write" &&
     ONE_SHOT_WRITE_WORK_PATTERNS.some((pattern) => pattern.test(resolved.prompt))
   ) {
-    return "workspace_write work should be durable and cancellable";
+    return {
+      reason_code: "workspace_write",
+      message: "workspace_write work should be durable and cancellable",
+      safe_to_promote: true,
+    };
   }
   return null;
 }
@@ -303,9 +326,9 @@ export function assertRunSubagentOneShotCompatible(
   request: RunSubagentRequest,
   resolved: ResolvedRunSubagentRequest,
 ): void {
-  const reason = oneShotIncompatibilityReason(request, resolved);
-  if (!reason) {
+  const incompatibility = runSubagentOneShotIncompatibility(request, resolved);
+  if (!incompatibility) {
     return;
   }
-  throw new ValidationError(`${ONE_SHOT_GUIDANCE} Reason: ${reason}.`);
+  throw new ValidationError(`${ONE_SHOT_GUIDANCE} Reason: ${incompatibility.message}.`);
 }

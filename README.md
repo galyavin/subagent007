@@ -6,7 +6,7 @@ Subagent007 Pi is a private MCP server that delegates work to a separate Pi-back
 
 | Situation | Tool | Key constraints |
 | --- | --- | --- |
-| Quick, bounded, non-interactive one-shot work | `run_subagent` | Requires `run_kind: "quick_noninteractive"`; rejects caller `timeout_ms` plus known one-shot-incompatible skill-bound, broad, overlong, or workspace-write edit requests; timeout results can be inspected later with `get_run`. |
+| Quick, bounded, non-interactive one-shot work | `run_subagent` | Requires `run_kind: "quick_noninteractive"`; rejects caller `timeout_ms`; valid requests that are only one-shot-incompatible auto-promote to a durable run inspectable with `get_run`. |
 | Broad, long, cancellable, polling, or caller-interactive work | `schedule_run` or `start_run` plus `get_run` | Prefer `schedule_run` for uncertain work: it creates the durable task first and waits briefly for immediate completion. Use `start_run` when the caller always wants an immediate task handle. Pass `timeout_ms` when a hard deadline matters; answer pending input with `answer_run_input`; cancel with `cancel_run`. |
 | Durable continuity by semantic key | `start_session_run` plus `get_run`, or `run_subagent_session` for compatibility | Requires `session_key`; use when manifest/ledger continuity matters. Prefer the async task form for long, cancellable, or abandoned-client-safe work. |
 | Model-class/config health | `list_model_classes` | `list_allowed_models` is a compatibility alias. |
@@ -124,6 +124,7 @@ Result semantics:
 
 - Runs that reach child execution return `output_path` on terminal completion; schema and preflight rejections do not.
 - Expected handler-level semantic rejections return structured content with `kind:"preflight_rejected"`, `success:false`, and `child_started:false`; SDK schema errors remain MCP input validation errors.
+- Valid `run_subagent` requests that are incompatible only with one-shot execution auto-promote and include `auto_promoted_from`, `promotion_reason_code`, `promotion_reason`, `poll_with`, and `cancel_with`.
 - `run_subagent`, `schedule_run`, `start_run`, `start_session_run`, and `run_subagent_session` create durable run-task snapshots inspectable with `get_run` by `run_id`.
 - Active `get_run` views expose sanitized `recent_events` and `last_public_output_excerpt`; raw thinking, private tool payloads, full packet instructions, composed child prompts, and input answer values are not input/public event fields.
 - On timeout, `partial_output_available` is true only when the artifact includes child assistant text, a warning/error, or a captured final message.
@@ -140,9 +141,11 @@ Ephemeral run:
 }
 ```
 
-`run_kind` is an explicit caller contract that the work is bounded, non-interactive, and compatible with the one-shot deadline. `run_subagent` rejects high-confidence incompatible shapes before the child starts: any bound skill, prompts over 6000 characters, broad analysis/synthesis markers such as `audit`, `investigate`, `HORC`, `SAF`, or `implementation plan`, and `workspace_write` prompts that imply edits. Use `schedule_run` or `start_run` instead for longer, cancellable, polling, caller-input, exploratory, skill-bound, or write-heavy work.
+`run_kind` is an explicit caller contract that the work is bounded, non-interactive, and compatible with the one-shot deadline. If a valid `run_subagent` request is incompatible only because it is skill-bound, over 6000 characters, broad/exploratory/synthesis-shaped, or a `workspace_write` edit prompt, the server auto-promotes it to a durable run, emits `[auto_promoted] run_subagent -> durable_run`, returns a pollable `run_id`, and preserves the requested `tool_profile`. Hard invalid inputs still reject before child execution, including bad `cwd`, invalid skill syntax, invalid model class, unreadable resume continuity, and caller-provided `timeout_ms`.
 
-`run_subagent` rejects caller-provided `timeout_ms`. Its internal default deadline is 110 seconds and can be changed with `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`. If that internal one-shot deadline is hit, the structured result includes `timeout_recovery_hint` pointing the caller to `schedule_run` or `start_run` with an explicit `timeout_ms` and to the concrete `run_id` that `get_run` can inspect.
+Auto-promotion is a compatibility fallback, not the preferred API for deliberate broad work. Use `schedule_run` or `start_run` directly for longer, cancellable, polling, caller-input, exploratory, skill-bound, or write-heavy work, especially when a caller-defined `timeout_ms` matters. The one-shot model-health gate applies only when the request stays on synchronous one-shot execution.
+
+`run_subagent` rejects caller-provided `timeout_ms`. Its internal default deadline is 110 seconds and can be changed with `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`; auto-promoted runs keep that internal cap. If that deadline is hit, the structured result includes `timeout_recovery_hint` pointing the caller to `schedule_run` or `start_run` with an explicit `timeout_ms` and to the concrete `run_id` that `get_run` can inspect.
 
 ## Async Runs And Caller Input
 

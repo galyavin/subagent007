@@ -91,6 +91,20 @@ export interface SubagentRunResultBase {
   stop_reason: RunStopReason;
 }
 
+export type RunSubagentPromotionReasonCode =
+  | "skill_bound"
+  | "prompt_too_long"
+  | "broad_work"
+  | "workspace_write";
+
+export interface RunSubagentPromotion {
+  auto_promoted_from: "run_subagent";
+  promotion_reason_code: RunSubagentPromotionReasonCode;
+  promotion_reason: string;
+  poll_with: "get_run";
+  cancel_with: "cancel_run";
+}
+
 export interface RunSubagentResult extends SubagentRunResultBase {
   run_id: string;
   task_id: string;
@@ -99,6 +113,11 @@ export interface RunSubagentResult extends SubagentRunResultBase {
   session_id: string | null;
   session_established: boolean;
   input_requests_dir: string;
+  auto_promoted_from?: RunSubagentPromotion["auto_promoted_from"];
+  promotion_reason_code?: RunSubagentPromotion["promotion_reason_code"];
+  promotion_reason?: RunSubagentPromotion["promotion_reason"];
+  poll_with?: RunSubagentPromotion["poll_with"];
+  cancel_with?: RunSubagentPromotion["cancel_with"];
 }
 
 export interface RunSubagentSessionRequest extends SubagentRequestBase {
@@ -208,6 +227,7 @@ export type RunPublicEventKind =
 
 export type RunPublicEventName =
   | "run_started"
+  | "auto_promoted"
   | "child_spawned"
   | "input_required"
   | "input_answered"

@@ -37,6 +37,11 @@ type RunSubagentMetadata = {
   last_phase_at?: string;
   recent_events?: Array<{ kind: string; event?: string; text: string; occurred_at: string }>;
   last_public_output_excerpt?: string;
+  auto_promoted_from?: "run_subagent";
+  promotion_reason_code?: "skill_bound" | "prompt_too_long" | "broad_work" | "workspace_write";
+  promotion_reason?: string;
+  poll_with?: "get_run";
+  cancel_with?: "cancel_run";
 };
 
 async function connectFakeClient<T>(
@@ -868,31 +873,71 @@ test("MCP run_subagent uses the configured fake Pi child", async () => {
   });
 });
 
-test("MCP run_subagent rejects skill-bound one-shot work before invoking the child", async () => {
-  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
-    const response = await client.callTool({
-      name: "run_subagent",
-      arguments: {
-        cwd: projectDir,
-        prompt: "FAST",
-        run_kind: "quick_noninteractive",
-        skill_name: "pda-lite",
+test("MCP run_subagent auto-promotes skill-bound work without one-shot health gating", async () => {
+  const runTasksDir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-promoted-skill-"));
+  await connectFakeClient(
+    async (client, { projectDir, fakeLogPath, modelHealthPath }) => {
+      await fs.writeFile(
+        modelHealthPath,
+        `${JSON.stringify([
+          {
+            schema_version: 1,
+            model_class: "A",
+            resolved_model: "ollama/gemma4:12b-mlx",
+            surface: "run_subagent_one_shot",
+            checked_at: "2026-06-11T00:00:00.000Z",
+            usable_for_one_shot: false,
+            last_failure_class: "timeout",
+            last_failure_at: "2026-06-11T00:00:00.000Z",
+          },
+        ], null, 2)}\n`,
+      );
+
+      const response = await client.callTool({
+        name: "run_subagent",
+        arguments: {
+          cwd: projectDir,
+          prompt: "FAST",
+          run_kind: "quick_noninteractive",
+          model_class: "A",
+          skill_name: "pda-lite",
+        },
+      });
+      assert.notEqual(response.isError, true);
+      const metadata = response.structuredContent as RunSubagentMetadata;
+      assert.equal(metadata.status, "completed");
+      assert.equal(metadata.success, true);
+      assert.equal(metadata.auto_promoted_from, "run_subagent");
+      assert.equal(metadata.promotion_reason_code, "skill_bound");
+      assert.match(metadata.promotion_reason ?? "", /skill-bound work/);
+      assert.equal(metadata.poll_with, "get_run");
+      assert.equal(metadata.cancel_with, "cancel_run");
+      assert.equal(await fs.readFile(metadata.output_path, "utf8"), "FAST FINAL");
+
+      const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
+      assert.equal(logs.length, 1);
+      assert.equal(logs[0].request.skill, "pda-lite");
+      assert.equal(logs[0].request.model, "ollama/gemma4:12b-mlx");
+
+      const rawEvents = await fs.readFile(path.join(runTasksDir, `${metadata.run_id}.events.jsonl`), "utf8");
+      assert.match(rawEvents, /\[auto_promoted\] run_subagent -> durable_run/);
+
+      const runView = await client.callTool({
+        name: "get_run",
+        arguments: { run_id: metadata.run_id },
+      });
+      assert.notEqual(runView.isError, true);
+      assert.equal(
+        (runView.structuredContent as RunSubagentMetadata).promotion_reason_code,
+        "skill_bound",
+      );
+    },
+    {
+      env: {
+        SUBAGENT007_RUN_TASKS_DIR: runTasksDir,
       },
-    });
-    assert.notEqual(response.isError, true);
-    assert.equal((response.structuredContent as { kind?: string }).kind, "preflight_rejected");
-    assert.equal((response.structuredContent as { child_started?: boolean }).child_started, false);
-    assert.match(
-      (response.structuredContent as { retry_guidance?: string }).retry_guidance ?? "",
-      /Use schedule_run or start_run/,
-    );
-    const content = response.content as Array<{ type: string; text?: string }>;
-    assert.match(
-      content[0]?.type === "text" ? (content[0].text ?? "") : "",
-      /incompatible with run_subagent's quick_noninteractive contract/,
-    );
-    await assert.rejects(fs.stat(fakeLogPath), /ENOENT/);
-  });
+    },
+  );
 });
 
 test("MCP run_subagent timeout returns async recovery guidance", async () => {
@@ -1045,25 +1090,73 @@ test("MCP run_subagent fails fast for known unhealthy one-shot model class", asy
   });
 });
 
-test("MCP run_subagent rejects broad analysis prompts before invoking the child", async () => {
+test("MCP run_subagent auto-promotes broad analysis prompts to a cancellable durable run", async () => {
   await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
     const response = await client.callTool({
       name: "run_subagent",
       arguments: {
         cwd: projectDir,
-        prompt: "Investigate the HORCs and SAFs across this repo and produce an implementation plan.",
+        prompt: "CANCEL_WAIT Investigate the HORCs and SAFs across this repo and produce an implementation plan.",
         run_kind: "quick_noninteractive",
       },
     });
     assert.notEqual(response.isError, true);
-    assert.equal((response.structuredContent as { kind?: string }).kind, "preflight_rejected");
-    assert.equal((response.structuredContent as { child_started?: boolean }).child_started, false);
-    const content = response.content as Array<{ type: string; text?: string }>;
-    assert.match(
-      content[0]?.type === "text" ? (content[0].text ?? "") : "",
-      /use schedule_run or start_run with explicit timeout_ms/,
-    );
-    await assert.rejects(fs.stat(fakeLogPath), /ENOENT/);
+    const metadata = response.structuredContent as RunSubagentMetadata;
+    assert.equal(metadata.status, "working");
+    assert.equal(metadata.auto_promoted_from, "run_subagent");
+    assert.equal(metadata.promotion_reason_code, "broad_work");
+    assert.equal(metadata.poll_with, "get_run");
+    assert.equal(metadata.cancel_with, "cancel_run");
+    await waitForFileText(fakeLogPath, /Investigate the HORCs and SAFs/);
+
+    const cancelled = await client.callTool({
+      name: "cancel_run",
+      arguments: { run_id: metadata.run_id },
+    });
+    assert.notEqual(cancelled.isError, true);
+    assert.equal((cancelled.structuredContent as RunSubagentMetadata).status, "cancelled");
+  });
+});
+
+test("MCP run_subagent auto-promotes lexical broad-work false positives instead of rejecting them", async () => {
+  await connectFakeClient(async (client, { projectDir }) => {
+    const response = await client.callTool({
+      name: "run_subagent",
+      arguments: {
+        cwd: projectDir,
+        prompt: "FAST Check the saf-ninja fixture.",
+        run_kind: "quick_noninteractive",
+      },
+    });
+    assert.notEqual(response.isError, true);
+    const metadata = response.structuredContent as RunSubagentMetadata;
+    assert.equal(metadata.status, "completed");
+    assert.equal(metadata.success, true);
+    assert.equal(metadata.promotion_reason_code, "broad_work");
+    assert.equal(await fs.readFile(metadata.output_path, "utf8"), "FAST FINAL");
+  });
+});
+
+test("MCP run_subagent auto-promotes workspace_write edit prompts without changing the tool profile", async () => {
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    const response = await client.callTool({
+      name: "run_subagent",
+      arguments: {
+        cwd: projectDir,
+        prompt: "FAST implement a tiny fixture change.",
+        run_kind: "quick_noninteractive",
+        tool_profile: "workspace_write",
+      },
+    });
+    assert.notEqual(response.isError, true);
+    const metadata = response.structuredContent as RunSubagentMetadata;
+    assert.equal(metadata.status, "completed");
+    assert.equal(metadata.success, true);
+    assert.equal(metadata.promotion_reason_code, "workspace_write");
+
+    const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
+    assert.equal(logs.length, 1);
+    assert.equal(logs[0].request.toolProfile, "workspace_write");
   });
 });
 

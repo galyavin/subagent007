@@ -28,6 +28,7 @@ import {
 import { publicOutputLineFromProcessLine } from "./transcript.js";
 import type {
   RunPublicEvent,
+  RunSubagentPromotion,
   RunSubagentRequest,
   RunSubagentResult,
   RunSubagentSessionRequest,
@@ -36,7 +37,8 @@ import type {
 import { ValidationError } from "./types.js";
 import { loadConfig } from "./config.js";
 import {
-  assertRunSubagentOneShotCompatible,
+  runSubagentOneShotIncompatibility,
+  type RunSubagentOneShotIncompatibility,
   validateAndResolveRequest,
 } from "./validate.js";
 import { defaultSubagentStatePath } from "./output.js";
@@ -104,6 +106,7 @@ interface RunTaskState {
   promise: Promise<void>;
   terminalSnapshotStarted: boolean;
   sessionKey?: string;
+  promotion?: RunSubagentPromotion;
 }
 
 type RunTaskProgressView = Pick<
@@ -120,6 +123,7 @@ type RunTaskProgressView = Pick<
 
 const tasks = new Map<string, RunTaskState>();
 const DEFAULT_SCHEDULE_WAIT_MS = 1_000;
+const PROMOTED_RUN_WAIT_MS = DEFAULT_SCHEDULE_WAIT_MS;
 
 function defaultRunTasksDir(): string {
   return defaultSubagentStatePath("SUBAGENT007_RUN_TASKS_DIR", "run-tasks");
@@ -206,6 +210,10 @@ function progressView(state: RunTaskState, elapsedMs: number): RunTaskProgressVi
     recent_events: state.recentEvents,
     ...(state.lastPublicOutputExcerpt ? { last_public_output_excerpt: state.lastPublicOutputExcerpt } : {}),
   };
+}
+
+function promotionView(state: RunTaskState): Partial<RunSubagentPromotion> {
+  return state.promotion ?? {};
 }
 
 function activeProgressView(state: RunTaskState): RunTaskProgressView {
@@ -307,6 +315,19 @@ async function appendRunStartedEvent(
       occurred_at: state.startedAt,
     });
   }
+}
+
+async function appendAutoPromotedEvent(
+  state: RunTaskState,
+  promotion: RunSubagentPromotion,
+): Promise<void> {
+  await appendStatusEvent(state, {
+    kind: "task",
+    event: "auto_promoted",
+    text: "[auto_promoted] run_subagent -> durable_run",
+    occurred_at: new Date().toISOString(),
+    metadata: { ...promotion },
+  }, "run_subagent auto-promoted to durable run");
 }
 
 async function appendChildSpawnEvent(state: RunTaskState): Promise<void> {
@@ -586,6 +607,7 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
   if (state.result && state.terminalSnapshotStarted) {
     return {
       ...state.result,
+      ...promotionView(state),
       run_id: state.runId,
       task_id: state.runId,
       task_kind: state.taskKind,
@@ -602,6 +624,7 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
       run_id: state.runId,
       task_id: state.runId,
       task_kind: state.taskKind,
+      ...promotionView(state),
       ...(state.sessionKey ? { session_key: state.sessionKey } : {}),
       status: state.cancelRequested ? "cancelled" : "failed",
       started_at: state.startedAt,
@@ -621,6 +644,7 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
     run_id: state.runId,
     task_id: state.runId,
     task_kind: state.taskKind,
+    ...promotionView(state),
     ...(state.sessionKey ? { session_key: state.sessionKey } : {}),
     status: state.cancelRequested
       ? "cancelled"
@@ -693,18 +717,7 @@ function isScheduleReturnableStatus(status: RunTaskStatus): boolean {
   return isTerminalStatus(status) || status === "input_required";
 }
 
-export async function scheduleRunTask(
-  request: RunSubagentRequest & { wait_ms?: number },
-  options: {
-    runsDir?: string;
-    heartbeat?: HeartbeatNotify;
-    heartbeatIntervalMs?: number;
-  } = {},
-): Promise<RunTaskView> {
-  const waitMs = scheduleWaitMs(request.wait_ms);
-  const runRequest = { ...request };
-  delete runRequest.wait_ms;
-  const started = await startRunTask(runRequest, options);
+async function waitForReturnableRun(started: RunTaskView, waitMs: number): Promise<RunTaskView> {
   if (isScheduleReturnableStatus(started.status) || waitMs === 0) {
     return started;
   }
@@ -718,6 +731,21 @@ export async function scheduleRunTask(
     await new Promise((resolve) => setTimeout(resolve, Math.min(25, Math.max(1, deadline - Date.now()))));
   }
   return getRunTask(started.run_id);
+}
+
+export async function scheduleRunTask(
+  request: RunSubagentRequest & { wait_ms?: number },
+  options: {
+    runsDir?: string;
+    heartbeat?: HeartbeatNotify;
+    heartbeatIntervalMs?: number;
+  } = {},
+): Promise<RunTaskView> {
+  const waitMs = scheduleWaitMs(request.wait_ms);
+  const runRequest = { ...request };
+  delete runRequest.wait_ms;
+  const started = await startRunTask(runRequest, options);
+  return waitForReturnableRun(started, waitMs);
 }
 
 export async function startSessionRunTask(
@@ -774,6 +802,76 @@ export async function runSubagentSessionTaskAndWait(
   return getRunTask(started.run_id);
 }
 
+function promotionMetadata(
+  incompatibility: RunSubagentOneShotIncompatibility,
+): RunSubagentPromotion {
+  return {
+    auto_promoted_from: "run_subagent",
+    promotion_reason_code: incompatibility.reason_code,
+    promotion_reason: incompatibility.message,
+    poll_with: "get_run",
+    cancel_with: "cancel_run",
+  };
+}
+
+function runSubagentResultWithConcreteTimeoutRecoveryHint(
+  result: RunSubagentResult,
+  runId: string,
+): RunSubagentResult {
+  const timeoutRecoveryHint = result.timed_out === true && result.timeout_recovery_hint === undefined
+    ? RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT
+    : result.timeout_recovery_hint;
+  if (!timeoutRecoveryHint) {
+    return result;
+  }
+  return {
+    ...result,
+    timeout_recovery_hint: `${timeoutRecoveryHint} Inspect this run with get_run using run_id ${runId}.`,
+  };
+}
+
+async function runSubagentPromotedTask(
+  request: RunSubagentRequest,
+  incompatibility: RunSubagentOneShotIncompatibility,
+  options: {
+    runsDir?: string;
+    heartbeat?: HeartbeatNotify;
+    heartbeatIntervalMs?: number;
+  },
+): Promise<RunTaskView> {
+  const promotion = promotionMetadata(incompatibility);
+  const state = createRunTaskState("run");
+  state.promotion = promotion;
+  await registerRunTaskState(state, request);
+  await appendAutoPromotedEvent(state, promotion);
+  await writeTaskSnapshot(await getRunTask(state.runId));
+
+  state.promise = (async () => {
+    try {
+      await prepareChildRun(state);
+      const result = await runSubagentCore(request, {
+        runId: state.runId,
+        mailboxRoot: state.mailboxRoot,
+        runsDir: options.runsDir,
+        failureLogTool: "run_subagent",
+        // Promoted run_subagent keeps the one-shot internal timeout cap.
+        ...taskChildRuntimeOptions(state, options),
+      });
+      state.result = {
+        ...runSubagentResultWithConcreteTimeoutRecoveryHint(result, state.runId),
+        ...promotion,
+      };
+    } catch (error) {
+      state.error = error as Error;
+      await logBackgroundHandlerError("run_subagent", request, error);
+    } finally {
+      await finalizeRunTask(state, durableTaskCloseReason(state));
+    }
+  })();
+
+  return waitForReturnableRun(await getRunTask(state.runId), PROMOTED_RUN_WAIT_MS);
+}
+
 export async function runSubagentOneShotTask(
   request: RunSubagentRequest,
   options: {
@@ -782,9 +880,15 @@ export async function runSubagentOneShotTask(
     heartbeatIntervalMs?: number;
   } = {},
 ): Promise<RunTaskView> {
+  if (request.timeout_ms !== undefined) {
+    throw new ValidationError("timeout_ms is not supported by run_subagent; use schedule_run or start_run for timed work");
+  }
   const config = await loadConfig();
   const resolved = await validateAndResolveRequest(request, config);
-  assertRunSubagentOneShotCompatible(request, resolved);
+  const incompatibility = runSubagentOneShotIncompatibility(request, resolved);
+  if (incompatibility) {
+    return runSubagentPromotedTask(request, incompatibility, options);
+  }
   await assertModelClassUsableForOneShot(resolved.modelClass);
 
   const state = createRunTaskState("run");
@@ -810,14 +914,11 @@ export async function runSubagentOneShotTask(
 
   await state.promise;
   const view = await getRunTask(state.runId);
-  const timeoutRecoveryHint = view.timed_out === true && view.timeout_recovery_hint === undefined
-    ? RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT
-    : view.timeout_recovery_hint;
-  if (timeoutRecoveryHint) {
-    const withConcreteHint: RunTaskView = {
-      ...view,
-      timeout_recovery_hint: `${timeoutRecoveryHint} Inspect this run with get_run using run_id ${state.runId}.`,
-    };
+  if (view.timed_out === true || view.timeout_recovery_hint) {
+    const withConcreteHint: RunTaskView = runSubagentResultWithConcreteTimeoutRecoveryHint(
+      view as RunSubagentResult,
+      state.runId,
+    ) as RunTaskView;
     await writeTaskSnapshot(withConcreteHint);
     if (state.result) {
       state.result = { ...state.result, timeout_recovery_hint: withConcreteHint.timeout_recovery_hint };
