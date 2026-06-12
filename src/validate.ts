@@ -287,8 +287,7 @@ function oneShotIncompatibilityReason(
   if (resolved.prompt.length > ONE_SHOT_MAX_PROMPT_CHARS) {
     return `prompt exceeds ${ONE_SHOT_MAX_PROMPT_CHARS} characters`;
   }
-  const firstBroadPattern = ONE_SHOT_BROAD_WORK_PATTERNS.find((pattern) => pattern.test(resolved.prompt));
-  if (firstBroadPattern) {
+  if (ONE_SHOT_BROAD_WORK_PATTERNS.some((pattern) => pattern.test(resolved.prompt))) {
     return "prompt asks for broad, exploratory, or synthesis work";
   }
   if (

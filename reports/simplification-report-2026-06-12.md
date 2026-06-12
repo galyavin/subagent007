@@ -682,6 +682,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 44 - Boolean Broad Work Predicate
+
+Finding: `oneShotIncompatibilityReason` in `src/validate.ts` assigns `firstBroadPattern` from `ONE_SHOT_BROAD_WORK_PATTERNS.find(...)` but only uses its truthiness. The matched pattern itself is dead.
+
+Behavior check: replacing `find(...)` plus a truthy check with `some(...)` should not change observable behavior because both stop at the first matching regex and return the same broad-work rejection message.
+
+Oracle: run-subagent tests cover broad one-shot prompt rejection before child spawn and durable schedule-run acceptance for broad work. No new pinning test is needed for this local boolean predicate cleanup.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: replaced the unused `firstBroadPattern` `find(...)` result with a direct `some(...)` boolean check.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/validation.test.ts tests/run-subagent.test.ts` passed; targeted tests passed 60/60.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
