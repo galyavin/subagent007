@@ -195,10 +195,6 @@ function terminalStatus(result: RunTaskTerminalResult): RunTaskStatus {
   return result.success ? "completed" : "failed";
 }
 
-async function taskInputRequests(state: RunTaskState): Promise<InputRequestView[]> {
-  return listInputRequests({ mailboxRoot: state.mailboxRoot, runId: state.runId });
-}
-
 function progressView(state: RunTaskState, elapsedMs: number): RunTaskProgressView {
   return {
     elapsed_ms: elapsedMs,
@@ -603,7 +599,7 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
     }
     return { ...snapshot, ...eventProjection, input_requests: inputRequests };
   }
-  const inputRequests = await taskInputRequests(state);
+  const inputRequests = await listInputRequests({ mailboxRoot: state.mailboxRoot, runId: state.runId });
   if (state.result && state.terminalSnapshotStarted) {
     return {
       ...state.result,
