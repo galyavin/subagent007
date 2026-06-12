@@ -968,6 +968,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 131/131.
 
+## Loop 62 - Share Task Output Observer
+
+Finding: `src/runTask.ts` repeats the same `onOutputLine: (line) => observeOutputLine(state, line)` adapter in durable run, durable session, and one-shot run child options.
+
+Behavior check: extracting a local `taskOutputObserver(state)` helper should not change observable behavior if each launch still passes an async callback that records sanitized public events and excerpts through `observeOutputLine` for the same task state.
+
+Oracle: existing `tests/run-subagent.test.ts` covers raw public event redaction, active public event projection, session packet events, answer redaction, and cancellation terminal events. No new pinning test is needed.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added `taskOutputObserver` and reused it for durable run, durable session, and one-shot run child output callbacks.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts tests/timeout-budget.test.ts tests/failure-log.test.ts` passed; targeted tests passed 62/62.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 131/131.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

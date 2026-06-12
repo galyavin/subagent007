@@ -515,6 +515,10 @@ async function observeOutputLine(state: RunTaskState, line: string): Promise<voi
   await writeTaskSnapshot(await getRunTask(state.runId));
 }
 
+function taskOutputObserver(state: RunTaskState): (line: string) => Promise<void> {
+  return (line) => observeOutputLine(state, line);
+}
+
 async function loadSnapshotEvents(
   snapshot: RunTaskView,
 ): Promise<Pick<RunTaskView, "recent_events" | "last_public_output_excerpt">> {
@@ -639,7 +643,7 @@ export async function startRunTask(
         heartbeat: taskHeartbeatHandler(state, options.heartbeat),
         heartbeatIntervalMs: options.heartbeatIntervalMs,
         abortSignal: state.abortController.signal,
-        onOutputLine: (line) => observeOutputLine(state, line),
+        onOutputLine: taskOutputObserver(state),
       });
     } catch (error) {
       state.error = error as Error;
@@ -729,7 +733,7 @@ export async function startSessionRunTask(
         mailboxRoot: state.mailboxRoot,
         childRunId: state.runId,
         taskId: state.runId,
-        onOutputLine: (line) => observeOutputLine(state, line),
+        onOutputLine: taskOutputObserver(state),
       });
     } catch (error) {
       state.error = error as Error;
@@ -786,7 +790,7 @@ export async function runSubagentOneShotTask(
         heartbeat: taskHeartbeatHandler(state, options.heartbeat),
         heartbeatIntervalMs: options.heartbeatIntervalMs,
         abortSignal: state.abortController.signal,
-        onOutputLine: (line) => observeOutputLine(state, line),
+        onOutputLine: taskOutputObserver(state),
       });
     } catch (error) {
       state.error = error as Error;
