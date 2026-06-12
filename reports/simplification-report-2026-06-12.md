@@ -666,6 +666,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 43 - Direct Config Normalization Return
+
+Finding: `normalizeConfigRecord` in `src/config.ts` creates a mutable `RunnerConfig` object only to optionally assign `default_model_class` in either the canonical or legacy migration path. No other fields are accumulated.
+
+Behavior check: returning the canonical, migrated, or empty config object directly should not change observable behavior if supported canonical configs still win over legacy fields, supported legacy pairs still map to the same class, and unsupported or missing config still returns `{}`.
+
+Oracle: validation tests cover canonical config defaults, raw record preservation, legacy migration, malformed legacy config, unsupported model classes, and missing config. No new pinning test is needed for this local accumulator removal.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: removed the mutable config accumulator and returned canonical, migrated, or empty config objects directly.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/validation.test.ts tests/config-migrate.test.ts` passed; targeted tests passed 26/26.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

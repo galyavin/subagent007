@@ -48,11 +48,9 @@ function modelClass(value: unknown, key: string): ModelClass | undefined {
 }
 
 export function normalizeConfigRecord(record: Record<string, unknown>): RunnerConfig {
-  const config: RunnerConfig = {};
   const configuredModelClass = modelClass(record.default_model_class, "default_model_class");
   if (configuredModelClass !== undefined) {
-    config.default_model_class = configuredModelClass;
-    return config;
+    return { default_model_class: configuredModelClass };
   }
 
   const legacyDefaultModel = legacyNonEmptyString(record.default_model);
@@ -60,11 +58,11 @@ export function normalizeConfigRecord(record: Record<string, unknown>): RunnerCo
   if (legacyDefaultModel !== undefined && legacyDefaultThinkingLevel !== undefined) {
     const migratedModelClass = modelClassForResolvedPair(legacyDefaultModel, legacyDefaultThinkingLevel);
     if (migratedModelClass !== null) {
-      config.default_model_class = migratedModelClass;
+      return { default_model_class: migratedModelClass };
     }
   }
 
-  return config;
+  return {};
 }
 
 export async function loadConfigRecord(configPath = defaultConfigPath()): Promise<Record<string, unknown>> {
