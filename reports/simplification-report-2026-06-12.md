@@ -158,8 +158,6 @@ Patch attempted: changed the guard to create a private temp `SUBAGENT007_FAILURE
 
 Targeted oracle result: `npm run typecheck` and `git diff --check` passed, but `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/test-ledger-guard.test.ts` failed because the dummy child test did not write the expected env-capture file. Per the loop rule, the guard and test patches were reverted and this simplification was not retried.
 
-## Current Constraints
-
 ## Loop 11 - Single One-Shot Timeout Hint Persistence
 
 Finding: `runSubagentOneShotTask` in `src/runTask.ts` has two branches that both append `Inspect this run with get_run using run_id ...`, write the updated snapshot, mirror the hint into `state.result`, and return the updated view. The only difference is the base hint: default one-shot recovery text when a timed-out view has no hint, or the existing `view.timeout_recovery_hint` when present.
@@ -175,8 +173,6 @@ Patch: computed `timeoutRecoveryHint` first, then used one branch to append the 
 Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts` passed; targeted tests passed 41/41.
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125. The explicit private ledger path avoids the known ambient default-ledger guard issue recorded in loops 9 and 10.
-
-## Current Constraints
 
 ## Loop 12 - Single Packet Satisfaction Evaluation
 
