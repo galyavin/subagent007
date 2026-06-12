@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { defaultSubagentStatePath } from "./output.js";
+import { defaultSubagentStatePath, timestampedRandomId } from "./output.js";
 import { ValidationError } from "./types.js";
 
 export const INPUT_REQUEST_STATUSES = ["pending", "answered", "timed_out", "closed"] as const;
@@ -59,9 +59,7 @@ export function defaultInputRequestsDir(): string {
 }
 
 export function newRunId(): string {
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "");
-  const suffix = randomBytes(6).toString("hex");
-  return `${timestamp}-${suffix}`;
+  return timestampedRandomId();
 }
 
 function assertSafeId(value: string, key: string): void {

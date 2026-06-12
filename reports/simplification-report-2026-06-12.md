@@ -1096,6 +1096,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 132/132.
 
+## Loop 70 - Share Timestamped Random ID Segment
+
+Finding: `src/output.ts` and `src/inputMailbox.ts` independently build the same timestamp-plus-12-hex-random id shape from `new Date().toISOString().replace(/[:.]/g, "")` and `randomBytes(6).toString("hex")`.
+
+Behavior check: extracting the id segment builder should not change observable behavior if `newRunId()` still returns the same safe timestamped id shape and run output files still use the same basename shape with a `.md` suffix.
+
+Oracle: existing tests exercise generated run ids and output files but do not pin their filename/id shape. Add focused assertions for `newRunId()` and `writeRunOutput()` before extracting the helper.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added run-id and output-basename shape assertions, then introduced `timestampedRandomId` and reused it for `newRunId()` and run output filenames.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/input-mailbox.test.ts tests/validation.test.ts tests/run-subagent.test.ts tests/failure-log.test.ts` passed; targeted tests passed 84/84.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 134/134.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

@@ -8,9 +8,16 @@ import {
   closePendingInputRequestsForRun,
   createInputRequest,
   listInputRequests,
+  newRunId,
   settleInputRequest,
   waitForInputAnswer,
 } from "../src/inputMailbox.js";
+
+const TIMESTAMPED_RANDOM_ID_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{9}Z-[0-9a-f]{12}$/;
+
+test("newRunId uses the timestamped safe-id shape", () => {
+  assert.match(newRunId(), TIMESTAMPED_RANDOM_ID_PATTERN);
+});
 
 test("mailbox records can be listed, answered once, and filtered by status", async () => {
   const mailboxRoot = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-mailbox-"));

@@ -5,13 +5,15 @@ import path from "node:path";
 import { test } from "node:test";
 import { defaultConfigPath, loadConfig, loadConfigRecord } from "../src/config.js";
 import { modelHealthForClass } from "../src/modelHealth.js";
-import { stripAnsiAndControls } from "../src/output.js";
+import { stripAnsiAndControls, writeRunOutput } from "../src/output.js";
 import { resolvePiAgentDir } from "../src/piAgentDir.js";
 import { composePrompt } from "../src/prompt.js";
 import { computeTimeoutBudget } from "../src/timeoutBudget.js";
 import { ValidationError } from "../src/types.js";
 import { validateAndResolveRequest, validateSkillName } from "../src/validate.js";
 import { withEnv } from "./helpers/testUtils.js";
+
+const TIMESTAMPED_OUTPUT_BASENAME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{9}Z-[0-9a-f]{12}\.md$/;
 
 test("config path uses the shared Subagent007 state path shape", async () => {
   await withEnv({ SUBAGENT007_CONFIG_PATH: undefined }, async () => {
@@ -601,4 +603,12 @@ test("composes Pi skill invocation without wrapping ordinary prompts", () => {
 test("strips ANSI escape and control codes for Markdown output", () => {
   const cleaned = stripAnsiAndControls("\u001b[31mred\u001b[0m\0\nnext");
   assert.equal(cleaned, "red\nnext");
+});
+
+test("run output filenames use the timestamped safe-id shape", async () => {
+  const runsDir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-output-name-"));
+  const output = await writeRunOutput("content", runsDir);
+
+  assert.equal(path.dirname(output.outputPath), runsDir);
+  assert.match(path.basename(output.outputPath), TIMESTAMPED_OUTPUT_BASENAME_PATTERN);
 });

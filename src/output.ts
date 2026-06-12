@@ -23,9 +23,13 @@ export function defaultSessionsDir(): string {
 }
 
 function uniqueRunPath(runsDir: string): string {
+  return path.join(runsDir, `${timestampedRandomId()}.md`);
+}
+
+export function timestampedRandomId(): string {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "");
   const suffix = randomBytes(6).toString("hex");
-  return path.join(runsDir, `${timestamp}-${suffix}.md`);
+  return `${timestamp}-${suffix}`;
 }
 
 export function stripAnsiAndControls(input: string): string {
