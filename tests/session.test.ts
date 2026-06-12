@@ -423,9 +423,10 @@ test("run_subagent_session enforces cwd identity and immutable skill binding", a
       );
       assert.equal(created.requested_skill, "session-audit-skill");
       assert.equal(created.resolved_skill_path, fixture.sessionSkillPath);
-      assert.equal(created.resolved_skill_sha256, await sha256File(fixture.sessionSkillPath));
+      const sessionSkillSha256 = await sha256File(fixture.sessionSkillPath);
+      assert.equal(created.resolved_skill_sha256, sessionSkillSha256);
       assert.equal(created.run_record.resolved_skill_path, fixture.sessionSkillPath);
-      assert.equal(created.run_record.resolved_skill_sha256, await sha256File(fixture.sessionSkillPath));
+      assert.equal(created.run_record.resolved_skill_sha256, sessionSkillSha256);
 
       await assert.rejects(
         runSubagentSession(

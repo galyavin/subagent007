@@ -1496,9 +1496,41 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `npm test` passed 142/142.
 
+## Loop 95 - Shared Test Skill Fixture Writer
+
+Finding: `tests/run-subagent.test.ts`, `tests/session.test.ts`, and `tests/skill-resources.test.ts` each built the same test `SKILL.md` fixture shape: YAML frontmatter with `name` and `description`, a heading, and the same body. This is test-only fixture duplication, and the skill-resource test only differed by needing an explicit directory name.
+
+Behavior check: moving the writer into `tests/helpers/testUtils.ts` should not change externally observable server behavior because it touches only test fixture setup. It must preserve the exact file content and preserve existing fixture directories, including colon replacement for default skill directories and explicit directory overrides for skill-resource tests.
+
+Oracle: existing run-subagent, session, and skill-resource tests cover all call sites: direct skill resolution, normalized `skill_name`, auto-promoted skill-bound runs, named-session skill binding, and scoped skill-resource loading. No new pinning test is needed for a fixture relocation that preserves the existing assertions.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch attempted: exported `writeSkillFixture()` from `tests/helpers/testUtils.ts`, imported it in the three affected test files, removed their local duplicate fixture writers, and used an explicit `dirname` override where the old skill-resource fixture directory intentionally differed from the skill name.
+
+Targeted oracle result: failed at `npm run typecheck`; `tests/skill-resources.test.ts` still contained two `writeSkill(...)` calls in the ambiguity test, producing `TS2304: Cannot find name 'writeSkill'`.
+
+Reversion: reverted the fixture-writer sharing patch and kept the local test fixture writers. Do not retry this fixture-writer extraction in this campaign.
+
+## Loop 96 - Single Session Skill Hash Expectation
+
+Finding: `tests/session.test.ts` read and hashed the same skill fixture twice in adjacent assertions for the session result and its `run_record`. This was test-only duplication left after adding skill-audit metadata assertions.
+
+Behavior check: computing the expected SHA-256 once should not change externally observable server behavior because it only changes test expectation setup. It preserves both assertions and the exact byte-hash helper.
+
+Oracle: the existing named-session skill-binding test covers both affected assertions, and the full suite covers the broader skill-audit paths. No new pinning test is needed for a same-value test expectation local.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: introduced a `sessionSkillSha256` local in the session skill-binding test and reused it for both the terminal result and run-record assertions.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/session.test.ts` passed; targeted tests passed 12/12.
+
+Full oracle result: `npm test` passed 142/142.
+
 ## Current Constraints
 
-Loop status: continuing after Loop 94. The Loop 93 closure scan covered low-reference `src` functions, duplicated Subagent007 state-path construction, active TODO/dead/legacy markers, exported low-use helpers, and the failure-ledger guard scripts. Loop 94 addressed fresh test duplication introduced after that closure point.
+Loop status: continuing after Loop 96. The Loop 93 closure scan covered low-reference `src` functions, duplicated Subagent007 state-path construction, active TODO/dead/legacy markers, exported low-use helpers, and the failure-ledger guard scripts. Loops 94 through 96 addressed fresh test duplication introduced after that closure point.
 
 Remaining low-reference functions are intentionally retained because they are one of:
 
@@ -1507,4 +1539,4 @@ Remaining low-reference functions are intentionally retained because they are on
 - single-use but load-bearing policy boundaries where inlining would reduce auditability more than it removes waste;
 - standalone script-local path helpers that avoid coupling scripts to built `dist` output.
 
-The earlier default-ledger oracle constraint has been removed by the current test guard: when no `SUBAGENT007_FAILURE_LOG_PATH` is inherited, `scripts/run-tests-with-ledger-guard.mjs` now gives child tests a private temporary failure ledger. The current oracle for Loop 94 passed `npm run typecheck`, `git diff --check`, targeted run/session tests, and full `npm test` at 142/142.
+The earlier default-ledger oracle constraint has been removed by the current test guard: when no `SUBAGENT007_FAILURE_LOG_PATH` is inherited, `scripts/run-tests-with-ledger-guard.mjs` now gives child tests a private temporary failure ledger. The latest accepted loop, Loop 96, passed `npm run typecheck`, `git diff --check`, targeted session tests, and full `npm test` at 142/142.
