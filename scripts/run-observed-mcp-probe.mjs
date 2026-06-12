@@ -253,17 +253,16 @@ function coverageSummary(scenarios, mode, profileName, calls = []) {
     scenarios,
   };
   const callsByScenario = new Map(calls.map((call) => [call.scenario, call]));
-  const metadata = scenarios.map((scenario) => ({
-    scenario,
-    ...SCENARIO_REGISTRY[scenario],
-    evidence_class: evidenceClass,
-  })).map((scenario) => {
-    const call = callsByScenario.get(scenario.scenario);
-    const evidence_satisfied = scenario.result_classes.some((resultClass) =>
+  const metadata = scenarios.map((scenario) => {
+    const registryEntry = SCENARIO_REGISTRY[scenario];
+    const call = callsByScenario.get(scenario);
+    const evidence_satisfied = registryEntry.result_classes.some((resultClass) =>
       responseMatchesResultClass(call?.response, resultClass),
     );
     return {
-      ...scenario,
+      scenario,
+      ...registryEntry,
+      evidence_class: evidenceClass,
       evidence_satisfied,
       observed_result: call?.response ?? null,
     };

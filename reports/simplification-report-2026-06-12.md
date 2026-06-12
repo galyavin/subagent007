@@ -238,6 +238,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 16 - Single Observed Coverage Metadata Pass
+
+Finding: `coverageSummary` in `scripts/run-observed-mcp-probe.mjs` maps selected scenarios once to attach static registry metadata, then immediately maps the result again to attach call-derived evidence fields. This creates two passes and one intermediate metadata shape for one coverage-summary projection.
+
+Behavior check: combining the two maps should not change observable behavior if each output entry keeps the same field order and values: `scenario`, registry fields, `evidence_class`, `evidence_satisfied`, and `observed_result`.
+
+Oracle: existing observed campaign tests assert `full-current` coverage, covered/missing surfaces, per-scenario tool metadata, evidence classes, evidence satisfaction, and redaction observed results. No new pinning test is needed for this projection-only simplification.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: combined the two `coverageSummary` metadata maps into one pass while preserving the emitted scenario metadata fields.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/observed-campaign.test.ts` passed; targeted tests passed 14/14.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
