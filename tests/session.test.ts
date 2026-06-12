@@ -224,6 +224,63 @@ test("run_subagent_session fails closed on invalid persisted session state", asy
         ),
         /session manifest is invalid/,
       );
+
+      const invalidClass = await runSubagentSession(
+        {
+          cwd: fixture.projectDir,
+          prompt: "FAST",
+          session_key: "coherent-execution:T002-invalid-class",
+          model_class: "C",
+        },
+        { sessionsDir: fixture.sessionsDir },
+      );
+      const invalidClassManifest = JSON.parse(
+        await fs.readFile(invalidClass.manifest_path, "utf8"),
+      ) as Record<string, unknown>;
+      invalidClassManifest.initial_model_class = "Z";
+      await fs.writeFile(invalidClass.manifest_path, `${JSON.stringify(invalidClassManifest)}\n`);
+
+      await assert.rejects(
+        runSubagentSession(
+          {
+            cwd: fixture.projectDir,
+            prompt: "FAST",
+            session_key: "coherent-execution:T002-invalid-class",
+            model_class: "C",
+          },
+          { sessionsDir: fixture.sessionsDir },
+        ),
+        /session manifest is invalid/,
+      );
+
+      const invalidLedger = await runSubagentSession(
+        {
+          cwd: fixture.projectDir,
+          prompt: "FAST",
+          session_key: "coherent-execution:T002-invalid-ledger",
+          model_class: "C",
+        },
+        { sessionsDir: fixture.sessionsDir },
+      );
+      const records = await readJsonl<Record<string, unknown>>(invalidLedger.ledger_path);
+      records[0].resolved_model_class = "Z";
+      await fs.writeFile(
+        invalidLedger.ledger_path,
+        `${records.map((record) => JSON.stringify(record)).join("\n")}\n`,
+      );
+
+      await assert.rejects(
+        runSubagentSession(
+          {
+            cwd: fixture.projectDir,
+            prompt: "FAST",
+            session_key: "coherent-execution:T002-invalid-ledger",
+            model_class: "C",
+          },
+          { sessionsDir: fixture.sessionsDir },
+        ),
+        /session ledger is invalid/,
+      );
     },
   );
 });

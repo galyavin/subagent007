@@ -840,6 +840,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 129/129.
 
+## Loop 54 - Use Canonical Model Class Enum In Session Schemas
+
+Finding: `src/session.ts` still duplicates model-class choices in `sessionManifestSchema.initial_model_class` and `sessionRunRecordSchema.resolved_model_class` as `z.enum(["A", "B", "C", "D", "E"])` instead of using the canonical `MODEL_CLASSES` tuple.
+
+Behavior check: replacing both schema literals with `z.enum(MODEL_CLASSES)` should not change observable behavior because `MODEL_CLASSES` currently contains the same ordered values and is already accepted by other Zod schemas in `src/server.ts`.
+
+Oracle: existing session tests cover valid manifest and ledger records. Add direct invalid persisted manifest and ledger model-class assertions before replacing the schema literals.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added invalid persisted manifest and ledger model-class assertions, then replaced both session schema model-class literals with `z.enum(MODEL_CLASSES)`.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/session.test.ts` passed; targeted tests passed 11/11.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 129/129.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

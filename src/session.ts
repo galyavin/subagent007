@@ -16,6 +16,7 @@ import { createPromptProvenance } from "./prompt.js";
 import type { HeartbeatNotify } from "./progress.js";
 import { runSubagentCore } from "./runSubagent.js";
 import {
+  MODEL_CLASSES,
   OUTPUT_MODES,
   PACKET_PARSE_STATUSES,
   RESUME_MODES,
@@ -44,7 +45,7 @@ const sessionManifestSchema = z.object({
   skill: z.string().nullable(),
   initial_model: z.string(),
   initial_thinking_level: z.string(),
-  initial_model_class: z.enum(["A", "B", "C", "D", "E"]).optional(),
+  initial_model_class: z.enum(MODEL_CLASSES).optional(),
   subagent_session_id: z.string(),
   created_at: z.string(),
   last_run_at: z.string(),
@@ -81,7 +82,7 @@ const sessionRunRecordSchema = z.object({
   timeout_headroom_ms: z.number().int().nonnegative().optional(),
   kill_grace_ms: z.number().int().nonnegative().optional(),
   force_grace_ms: z.number().int().nonnegative().optional(),
-  resolved_model_class: z.enum(["A", "B", "C", "D", "E"]).optional(),
+  resolved_model_class: z.enum(MODEL_CLASSES).optional(),
   resolved_model: z.string(),
   resolved_thinking_level: z.string(),
   requested_skill: z.string().nullable(),
