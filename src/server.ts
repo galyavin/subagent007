@@ -115,6 +115,7 @@ async function preflightRejectedResult(
   error: ValidationError,
 ): Promise<PreflightRejectedResult> {
   const reasonCode = failureReasonCodeForError(error);
+  const retryGuidance = preflightRetryGuidance(error.message);
   await logFailure({
     tool,
     failure_class: "validation_error",
@@ -130,9 +131,7 @@ async function preflightRejectedResult(
     error_class: "validation_error",
     reason_code: reasonCode,
     message: error.message,
-    ...(preflightRetryGuidance(error.message)
-      ? { retry_guidance: preflightRetryGuidance(error.message) }
-      : {}),
+    ...(retryGuidance ? { retry_guidance: retryGuidance } : {}),
   };
 }
 

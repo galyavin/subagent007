@@ -852,6 +852,10 @@ test("MCP run_subagent rejects skill-bound one-shot work before invoking the chi
     assert.notEqual(response.isError, true);
     assert.equal((response.structuredContent as { kind?: string }).kind, "preflight_rejected");
     assert.equal((response.structuredContent as { child_started?: boolean }).child_started, false);
+    assert.match(
+      (response.structuredContent as { retry_guidance?: string }).retry_guidance ?? "",
+      /Use schedule_run or start_run/,
+    );
     const content = response.content as Array<{ type: string; text?: string }>;
     assert.match(
       content[0]?.type === "text" ? (content[0].text ?? "") : "",

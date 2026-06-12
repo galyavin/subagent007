@@ -16,6 +16,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `npm test` passed 125/125.
 
+## Loop 4 - Single Preflight Retry Guidance Classification
+
+Finding: `preflightRejectedResult` in `src/server.ts` calls `preflightRetryGuidance(error.message)` twice while constructing one structured rejection result. This duplicates message classification in a public error path and makes later guidance changes easier to desynchronize.
+
+Behavior check: computing the guidance once and conditionally spreading the local value should not change observable behavior. It must preserve omission when no guidance applies and preserve the exact `retry_guidance` string when it does apply.
+
+Oracle: the existing skill-bound `run_subagent` preflight test covers the rejection path but did not assert `retry_guidance`. Add a pinning assertion for that public structured field before patching the implementation.
+
+Decision: add the pinning assertion and patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added a structured `retry_guidance` assertion to the skill-bound `run_subagent` preflight test, then computed `preflightRetryGuidance(error.message)` once in `preflightRejectedResult`.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts` passed; targeted tests passed 41/41.
+
+Full oracle result: `npm test` passed 125/125.
+
 Patch: added `handleTaskHeartbeat` and replaced the three repeated heartbeat callbacks with calls to that helper. The helper preserves the prior order: phase update, progress update, snapshot write, then optional heartbeat notification forwarding.
 
 Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts` passed; targeted lifecycle tests passed 41/41.
