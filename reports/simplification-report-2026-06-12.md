@@ -1546,7 +1546,9 @@ Full oracle result: `npm test` passed 142/142.
 
 ## Current Constraints
 
-Loop status: continuing after Loop 97. The Loop 93 closure scan covered low-reference `src` functions, duplicated Subagent007 state-path construction, active TODO/dead/legacy markers, exported low-use helpers, and the failure-ledger guard scripts. Loops 94 through 97 addressed fresh test duplication introduced after that closure point.
+Loop status: closed after Loop 97. The Loop 93 closure scan covered low-reference `src` functions, duplicated Subagent007 state-path construction, active TODO/dead/legacy markers, exported low-use helpers, and the failure-ledger guard scripts. Loops 94 through 97 addressed fresh test duplication introduced after that closure point.
+
+Final closure scan after Loop 97 inspected changed files since the earlier closure commit (`README.md`, `scripts/run-tests-with-ledger-guard.mjs`, `src/piChild.ts`, `src/runSubagent.ts`, `src/runTask.ts`, `src/session.ts`, `src/skillResources.ts`, `src/types.ts`, and the affected tests), searched fresh skill-audit and ledger-guard helpers, and ran a low-reference helper pass over changed `src`, `scripts`, and `tests` files. No remaining material, risk-free simplification survived the preservation check.
 
 Remaining low-reference functions are intentionally retained because they are one of:
 
@@ -1554,5 +1556,11 @@ Remaining low-reference functions are intentionally retained because they are on
 - compatibility or defensive readers for persisted state and historical records;
 - single-use but load-bearing policy boundaries where inlining would reduce auditability more than it removes waste;
 - standalone script-local path helpers that avoid coupling scripts to built `dist` output.
+
+Remaining observed duplication is intentionally not patched in this campaign:
+
+- The `writeSkillFixture()` / `writeSkill()` fixture-writer duplication was attempted in Loop 95, failed typecheck, was reverted, and is now non-retry by the campaign rule.
+- Skill audit fields are projected into both terminal results and session run records because those are distinct public/persisted surfaces; extracting that projection would risk field-order, schema, or compatibility churn for little simplification.
+- Cross-file CLI test helpers such as `execFileAsync` wrappers are local to standalone test files; centralizing them would be broader than the current low-risk loop and was not necessary to preserve product behavior.
 
 The earlier default-ledger oracle constraint has been removed by the current test guard: when no `SUBAGENT007_FAILURE_LOG_PATH` is inherited, `scripts/run-tests-with-ledger-guard.mjs` now gives child tests a private temporary failure ledger. The latest accepted loop, Loop 97, passed `npm run typecheck`, `git diff --check`, targeted ledger-guard tests, and full `npm test` at 142/142.
