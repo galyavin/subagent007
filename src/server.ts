@@ -100,9 +100,6 @@ function withRunFailureLogging<TRequest, TResult>(
 }
 
 function preflightRetryGuidance(message: string): string | undefined {
-  if (message.includes("incompatible with run_subagent's quick_noninteractive contract")) {
-    return "Use schedule_run or start_run with explicit timeout_ms for broad, exploratory, skill-bound, cancellable, polling, or long-running work.";
-  }
   if (message.includes("timeout_ms is not supported by run_subagent")) {
     return "Use schedule_run or start_run for timed work.";
   }

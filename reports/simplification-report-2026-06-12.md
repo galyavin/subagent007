@@ -1208,6 +1208,22 @@ Targeted oracle result: `npm run typecheck`, `npm run build`, `node scripts/run-
 
 Full oracle result: `npm test` passed 136/136.
 
+## Loop 77 - Remove Dead Incompatibility Retry Guidance Branch
+
+Finding: after Loop 76, `rg` showed no source producer for the old ValidationError message `incompatible with run_subagent's quick_noninteractive contract`. `src/server.ts` still had a private `preflightRetryGuidance()` branch for that removed message, so the active preflight guidance logic retained a dead policy route.
+
+Behavior check: removing only the private server retry-guidance branch should not change observable MCP behavior because no current handler throws that message. The failure-log classifier branch for `run_subagent_incompatible_workload` remains because it is exported defensive/historical classification code.
+
+Oracle: existing failure-log and run-subagent tests cover current preflight rejection behavior, schema-level `timeout_ms` guidance, auto-promotion, and invalid inputs. No new pinning test was needed for a private unreachable branch removal.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: removed the unreachable incompatibility-message branch from `preflightRetryGuidance()` in `src/server.ts`.
+
+Targeted oracle result: `npm run typecheck`, `npm run build`, `node scripts/run-tests-with-ledger-guard.mjs tests/failure-log.test.ts`, and `node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts` passed; targeted tests passed 57/57.
+
+Full oracle result: `npm test` passed 136/136.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle has historically had an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run; the latest sequential `npm test` completed cleanly, but the constraint is still part of the oracle design.
