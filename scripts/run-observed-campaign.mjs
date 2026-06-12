@@ -105,12 +105,15 @@ async function stateRootFor(campaignId, configuredRoot) {
   return fs.mkdtemp(path.join(os.tmpdir(), `subagent007-pi-${pathToken(campaignId)}-`));
 }
 
-function spawnAsync(command, args, options) {
+function waitForChildExit(child) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, options);
     child.on("error", reject);
     child.on("exit", (code, signal) => resolve({ code, signal }));
   });
+}
+
+function spawnAsync(command, args, options) {
+  return waitForChildExit(spawn(command, args, options));
 }
 
 async function archiveFailureLog(env) {
@@ -127,10 +130,7 @@ async function archiveFailureLog(env) {
   child.stderr.on("data", (chunk) => {
     stderr += chunk.toString();
   });
-  const result = await new Promise((resolve, reject) => {
-    child.on("error", reject);
-    child.on("exit", (code, signal) => resolve({ code, signal }));
-  });
+  const result = await waitForChildExit(child);
   if (result.signal || result.code !== 0) {
     return {
       ok: false,
