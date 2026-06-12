@@ -374,6 +374,10 @@ async function finalizeRunTask(state: RunTaskState, closeReason: string): Promis
   await writeTaskSnapshot(await getRunTask(state.runId));
 }
 
+function durableTaskCloseReason(state: RunTaskState): string {
+  return state.cancelRequested ? "run cancelled" : "run reached a terminal state";
+}
+
 async function logBackgroundHandlerError(
   tool: Extract<FailureLogTool, "run_subagent" | "start_run" | "start_session_run">,
   request: RunSubagentRequest | RunSubagentSessionRequest,
@@ -641,10 +645,7 @@ export async function startRunTask(
       state.error = error as Error;
       await logBackgroundHandlerError("start_run", request, error);
     } finally {
-      await finalizeRunTask(
-        state,
-        state.cancelRequested ? "run cancelled" : "run reached a terminal state",
-      );
+      await finalizeRunTask(state, durableTaskCloseReason(state));
     }
   })();
 
@@ -734,10 +735,7 @@ export async function startSessionRunTask(
       state.error = error as Error;
       await logBackgroundHandlerError("start_session_run", request, error);
     } finally {
-      await finalizeRunTask(
-        state,
-        state.cancelRequested ? "run cancelled" : "run reached a terminal state",
-      );
+      await finalizeRunTask(state, durableTaskCloseReason(state));
     }
   })();
 
