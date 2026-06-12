@@ -618,6 +618,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 40 - Single Session Failure Input View
+
+Finding: after Loop 38, `runSubagentSession` still constructs the same `{ ...result, session_established: attemptSessionEstablished }` object twice when passing session failure input to `failureClassForSessionResult` and `failureReasonCodeForSessionResult`.
+
+Behavior check: storing this failure input view in a local should not change observable behavior because the same object shape and values are passed to the same exported failure-log projection wrappers.
+
+Oracle: failure-log and session tests cover session failure records for missing session, packet failure, timeout, and non-ready packet resumes. No new pinning test is needed for this local duplicate construction removal.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: introduced a `failureInput` local in `runSubagentSession` and reused it for session failure class and reason-code projection.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/failure-log.test.ts tests/session.test.ts` passed; targeted tests passed 24/24.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

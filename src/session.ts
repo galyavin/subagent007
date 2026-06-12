@@ -730,16 +730,11 @@ export async function runSubagentSession(
       ),
     };
     if (!result.success && result.run_record.stop_reason !== "cancelled") {
+      const failureInput = { ...result, session_established: attemptSessionEstablished };
       await logFailure({
         tool: "run_subagent_session",
-        failure_class: failureClassForSessionResult(
-          { ...result, session_established: attemptSessionEstablished },
-          packetIsSatisfied,
-        ),
-        reason_code: failureReasonCodeForSessionResult(
-          { ...result, session_established: attemptSessionEstablished },
-          packetIsSatisfied,
-        ),
+        failure_class: failureClassForSessionResult(failureInput, packetIsSatisfied),
+        reason_code: failureReasonCodeForSessionResult(failureInput, packetIsSatisfied),
         cwd,
         output_path: result.output_path,
         session_key: result.session_key,
