@@ -746,6 +746,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 48 - Single Timeout Validation Reason Branch
+
+Finding: `failureReasonCodeForError` in `src/failureLog.ts` has two adjacent branches returning `invalid_timeout_ms`: one for "timeout_ms must be at least" and one for "timeout_ms must be a positive integer". They are one reason-code classification with two message patterns.
+
+Behavior check: combining those adjacent predicates should not change observable behavior if both messages still map to `invalid_timeout_ms` and the later `timeout_ms is not supported by run_subagent` branch still maps to `run_subagent_timeout_unsupported`.
+
+Oracle: existing tests cover the function but only directly assert tool-profile mapping. Add focused reason-code assertions for both invalid-timeout messages before combining the duplicate branches.
+
+Decision: patch minimally after adding the missing pinning assertions. If any test fails, revert this loop and do not retry it.
+
+Patch: added direct invalid-timeout reason-code assertions and combined the adjacent invalid-timeout message predicates in `failureReasonCodeForError`.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/failure-log.test.ts tests/validation.test.ts` passed; targeted tests passed 33/33.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 126/126.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

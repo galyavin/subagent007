@@ -44,6 +44,17 @@ test("failure reason mapping classifies tool profile validation precisely", () =
   );
 });
 
+test("failure reason mapping classifies timeout validation precisely", () => {
+  assert.equal(
+    failureReasonCodeForError(new ValidationError("timeout_ms must be a positive integer when provided")),
+    "invalid_timeout_ms",
+  );
+  assert.equal(
+    failureReasonCodeForError(new ValidationError("timeout_ms must be at least 7001 ms with the configured response headroom and kill grace")),
+    "invalid_timeout_ms",
+  );
+});
+
 async function withFakeClient<T>(
   run: (client: Client, dirs: { projectDir: string; failureLogPath: string }) => Promise<T>,
   extraEnv: Record<string, string> = {},

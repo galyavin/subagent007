@@ -245,8 +245,9 @@ export function failureReasonCodeForError(error: unknown): FailureReasonCode {
   if (message.includes("cwd must be a directory")) return "cwd_not_directory";
   if (message.includes("prompt must be a nonempty string")) return "prompt_missing";
   if (message.includes("default_model_class is not configured")) return "config_missing_default_model_class";
-  if (message.includes("timeout_ms must be at least")) return "invalid_timeout_ms";
-  if (message.includes("timeout_ms must be a positive integer")) return "invalid_timeout_ms";
+  if (message.includes("timeout_ms must be at least") || message.includes("timeout_ms must be a positive integer")) {
+    return "invalid_timeout_ms";
+  }
   if (message.includes("timeout_ms is not supported by run_subagent")) {
     return "run_subagent_timeout_unsupported";
   }
