@@ -286,6 +286,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 19 - Single Run Task Heartbeat Callback Adapter
+
+Finding: `src/runTask.ts` repeats the same child heartbeat callback wrapper in `startRunTask`, `startSessionRunTask`, and `runSubagentOneShotTask`: call `handleTaskHeartbeat(state, beat, message, options.heartbeat)`. The heartbeat transition and snapshot behavior is already centralized, but each launch path still hand-rolls the adapter passed to child/session execution.
+
+Behavior check: extracting the wrapper into a helper should not change observable behavior if each caller still creates the callback inside its task closure, closes over the same `state`, forwards the same optional heartbeat notifier, and preserves the same returned promise.
+
+Oracle: existing run lifecycle and timeout tests cover heartbeats, active progress transitions, snapshot writes, one-shot timeout recovery, session task startup, and heartbeat cleanup. No new pinning test is needed for this adapter-only simplification.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added `taskHeartbeatHandler` and reused it from the three run task launch paths that pass heartbeat callbacks to child or session execution.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts tests/session.test.ts tests/timeout-budget.test.ts` passed; targeted tests passed 59/59.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

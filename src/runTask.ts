@@ -283,6 +283,10 @@ async function handleTaskHeartbeat(
   await notify?.(beat, message);
 }
 
+function taskHeartbeatHandler(state: RunTaskState, notify?: HeartbeatNotify): HeartbeatNotify {
+  return (beat, message) => handleTaskHeartbeat(state, beat, message, notify);
+}
+
 async function appendRunStartedEvent(
   state: RunTaskState,
   request: RunSubagentRequest | RunSubagentSessionRequest,
@@ -625,9 +629,7 @@ export async function startRunTask(
         runsDir: options.runsDir,
         failureLogTool: "start_run",
         allowTimeout: true,
-        heartbeat: async (beat, message) => {
-          await handleTaskHeartbeat(state, beat, message, options.heartbeat);
-        },
+        heartbeat: taskHeartbeatHandler(state, options.heartbeat),
         heartbeatIntervalMs: options.heartbeatIntervalMs,
         abortSignal: state.abortController.signal,
         onOutputLine: (line) => observeOutputLine(state, line),
@@ -717,9 +719,7 @@ export async function startSessionRunTask(
       await prepareChildRun(state);
       state.result = await runSubagentSession(request, {
         sessionsDir: options.sessionsDir,
-        heartbeat: async (beat, message) => {
-          await handleTaskHeartbeat(state, beat, message, options.heartbeat);
-        },
+        heartbeat: taskHeartbeatHandler(state, options.heartbeat),
         heartbeatIntervalMs: options.heartbeatIntervalMs,
         abortSignal: state.abortController.signal,
         mailboxRoot: state.mailboxRoot,
@@ -782,9 +782,7 @@ export async function runSubagentOneShotTask(
         mailboxRoot: state.mailboxRoot,
         runsDir: options.runsDir,
         failureLogTool: "run_subagent",
-        heartbeat: async (beat, message) => {
-          await handleTaskHeartbeat(state, beat, message, options.heartbeat);
-        },
+        heartbeat: taskHeartbeatHandler(state, options.heartbeat),
         heartbeatIntervalMs: options.heartbeatIntervalMs,
         abortSignal: state.abortController.signal,
         onOutputLine: (line) => observeOutputLine(state, line),
