@@ -178,6 +178,13 @@ function jsonToolResult<TStructured extends Record<string, unknown>>(
   };
 }
 
+function taskHeartbeatOptions(extra: ServerExtra) {
+  return {
+    heartbeat: heartbeatFromExtra(extra),
+    heartbeatIntervalMs: heartbeatIntervalMsFromEnv(),
+  };
+}
+
 const continuitySchema = z.discriminatedUnion("mode", [
   z.strictObject({ mode: z.literal("ephemeral") }),
   z.strictObject({ mode: z.literal("fresh") }),
@@ -345,10 +352,7 @@ server.registerTool(
     inputSchema: scheduleRunInputSchema,
   },
   withPreflightRejection("schedule_run", async (request, extra) =>
-    scheduleRunTask(request, {
-      heartbeat: heartbeatFromExtra(extra),
-      heartbeatIntervalMs: heartbeatIntervalMsFromEnv(),
-    }),
+    scheduleRunTask(request, taskHeartbeatOptions(extra)),
   ),
 );
 
@@ -361,10 +365,7 @@ server.registerTool(
     inputSchema: startRunInputSchema,
   },
   withPreflightRejection("start_run", async (request, extra) =>
-    startRunTask(request, {
-      heartbeat: heartbeatFromExtra(extra),
-      heartbeatIntervalMs: heartbeatIntervalMsFromEnv(),
-    }),
+    startRunTask(request, taskHeartbeatOptions(extra)),
   ),
 );
 
@@ -430,10 +431,7 @@ server.registerTool(
     inputSchema: runInputSchema,
   },
   withPreflightRejection("run_subagent", async (request, extra) =>
-    runSubagentOneShotTask(request, {
-      heartbeat: heartbeatFromExtra(extra),
-      heartbeatIntervalMs: heartbeatIntervalMsFromEnv(),
-    }),
+    runSubagentOneShotTask(request, taskHeartbeatOptions(extra)),
   ),
 );
 
@@ -446,10 +444,7 @@ server.registerTool(
     inputSchema: runSessionInputSchema,
   },
   withPreflightRejection("start_session_run", async (request, extra) =>
-    startSessionRunTask(request, {
-      heartbeat: heartbeatFromExtra(extra),
-      heartbeatIntervalMs: heartbeatIntervalMsFromEnv(),
-    }),
+    startSessionRunTask(request, taskHeartbeatOptions(extra)),
   ),
 );
 
@@ -462,10 +457,7 @@ server.registerTool(
     inputSchema: runSessionInputSchema,
   },
   withPreflightRejection("run_subagent_session", async (request, extra) =>
-    runSubagentSessionTaskAndWait(request, {
-      heartbeat: heartbeatFromExtra(extra),
-      heartbeatIntervalMs: heartbeatIntervalMsFromEnv(),
-    }),
+    runSubagentSessionTaskAndWait(request, taskHeartbeatOptions(extra)),
   ),
 );
 

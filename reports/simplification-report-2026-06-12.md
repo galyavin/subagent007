@@ -270,6 +270,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 18 - Single Server Heartbeat Options Adapter
+
+Finding: `src/server.ts` repeats the same task heartbeat options object in five MCP handlers: `heartbeat: heartbeatFromExtra(extra)` plus `heartbeatIntervalMs: heartbeatIntervalMsFromEnv()`. This is one server-to-task adapter duplicated across durable, one-shot, and session tool registrations.
+
+Behavior check: extracting the object construction into a helper should not change observable behavior if the helper is called inside each handler, preserving per-call lookup of `extra` and the heartbeat interval environment value.
+
+Oracle: existing MCP run lifecycle and timeout tests cover run tool registration, durable starts, one-shot timeout recovery, session starts, heartbeat progress, and heartbeat interval environment parsing. No new pinning test is needed for this adapter extraction.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added `taskHeartbeatOptions` and reused it from the five server handlers that start one-shot, durable, scheduled, or session tasks.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts tests/session.test.ts tests/timeout-budget.test.ts` passed; targeted tests passed 59/59.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
