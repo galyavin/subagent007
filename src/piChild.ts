@@ -22,6 +22,7 @@ interface PiChildRequest {
   model: string;
   thinkingLevel: ThinkingLevel;
   skill?: string;
+  skillFilePath?: string;
   outputMode: OutputMode;
   toolProfile?: ToolProfile;
   outputLastMessagePath?: string;
@@ -173,6 +174,7 @@ async function main(): Promise<void> {
     cwd: request.cwd,
     agentDir,
     skill: request.skill,
+    skillFilePath: request.skillFilePath,
   });
   const authStorage = AuthStorage.create(path.join(agentDir, "auth.json"));
   const modelRegistry = ModelRegistry.create(authStorage, path.join(agentDir, "models.json"));

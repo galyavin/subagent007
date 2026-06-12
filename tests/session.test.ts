@@ -14,11 +14,15 @@ async function createSessionFixture(): Promise<{
   failureLogPath: string;
   fakeChildPath: string;
   fakeLogPath: string;
+  skillsRoot: string;
+  pdaLiteSkillPath: string;
 }> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-session-"));
   const projectDir = path.join(tmp, "project");
   const sessionsDir = path.join(tmp, "sessions");
   const failureLogPath = path.join(tmp, "failures.jsonl");
+  const skillsRoot = path.join(tmp, "skills");
+  const pdaLiteSkillPath = await writeSkillFixture(skillsRoot, "pda-lite");
   const fake = await createFakePiChild();
   await fs.mkdir(projectDir, { recursive: true });
   return {
@@ -27,7 +31,31 @@ async function createSessionFixture(): Promise<{
     failureLogPath,
     fakeChildPath: fake.childPath,
     fakeLogPath: fake.logPath,
+    skillsRoot,
+    pdaLiteSkillPath,
   };
+}
+
+async function writeSkillFixture(root: string, name: string): Promise<string> {
+  const skillDir = path.join(root, name.replace(/:/g, "__"));
+  const skillPath = path.join(skillDir, "SKILL.md");
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.writeFile(
+    skillPath,
+    [
+      "---",
+      `name: ${name}`,
+      `description: Test skill ${name}`,
+      "---",
+      "",
+      `# ${name}`,
+      "",
+      "Use only for tests.",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  return skillPath;
 }
 
 test("run_subagent_session rejects raw session_id", async () => {
@@ -37,6 +65,7 @@ test("run_subagent_session rejects raw session_id", async () => {
       SUBAGENT007_PI_CHILD_PATH: fixture.fakeChildPath,
       FAKE_PI_LOG_PATH: fixture.fakeLogPath,
       SUBAGENT007_FAILURE_LOG: "off",
+      SUBAGENT007_PI_SKILL_PATHS: fixture.skillsRoot,
     },
     async () => {
       await assert.rejects(

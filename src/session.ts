@@ -14,7 +14,7 @@ import { defaultSessionsDir } from "./output.js";
 import { appendContractPacketInstruction, extractContractPacket } from "./packet.js";
 import { createPromptProvenance } from "./prompt.js";
 import type { HeartbeatNotify } from "./progress.js";
-import { runSubagentCore } from "./runSubagent.js";
+import { resolveSkillFilePathForRequest, runSubagentCore } from "./runSubagent.js";
 import {
   MODEL_CLASSES,
   OUTPUT_MODES,
@@ -554,6 +554,7 @@ export async function runSubagentSession(
   const resolvedBase = await validateAndResolveRequest(request, config);
   const cwd = await fs.realpath(resolvedBase.cwd);
   const resolved = { ...resolvedBase, cwd };
+  const skillFilePath = resolveSkillFilePathForRequest(resolved);
   const packetPrompt = packetPolicy === "none"
     ? resolved.prompt
     : appendContractPacketInstruction(resolved.prompt);
@@ -607,6 +608,7 @@ export async function runSubagentSession(
       abortSignal: options.abortSignal,
       onOutputLine: options.onOutputLine,
       promptProvenance,
+      skillFilePath,
     });
     const outputText = await fs.readFile(runResult.output_path, "utf8");
     const attemptSubagentSessionId = attemptSession.runManifest?.subagent_session_id ?? runResult.session_id;

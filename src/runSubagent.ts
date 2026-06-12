@@ -21,9 +21,12 @@ import { createPromptProvenance } from "./prompt.js";
 import { runChildProcess } from "./processRunner.js";
 import type { HeartbeatNotify } from "./progress.js";
 import { computeTimeoutBudget } from "./timeoutBudget.js";
+import { resolvePiAgentDir } from "./piAgentDir.js";
+import { resolveRequestedSkill } from "./skillResources.js";
 import type {
   OutputMode,
   PromptProvenance,
+  ResolvedRunSubagentRequest,
   RunContinuity,
   RunSubagentRequest,
   RunSubagentResult,
@@ -47,6 +50,7 @@ interface PiChildRequestFile {
   model: string;
   thinkingLevel: string;
   skill?: string;
+  skillFilePath?: string;
   outputMode: OutputMode;
   toolProfile: ToolProfile;
   outputLastMessagePath?: string;
@@ -184,6 +188,18 @@ export function partialOutputAvailableForRun(input: {
   );
 }
 
+export function resolveSkillFilePathForRequest(
+  resolved: Pick<ResolvedRunSubagentRequest, "cwd" | "skill">,
+): string | undefined {
+  if (!resolved.skill) {
+    return undefined;
+  }
+  return resolveRequestedSkill(resolved.skill, {
+    cwd: resolved.cwd,
+    agentDir: resolvePiAgentDir(),
+  }).filePath;
+}
+
 export async function runSubagentCore(
   request: RunSubagentRequest,
   options: {
@@ -199,6 +215,7 @@ export async function runSubagentCore(
     abortSignal?: AbortSignal;
     onOutputLine?: (line: string) => void | Promise<void>;
     promptProvenance?: PromptProvenance;
+    skillFilePath?: string;
   } = {},
 ): Promise<RunSubagentResult> {
   if (!options.allowTimeout && request.timeout_ms !== undefined) {
@@ -206,6 +223,7 @@ export async function runSubagentCore(
   }
   const config = await loadConfig();
   const resolved = await validateAndResolveRequest(request, config);
+  const skillFilePath = options.skillFilePath ?? resolveSkillFilePathForRequest(resolved);
   const runId = options.runId ?? newRunId();
   const mailboxRoot = options.mailboxRoot ?? defaultInputRequestsDir();
   const inputRequestsDir = path.join(mailboxRoot, runId);
@@ -228,6 +246,7 @@ export async function runSubagentCore(
       model: resolved.model,
       thinkingLevel: resolved.thinkingLevel,
       skill: resolved.skill,
+      skillFilePath,
       outputMode: resolved.outputMode,
       toolProfile: resolved.toolProfile,
       outputLastMessagePath: finalMessageTarget.outputLastMessagePath,

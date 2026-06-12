@@ -6,6 +6,7 @@ import {
   loadSkills,
   type Skill,
 } from "@earendil-works/pi-coding-agent";
+import { ValidationError } from "./types.js";
 
 interface SkillCollisionDiagnostic {
   collision?: {
@@ -18,6 +19,7 @@ export interface SkillResourceOptions {
   cwd: string;
   agentDir: string;
   skill?: string;
+  skillFilePath?: string;
   lookupPaths?: string[];
 }
 
@@ -43,7 +45,7 @@ function collisionName(diagnostic: unknown): string | undefined {
 }
 
 function ambiguousSkillError(skillName: string): Error {
-  return new Error(
+  return new ValidationError(
     `skill ${JSON.stringify(skillName)} is ambiguous across configured Subagent007 skill paths`,
   );
 }
@@ -61,7 +63,7 @@ export function resolveRequestedSkill(skillName: string, options: Omit<SkillReso
 
   const matches = result.skills.filter((skill) => skill.name === skillName);
   if (matches.length === 0) {
-    throw new Error(
+    throw new ValidationError(
       `unknown skill ${JSON.stringify(skillName)}; requested skills must resolve to exactly one configured Subagent007 skill`,
     );
   }
@@ -72,6 +74,9 @@ export function resolveRequestedSkill(skillName: string, options: Omit<SkillReso
 }
 
 export function skillResourcePathsForRequest(options: SkillResourceOptions): string[] {
+  if (options.skillFilePath) {
+    return [options.skillFilePath];
+  }
   if (!options.skill) {
     return [];
   }

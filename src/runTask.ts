@@ -12,6 +12,7 @@ import {
 } from "./inputMailbox.js";
 import {
   runSubagentCore,
+  resolveSkillFilePathForRequest,
   RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT,
 } from "./runSubagent.js";
 import {
@@ -43,6 +44,7 @@ import {
 } from "./validate.js";
 import { defaultSubagentStatePath } from "./output.js";
 import { assertModelClassUsableForOneShot } from "./modelHealth.js";
+import { safeIntegerFromEnv } from "./env.js";
 
 export type RunTaskStatus =
   | "working"
@@ -82,6 +84,9 @@ export interface RunTaskView extends Partial<RunSubagentResult>, Partial<RunSuba
   last_phase_at?: string;
   recent_events?: RunPublicEvent[];
   last_public_output_excerpt?: string;
+  requested_wait_ms?: number;
+  effective_wait_ms?: number;
+  wait_truncated?: boolean;
   error?: string;
 }
 
@@ -123,6 +128,8 @@ type RunTaskProgressView = Pick<
 
 const tasks = new Map<string, RunTaskState>();
 const DEFAULT_SCHEDULE_WAIT_MS = 1_000;
+const DEFAULT_SCHEDULE_MAX_WAIT_MS = 30_000;
+const SCHEDULE_MAX_WAIT_ENV = "SUBAGENT007_SCHEDULE_RUN_MAX_WAIT_MS";
 const PROMOTED_RUN_WAIT_MS = DEFAULT_SCHEDULE_WAIT_MS;
 
 function defaultRunTasksDir(): string {
@@ -626,7 +633,8 @@ export async function startRunTask(
   } = {},
 ): Promise<RunTaskView> {
   const config = await loadConfig();
-  await validateAndResolveRequest(request, config);
+  const resolved = await validateAndResolveRequest(request, config);
+  const skillFilePath = resolveSkillFilePathForRequest(resolved);
 
   const state = createRunTaskState("run");
   await registerRunTaskState(state, request);
@@ -640,6 +648,7 @@ export async function startRunTask(
         runsDir: options.runsDir,
         failureLogTool: "start_run",
         allowTimeout: true,
+        skillFilePath,
         ...taskChildRuntimeOptions(state, options),
       });
     } catch (error) {
@@ -666,6 +675,35 @@ function scheduleWaitMs(value: unknown): number {
     throw new ValidationError("wait_ms must be a nonnegative integer when provided");
   }
   return value;
+}
+
+function maxScheduleWaitMs(): number {
+  return safeIntegerFromEnv(SCHEDULE_MAX_WAIT_ENV, DEFAULT_SCHEDULE_MAX_WAIT_MS, 0);
+}
+
+function scheduleWaitPolicy(requestedWaitMs: number): {
+  requestedWaitMs: number;
+  effectiveWaitMs: number;
+  waitTruncated: boolean;
+} {
+  const effectiveWaitMs = Math.min(requestedWaitMs, maxScheduleWaitMs());
+  return {
+    requestedWaitMs,
+    effectiveWaitMs,
+    waitTruncated: effectiveWaitMs !== requestedWaitMs,
+  };
+}
+
+function withScheduleWaitMetadata(
+  view: RunTaskView,
+  policy: ReturnType<typeof scheduleWaitPolicy>,
+): RunTaskView {
+  return {
+    ...view,
+    requested_wait_ms: policy.requestedWaitMs,
+    effective_wait_ms: policy.effectiveWaitMs,
+    wait_truncated: policy.waitTruncated,
+  };
 }
 
 function isScheduleReturnableStatus(status: RunTaskStatus): boolean {
@@ -697,10 +735,14 @@ export async function scheduleRunTask(
   } = {},
 ): Promise<RunTaskView> {
   const waitMs = scheduleWaitMs(request.wait_ms);
+  const waitPolicy = scheduleWaitPolicy(waitMs);
   const runRequest = { ...request };
   delete runRequest.wait_ms;
   const started = await startRunTask(runRequest, options);
-  return waitForReturnableRun(started, waitMs);
+  return withScheduleWaitMetadata(
+    await waitForReturnableRun(started, waitPolicy.effectiveWaitMs),
+    waitPolicy,
+  );
 }
 
 export async function startSessionRunTask(
@@ -776,6 +818,7 @@ function runSubagentResultWithConcreteTimeoutRecoveryHint(
 async function runSubagentPromotedTask(
   request: RunSubagentRequest,
   incompatibility: RunSubagentOneShotIncompatibility,
+  skillFilePath: string | undefined,
   options: {
     runsDir?: string;
     heartbeat?: HeartbeatNotify;
@@ -810,6 +853,7 @@ async function runSubagentPromotedTask(
         runsDir: options.runsDir,
         failureLogTool: "run_subagent",
         // Promoted run_subagent keeps the one-shot internal timeout cap.
+        skillFilePath,
         ...taskChildRuntimeOptions(state, options),
       });
       state.result = {
@@ -840,9 +884,10 @@ export async function runSubagentOneShotTask(
   }
   const config = await loadConfig();
   const resolved = await validateAndResolveRequest(request, config);
+  const skillFilePath = resolveSkillFilePathForRequest(resolved);
   const incompatibility = runSubagentOneShotIncompatibility(request, resolved);
   if (incompatibility) {
-    return runSubagentPromotedTask(request, incompatibility, options);
+    return runSubagentPromotedTask(request, incompatibility, skillFilePath, options);
   }
   await assertModelClassUsableForOneShot(resolved.modelClass);
 
@@ -857,6 +902,7 @@ export async function runSubagentOneShotTask(
         mailboxRoot: state.mailboxRoot,
         runsDir: options.runsDir,
         failureLogTool: "run_subagent",
+        skillFilePath,
         ...taskChildRuntimeOptions(state, options),
       });
     } catch (error) {

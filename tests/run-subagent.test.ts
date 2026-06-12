@@ -37,6 +37,9 @@ type RunSubagentMetadata = {
   last_phase_at?: string;
   recent_events?: Array<{ kind: string; event?: string; text: string; occurred_at: string }>;
   last_public_output_excerpt?: string;
+  requested_wait_ms?: number;
+  effective_wait_ms?: number;
+  wait_truncated?: boolean;
   auto_promoted_from?: "run_subagent";
   promotion_reason_code?: "skill_bound" | "prompt_too_long" | "broad_work" | "workspace_write";
   promotion_reason?: string;
@@ -90,6 +93,28 @@ async function connectFakeClient<T>(
   } finally {
     await client.close();
   }
+}
+
+async function writeSkillFixture(root: string, name: string): Promise<string> {
+  const skillDir = path.join(root, name.replace(/:/g, "__"));
+  const skillPath = path.join(skillDir, "SKILL.md");
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.writeFile(
+    skillPath,
+    [
+      "---",
+      `name: ${name}`,
+      `description: Test skill ${name}`,
+      "---",
+      "",
+      `# ${name}`,
+      "",
+      "Use only for tests.",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  return skillPath;
 }
 
 async function waitForTerminalRun(client: Client, runId: string): Promise<RunSubagentMetadata> {
@@ -183,6 +208,9 @@ test("runSubagent is ephemeral by default and invokes the Pi child request-file 
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-run-"));
   const projectDir = path.join(tmp, "project");
   const runsDir = path.join(tmp, "runs");
+  const skillsRoot = path.join(tmp, "skills");
+  const skillName = "fixture-pda-lite";
+  const skillPath = await writeSkillFixture(skillsRoot, skillName);
   const fake = await createFakePiChild();
   await fs.mkdir(projectDir, { recursive: true });
 
@@ -191,6 +219,7 @@ test("runSubagent is ephemeral by default and invokes the Pi child request-file 
       SUBAGENT007_PI_CHILD_PATH: fake.childPath,
       FAKE_PI_LOG_PATH: fake.logPath,
       SUBAGENT007_FAILURE_LOG: "off",
+      SUBAGENT007_PI_SKILL_PATHS: skillsRoot,
     },
     async () => {
       const result = await runSubagent(
@@ -198,7 +227,7 @@ test("runSubagent is ephemeral by default and invokes the Pi child request-file 
           cwd: projectDir,
           prompt: "FAST",
           model_class: "C",
-          skill_name: "pda-lite",
+          skill_name: skillName,
         },
         { runsDir },
       );
@@ -212,14 +241,15 @@ test("runSubagent is ephemeral by default and invokes the Pi child request-file 
       const logs = await readJsonl<{ request: Record<string, unknown> }>(fake.logPath);
       assert.equal(logs.length, 1);
       assert.equal(logs[0].request.sessionMode, "ephemeral");
-      assert.equal(logs[0].request.prompt, "/skill:pda-lite\n\n<prompt>\nFAST\n</prompt>");
+      assert.equal(logs[0].request.prompt, "/skill:fixture-pda-lite\n\n<prompt>\nFAST\n</prompt>");
       assert.deepEqual(logs[0].request.promptProvenance, {
         public_prompt: "FAST",
-        skill_name: "pda-lite",
-        skill_marker: "[server_contract] skill_name=pda-lite",
-        composed_child_prompt: "/skill:pda-lite\n\n<prompt>\nFAST\n</prompt>",
+        skill_name: skillName,
+        skill_marker: "[server_contract] skill_name=fixture-pda-lite",
+        composed_child_prompt: "/skill:fixture-pda-lite\n\n<prompt>\nFAST\n</prompt>",
       });
-      assert.equal(logs[0].request.skill, "pda-lite");
+      assert.equal(logs[0].request.skill, skillName);
+      assert.equal(logs[0].request.skillFilePath, skillPath);
       assert.equal(logs[0].request.cwd, projectDir);
       assert.equal(logs[0].request.toolProfile, "inspect");
     },
@@ -230,6 +260,9 @@ test("runSubagent accepts skill_name and passes a normalized skill to the Pi chi
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-skill-name-"));
   const projectDir = path.join(tmp, "project");
   const runsDir = path.join(tmp, "runs");
+  const skillsRoot = path.join(tmp, "skills");
+  const skillName = "fixture-tension-hunter";
+  const skillPath = await writeSkillFixture(skillsRoot, skillName);
   const fake = await createFakePiChild();
   await fs.mkdir(projectDir, { recursive: true });
 
@@ -238,6 +271,7 @@ test("runSubagent accepts skill_name and passes a normalized skill to the Pi chi
       SUBAGENT007_PI_CHILD_PATH: fake.childPath,
       FAKE_PI_LOG_PATH: fake.logPath,
       SUBAGENT007_FAILURE_LOG: "off",
+      SUBAGENT007_PI_SKILL_PATHS: skillsRoot,
     },
     async () => {
       const result = await runSubagent(
@@ -245,17 +279,18 @@ test("runSubagent accepts skill_name and passes a normalized skill to the Pi chi
           cwd: projectDir,
           prompt: "FAST",
           model_class: "C",
-          skill_name: "tension-hunter",
+          skill_name: skillName,
         },
         { runsDir },
       );
 
       assert.equal(result.success, true);
-      assert.equal(result.requested_skill, "tension-hunter");
+      assert.equal(result.requested_skill, skillName);
 
       const logs = await readJsonl<{ request: Record<string, unknown> }>(fake.logPath);
       assert.equal(logs.length, 1);
-      assert.equal(logs[0].request.skill, "tension-hunter");
+      assert.equal(logs[0].request.skill, skillName);
+      assert.equal(logs[0].request.skillFilePath, skillPath);
     },
   );
 });
@@ -875,6 +910,9 @@ test("MCP run_subagent uses the configured fake Pi child", async () => {
 
 test("MCP run_subagent auto-promotes skill-bound work without one-shot health gating", async () => {
   const runTasksDir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-promoted-skill-"));
+  const skillsRoot = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-promoted-skills-"));
+  const skillName = "fixture-promoted-skill";
+  const skillPath = await writeSkillFixture(skillsRoot, skillName);
   await connectFakeClient(
     async (client, { projectDir, fakeLogPath, modelHealthPath }) => {
       await fs.writeFile(
@@ -900,7 +938,7 @@ test("MCP run_subagent auto-promotes skill-bound work without one-shot health ga
           prompt: "FAST",
           run_kind: "quick_noninteractive",
           model_class: "A",
-          skill_name: "pda-lite",
+          skill_name: skillName,
         },
       });
       assert.notEqual(response.isError, true);
@@ -916,7 +954,8 @@ test("MCP run_subagent auto-promotes skill-bound work without one-shot health ga
 
       const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
       assert.equal(logs.length, 1);
-      assert.equal(logs[0].request.skill, "pda-lite");
+      assert.equal(logs[0].request.skill, skillName);
+      assert.equal(logs[0].request.skillFilePath, skillPath);
       assert.equal(logs[0].request.model, "ollama/gemma4:12b-mlx");
 
       const rawEvents = await fs.readFile(path.join(runTasksDir, `${metadata.run_id}.events.jsonl`), "utf8");
@@ -935,6 +974,7 @@ test("MCP run_subagent auto-promotes skill-bound work without one-shot health ga
     {
       env: {
         SUBAGENT007_RUN_TASKS_DIR: runTasksDir,
+        SUBAGENT007_PI_SKILL_PATHS: skillsRoot,
       },
     },
   );
@@ -1199,6 +1239,38 @@ test("MCP schedule_run starts broad work durably without run_subagent preflight 
   });
 });
 
+test("MCP schedule_run caps long wait windows and returns a pollable run identity", async () => {
+  await connectFakeClient(
+    async (client, { projectDir }) => {
+      const startedAt = Date.now();
+      const response = await client.callTool({
+        name: "schedule_run",
+        arguments: {
+          cwd: projectDir,
+          prompt: "HEARTBEAT_LONG_WAIT",
+          wait_ms: 5000,
+        },
+      });
+      const elapsedMs = Date.now() - startedAt;
+      assert.notEqual(response.isError, true);
+      const metadata = response.structuredContent as RunSubagentMetadata;
+      assert.equal(metadata.status, "working");
+      assert.equal(metadata.requested_wait_ms, 5000);
+      assert.equal(metadata.effective_wait_ms, 25);
+      assert.equal(metadata.wait_truncated, true);
+      assert.equal(elapsedMs < 250, true);
+
+      const terminal = await waitForTerminalRun(client, metadata.run_id);
+      assert.equal(terminal.status, "completed");
+    },
+    {
+      env: {
+        SUBAGENT007_SCHEDULE_RUN_MAX_WAIT_MS: "25",
+      },
+    },
+  );
+});
+
 test("MCP schedule_run supports caller input through the durable run mailbox", async () => {
   await connectFakeClient(async (client, { projectDir }) => {
     const startedResponse = await client.callTool({
@@ -1310,6 +1382,68 @@ test("MCP start_run/get_run completes asynchronously with the same child contrac
   });
 });
 
+test("MCP start_run resolves skill_name before child spawn and passes the resolved skill path", async () => {
+  const skillsRoot = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-mcp-skills-"));
+  const skillPath = await writeSkillFixture(skillsRoot, "requested-skill");
+  await connectFakeClient(
+    async (client, { projectDir, fakeLogPath }) => {
+      const response = await client.callTool({
+        name: "start_run",
+        arguments: {
+          cwd: projectDir,
+          prompt: "FAST",
+          skill_name: "requested-skill",
+        },
+      });
+      assert.notEqual(response.isError, true);
+      const metadata = response.structuredContent as RunSubagentMetadata;
+      const terminal = await waitForTerminalRun(client, metadata.run_id);
+      assert.equal(terminal.status, "completed");
+
+      const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
+      assert.equal(logs.length, 1);
+      assert.equal(logs[0].request.skill, "requested-skill");
+      assert.equal(logs[0].request.skillFilePath, skillPath);
+    },
+    {
+      env: {
+        SUBAGENT007_PI_SKILL_PATHS: skillsRoot,
+      },
+    },
+  );
+});
+
+test("MCP start_run rejects unknown skill_name before child spawn", async () => {
+  const skillsRoot = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-empty-skills-"));
+  await connectFakeClient(
+    async (client, { projectDir, fakeLogPath }) => {
+      const response = await client.callTool({
+        name: "start_run",
+        arguments: {
+          cwd: projectDir,
+          prompt: "FAST",
+          skill_name: "missing-skill",
+        },
+      });
+      assert.notEqual(response.isError, true);
+      const metadata = response.structuredContent as {
+        kind?: string;
+        child_started?: boolean;
+        message?: string;
+      };
+      assert.equal(metadata.kind, "preflight_rejected");
+      assert.equal(metadata.child_started, false);
+      assert.match(metadata.message ?? "", /unknown skill "missing-skill"/);
+      await assert.rejects(fs.stat(fakeLogPath), /ENOENT/);
+    },
+    {
+      env: {
+        SUBAGENT007_PI_SKILL_PATHS: skillsRoot,
+      },
+    },
+  );
+});
+
 test("MCP start_run/get_run exposes active liveness and pending-input progress", async () => {
   await connectFakeClient(
     async (client, { projectDir }) => {
@@ -1323,11 +1457,22 @@ test("MCP start_run/get_run exposes active liveness and pending-input progress",
       assert.notEqual(startedResponse.isError, true);
       const started = startedResponse.structuredContent as RunSubagentMetadata;
       assert.equal(["working", "completed"].includes(started.status), true);
-      assert.equal(started.heartbeat_count, 0);
-      assert.equal(started.active_phase, "running_silent");
-      assert.equal(typeof started.elapsed_ms, "number");
-      assert.equal(typeof started.last_progress_at, "string");
-      assert.equal(started.last_progress_message, "child process running; waiting for output");
+      const silentDeadline = Date.now() + 2000;
+      let silentView = started;
+      while (silentView.status === "working" && silentView.active_phase !== "running_silent" && Date.now() < silentDeadline) {
+        const response = await client.callTool({
+          name: "get_run",
+          arguments: { run_id: started.run_id },
+        });
+        assert.notEqual(response.isError, true);
+        silentView = response.structuredContent as RunSubagentMetadata;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      assert.equal(silentView.heartbeat_count, 0);
+      assert.equal(silentView.active_phase, "running_silent");
+      assert.equal(typeof silentView.elapsed_ms, "number");
+      assert.equal(typeof silentView.last_progress_at, "string");
+      assert.equal(silentView.last_progress_message, "child process running; waiting for output");
 
       const heartbeat = await waitForActiveHeartbeat(client, started.run_id);
       assert.equal(heartbeat.status, "working");
