@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { timestampedRandomId } from "./output.js";
+import { defaultSubagentStatePath, timestampedRandomId } from "./output.js";
 import { SERVER_VERSION, serverBuildSha } from "./runtimeMetadata.js";
 import { ValidationError } from "./types.js";
 
@@ -113,9 +113,7 @@ export interface FailureLogRecord {
 }
 
 function defaultFailureLogPath(): string {
-  return process.env.SUBAGENT007_FAILURE_LOG_PATH
-    ? path.resolve(process.env.SUBAGENT007_FAILURE_LOG_PATH)
-    : path.join(os.homedir(), ".codex", "subagent007-pi", "failures.jsonl");
+  return defaultSubagentStatePath("SUBAGENT007_FAILURE_LOG_PATH", "failures.jsonl");
 }
 
 function recordSourceFromEnv(): FailureRecordSource {

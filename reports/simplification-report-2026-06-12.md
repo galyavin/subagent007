@@ -1464,6 +1464,22 @@ Targeted oracle result: `npm run typecheck`, `npm run build`, and `node scripts/
 
 Full oracle result: `npm test` passed 136/136.
 
+## Loop 93 - Reuse Shared Failure Log State Path Primitive
+
+Finding: `defaultFailureLogPath()` in `src/failureLog.ts` still manually builds the same Subagent007 state path shape already centralized by `defaultSubagentStatePath()` in `src/output.ts`. This duplicates the environment override and `~/.codex/subagent007-pi/<leaf>` convention in another module.
+
+Behavior check: replacing the hand-built logic with `defaultSubagentStatePath("SUBAGENT007_FAILURE_LOG_PATH", "failures.jsonl")` should not change observable behavior if explicit `SUBAGENT007_FAILURE_LOG_PATH` values still resolve with `path.resolve()` and the default path remains `<homedir>/.codex/subagent007-pi/failures.jsonl`.
+
+Oracle: existing failure-log and archive-failure-log tests cover configured failure-log paths, disabled logging, archive no-op/mutation behavior, and normal failure writes. No new pinning test is needed for reuse of the already-pinned shared path primitive.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: changed `defaultFailureLogPath()` to call `defaultSubagentStatePath("SUBAGENT007_FAILURE_LOG_PATH", "failures.jsonl")` instead of hand-building the same state path shape.
+
+Targeted oracle result: `npm run typecheck`, `npm run build`, and `node scripts/run-tests-with-ledger-guard.mjs tests/failure-log.test.ts tests/archive-failure-log.test.ts` passed; targeted tests passed 19/19.
+
+Full oracle result: `npm test` passed 136/136.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle has historically had an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run; the latest sequential `npm test` completed cleanly, but the constraint is still part of the oracle design.
