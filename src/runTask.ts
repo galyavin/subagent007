@@ -315,7 +315,7 @@ async function appendAutoPromotedEvent(
   }, "run_subagent auto-promoted to durable run");
 }
 
-async function appendChildSpawnEvent(state: RunTaskState): Promise<void> {
+async function prepareChildRun(state: RunTaskState): Promise<void> {
   const occurredAt = new Date().toISOString();
   setTaskPhase(state, "awaiting_child_event", occurredAt);
   await appendStatusEvent(state, {
@@ -324,10 +324,6 @@ async function appendChildSpawnEvent(state: RunTaskState): Promise<void> {
     text: "[child_spawned] Pi child process starting",
     occurred_at: occurredAt,
   }, "child process starting");
-}
-
-async function prepareChildRun(state: RunTaskState): Promise<void> {
-  await appendChildSpawnEvent(state);
   if (state.activePhase === "awaiting_child_event") {
     setTaskPhase(state, "running_silent");
     setTaskProgress(state, "child process running; waiting for output");

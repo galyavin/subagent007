@@ -1352,6 +1352,22 @@ Targeted oracle result: `npm run typecheck`, `npm run build`, and `node scripts/
 
 Full oracle result: `npm test` passed 136/136.
 
+## Loop 86 - Inline Single-Use Child Spawn Event Helper
+
+Finding: after Loop 85, `appendChildSpawnEvent()` in `src/runTask.ts` is a one-call helper used only by `prepareChildRun()`. The helper hides the first half of the child-preparation sequence, while the following `running_silent` transition is now visible directly in `prepareChildRun()`.
+
+Behavior check: inlining the same timestamp, `awaiting_child_event` phase update, `[child_spawned] Pi child process starting` public event, and `child process starting` progress message into `prepareChildRun()` should not change observable behavior if event ordering and the later `running_silent` snapshot remain unchanged.
+
+Oracle: existing run-subagent tests cover child-start snapshots, `running_silent` before first output, active progress messages, and terminal completion from prepared child runs. No new pinning test is needed for a same-block inline.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: removed `appendChildSpawnEvent()` and inlined the same timestamped phase update plus `child_spawned` status event into `prepareChildRun()`.
+
+Targeted oracle result: `npm run typecheck`, `npm run build`, and `node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts` passed; targeted tests passed 43/43.
+
+Full oracle result: `npm test` passed 136/136.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle has historically had an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run; the latest sequential `npm test` completed cleanly, but the constraint is still part of the oracle design.
