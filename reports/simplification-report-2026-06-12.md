@@ -334,6 +334,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 22 - Single Enum-Like Request Choice Validator
+
+Finding: `src/validate.ts` repeats the same pattern in `validateModelClass`, `validateOutputMode`, and `validateToolProfile`: trim an optional string, apply an optional default, check membership in an allowed string list, and emit `<field> must be one of: ...`. This is one request-choice validation primitive duplicated across three public input fields.
+
+Behavior check: extracting a helper should not change observable behavior if each caller keeps the same field name, allowed choices, default value, returned type, and exact error message text.
+
+Oracle: existing validation and MCP tests assert invalid model_class, output_mode/tool_profile failure classification, defaults, schema preflight behavior, and resolved request fields. No new pinning test is needed for this validation-helper extraction.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added `validateChoice` and reused it for `model_class`, `output_mode`, and `tool_profile` validation.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/validation.test.ts tests/failure-log.test.ts tests/run-subagent.test.ts` passed; targeted tests passed 73/73.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

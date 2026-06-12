@@ -65,6 +65,22 @@ function trimOptional(value: unknown, key: string): string | undefined {
   return trimmed === "" ? undefined : trimmed;
 }
 
+function validateChoice<T extends string>(
+  value: unknown,
+  key: string,
+  choices: readonly T[],
+  defaultValue?: T,
+): T | undefined {
+  const choice = trimOptional(value, key) ?? defaultValue;
+  if (choice === undefined) {
+    return undefined;
+  }
+  if (!choices.includes(choice as T)) {
+    throw new ValidationError(`${key} must be one of: ${choices.join(", ")}`);
+  }
+  return choice as T;
+}
+
 export function validateSkillName(value: unknown, key = "skill"): string | undefined {
   if (value === undefined || value === null) {
     return undefined;
@@ -102,30 +118,15 @@ function resolveSkillName(request: RunSubagentRequest, prompt: string): string |
 }
 
 function validateModelClass(value: unknown): ModelClass | undefined {
-  const modelClass = trimOptional(value, "model_class");
-  if (modelClass === undefined) {
-    return undefined;
-  }
-  if (!MODEL_CLASSES.includes(modelClass as ModelClass)) {
-    throw new ValidationError(`model_class must be one of: ${MODEL_CLASSES.join(", ")}`);
-  }
-  return modelClass as ModelClass;
+  return validateChoice(value, "model_class", MODEL_CLASSES);
 }
 
 function validateOutputMode(value: unknown): OutputMode {
-  const mode = trimOptional(value, "output_mode") ?? "final";
-  if (!OUTPUT_MODES.includes(mode as OutputMode)) {
-    throw new ValidationError(`output_mode must be one of: ${OUTPUT_MODES.join(", ")}`);
-  }
-  return mode as OutputMode;
+  return validateChoice(value, "output_mode", OUTPUT_MODES, "final") as OutputMode;
 }
 
 function validateToolProfile(value: unknown): ToolProfile {
-  const profile = trimOptional(value, "tool_profile") ?? "inspect";
-  if (!TOOL_PROFILES.includes(profile as ToolProfile)) {
-    throw new ValidationError(`tool_profile must be one of: ${TOOL_PROFILES.join(", ")}`);
-  }
-  return profile as ToolProfile;
+  return validateChoice(value, "tool_profile", TOOL_PROFILES, "inspect") as ToolProfile;
 }
 
 function validateContinuity(value: unknown, request: unknown): RunContinuity {
