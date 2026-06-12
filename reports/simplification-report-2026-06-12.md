@@ -1432,6 +1432,22 @@ Targeted oracle result: `npm run typecheck`, `npm run build`, and `node scripts/
 
 Full oracle result: `npm test` passed 136/136.
 
+## Loop 91 - Inline Single-Use Failure Event Id Wrapper
+
+Finding: `eventId()` in `src/failureLog.ts` is a one-call helper that only forwards to the already-named `timestampedRandomId()` primitive inside `logFailure()`. It adds no failure-log-specific policy and no reuse.
+
+Behavior check: replacing `eventId()` with `timestampedRandomId()` should not change observable behavior if failure records keep the same timestamped safe-id event id shape.
+
+Oracle: existing failure-log tests assert the event-id regex on written failure records. No new pinning test is needed for a same-call inline.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: removed `eventId()` and called `timestampedRandomId()` directly when constructing failure-log records.
+
+Targeted oracle result: `npm run typecheck`, `npm run build`, and `node scripts/run-tests-with-ledger-guard.mjs tests/failure-log.test.ts` passed; targeted tests passed 14/14.
+
+Full oracle result: `npm test` passed 136/136.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle has historically had an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run; the latest sequential `npm test` completed cleanly, but the constraint is still part of the oracle design.

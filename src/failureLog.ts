@@ -122,10 +122,6 @@ function failureLoggingDisabled(): boolean {
   return process.env.SUBAGENT007_FAILURE_LOG === "off";
 }
 
-function eventId(): string {
-  return timestampedRandomId();
-}
-
 function recordSourceFromEnv(): FailureRecordSource {
   const source = process.env.SUBAGENT007_RECORD_SOURCE;
   return source === "production" || source === "test" || source === "unknown" ? source : "production";
@@ -201,7 +197,7 @@ export async function logFailure(
     const campaignId = campaignIdFromEnv();
     const fullRecord: FailureLogRecord = {
       schema_version: 2,
-      event_id: eventId(),
+      event_id: timestampedRandomId(),
       timestamp: new Date().toISOString(),
       server_version: SERVER_VERSION,
       calibration_era: CURRENT_CALIBRATION_ERA,
