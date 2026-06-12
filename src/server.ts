@@ -248,11 +248,17 @@ const timedSessionInputSchema = {
     .optional(),
 };
 
+function rawSessionIdSchemaError(
+  toolName: "start_run" | "schedule_run",
+  issue: { code: string; keys?: string[] },
+): string | undefined {
+  return issue.code === "unrecognized_keys" && issue.keys?.includes("session_id")
+    ? `session_id is not a ${toolName} input; use continuity.mode fresh or continuity.mode resume with continuity.session_id`
+    : undefined;
+}
+
 const startRunInputSchema = z.strictObject(timedRunInputSchema, {
-  error: (issue) =>
-    issue.code === "unrecognized_keys" && issue.keys.includes("session_id")
-      ? "session_id is not a start_run input; use continuity.mode fresh or continuity.mode resume with continuity.session_id"
-      : undefined,
+  error: (issue) => rawSessionIdSchemaError("start_run", issue),
 });
 
 const scheduleRunInputSchema = z.strictObject({
@@ -264,10 +270,7 @@ const scheduleRunInputSchema = z.strictObject({
     .optional()
     .describe("How long the scheduler should wait for immediate completion before returning the durable run view."),
 }, {
-  error: (issue) =>
-    issue.code === "unrecognized_keys" && issue.keys.includes("session_id")
-      ? "session_id is not a schedule_run input; use continuity.mode fresh or continuity.mode resume with continuity.session_id"
-      : undefined,
+  error: (issue) => rawSessionIdSchemaError("schedule_run", issue),
 });
 
 const runSessionInputSchema = z.strictObject({

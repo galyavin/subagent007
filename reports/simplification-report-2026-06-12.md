@@ -1016,6 +1016,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 131/131.
 
+## Loop 65 - Share Raw Session ID Schema Error
+
+Finding: `src/server.ts` repeats the same Zod unrecognized-key predicate for raw `session_id` rejection in `startRunInputSchema` and `scheduleRunInputSchema`, with only the tool name differing in the message.
+
+Behavior check: extracting the message predicate into a local helper should not change observable behavior if `start_run` still says `session_id is not a start_run input...` and `schedule_run` still says `session_id is not a schedule_run input...`.
+
+Oracle: existing MCP tests cover the `start_run` raw `session_id` message. Add a focused `schedule_run` raw `session_id` assertion before extracting the helper.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added a `schedule_run` raw `session_id` assertion and introduced `rawSessionIdSchemaError` for the two schema error callbacks.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts tests/failure-log.test.ts` passed; targeted tests passed 55/55.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 131/131.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

@@ -570,6 +570,21 @@ test("MCP run_subagent and start_run reject unsupported session fields before in
       /session_id is not a start_run input/,
     );
 
+    const scheduleRawSessionResponse = await client.callTool({
+      name: "schedule_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "FAST",
+        session_id: "raw",
+      },
+    });
+    assert.equal(scheduleRawSessionResponse.isError, true);
+    const scheduleRawSessionContent = scheduleRawSessionResponse.content as Array<{ type: string; text?: string }>;
+    assert.match(
+      scheduleRawSessionContent[0]?.type === "text" ? (scheduleRawSessionContent[0].text ?? "") : "",
+      /session_id is not a schedule_run input/,
+    );
+
     const startRunFreshWithSessionResponse = await client.callTool({
       name: "start_run",
       arguments: {
