@@ -89,6 +89,15 @@ function allowedClasses() {
   return modelClassChoices().join(", ");
 }
 
+function unrepairableModelClassResult(details) {
+  return {
+    status: "unrepairable_model_class",
+    config_path: configPath,
+    ...details,
+    allowed_model_classes: allowedClasses(),
+  };
+}
+
 function migratedConfig(value, modelClass) {
   const migrated = { ...value, default_model_class: modelClass };
   delete migrated.default_model;
@@ -100,12 +109,9 @@ const rawModelClass = parsed.default_model_class;
 if (typeof rawModelClass === "string" && rawModelClass.trim() !== "") {
   const canonicalModelClass = rawModelClass.trim();
   if (!modelClassChoices().includes(canonicalModelClass)) {
-    print({
-      status: "unrepairable_model_class",
-      config_path: configPath,
+    print(unrepairableModelClassResult({
       default_model_class: rawModelClass,
-      allowed_model_classes: allowedClasses(),
-    });
+    }));
     process.exit(1);
   }
 
@@ -138,25 +144,19 @@ if (
   typeof defaultThinkingLevel !== "string" ||
   defaultThinkingLevel.trim() === ""
 ) {
-  print({
-    status: "unrepairable_model_class",
-    config_path: configPath,
+  print(unrepairableModelClassResult({
     default_model: defaultModel ?? null,
     default_thinking_level: defaultThinkingLevel ?? null,
-    allowed_model_classes: allowedClasses(),
-  });
+  }));
   process.exit(1);
 }
 
 const modelClass = modelClassForResolvedPair(defaultModel, defaultThinkingLevel.trim());
 if (!modelClass) {
-  print({
-    status: "unrepairable_model_class",
-    config_path: configPath,
+  print(unrepairableModelClassResult({
     default_model: defaultModel,
     default_thinking_level: defaultThinkingLevel,
-    allowed_model_classes: allowedClasses(),
-  });
+  }));
   process.exit(1);
 }
 

@@ -382,6 +382,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 25 - Single Config Migration Unrepairable Result Envelope
+
+Finding: `scripts/migrate-config.mjs` hand-builds the same `unrepairable_model_class` JSON envelope in three branches: invalid canonical class, missing/incomplete legacy pair, and unsupported legacy pair. Each branch differs only in the model-detail fields inserted between `config_path` and `allowed_model_classes`.
+
+Behavior check: extracting the envelope should not change observable behavior if the helper preserves the exact `status`, `config_path`, detail fields, and `allowed_model_classes` values and insertion order for `JSON.stringify`.
+
+Oracle: existing config migration tests cover the invalid legacy-pair and unsupported-model branches, but they do not directly pin the shared `allowed_model_classes` contract. Add one focused assertion before the helper extraction, then run the config migration tests.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added `unrepairableModelClassResult`, reused it from the three unrepairable migration branches, and pinned `allowed_model_classes` in the unsupported legacy-pair test.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/config-migrate.test.ts` passed; targeted tests passed 7/7.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
