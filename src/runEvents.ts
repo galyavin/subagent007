@@ -93,7 +93,7 @@ export function recentEventsProjection(events: RunPublicEvent[]): RunPublicEvent
 
 export function publicOutputExcerptProjection(events: RunPublicEvent[]): string | undefined {
   const text = events.map((event) => event.text).filter((value) => value.trim() !== "").join("\n\n");
-  if (text.trim() === "") {
+  if (text === "") {
     return undefined;
   }
   return text.length <= MAX_PUBLIC_OUTPUT_EXCERPT_CHARS
