@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { loadConfig, loadConfigRecord } from "../src/config.js";
+import { modelHealthForClass } from "../src/modelHealth.js";
 import { stripAnsiAndControls } from "../src/output.js";
 import { resolvePiAgentDir } from "../src/piAgentDir.js";
 import { composePrompt } from "../src/prompt.js";
@@ -81,6 +82,29 @@ test("malformed legacy model config does not block class defaults", async () => 
   assert.equal(resolved.modelClass, "C");
   assert.equal(resolved.model, "openrouter/deepseek/deepseek-v4-pro");
   assert.equal(resolved.thinkingLevel, "high");
+});
+
+test("model health records reject unsupported model classes", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-model-health-"));
+  const healthPath = path.join(dir, "model-health.json");
+  await fs.writeFile(
+    healthPath,
+    JSON.stringify([
+      {
+        schema_version: 1,
+        model_class: "Z",
+        resolved_model: "openrouter/deepseek/deepseek-v4-pro",
+        surface: "run_subagent_one_shot",
+        checked_at: "2026-06-11T00:00:00.000Z",
+        usable_for_one_shot: true,
+      },
+    ]),
+  );
+
+  await assert.rejects(
+    modelHealthForClass("C", { healthPath }),
+    /model health record model_class is invalid/,
+  );
 });
 
 test("rejects unsupported config model classes", async () => {

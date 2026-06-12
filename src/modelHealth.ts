@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveModelClass } from "./modelAllowlist.js";
 import { defaultSubagentStatePath } from "./output.js";
-import type { ModelClass } from "./types.js";
+import { MODEL_CLASSES, type ModelClass } from "./types.js";
 import { ValidationError } from "./types.js";
 
 export const MODEL_HEALTH_SURFACE_ONE_SHOT = "run_subagent_one_shot" as const;
@@ -50,7 +50,7 @@ function assertRecord(value: unknown): asserts value is ModelHealthRecord {
   if (record.schema_version !== 1) {
     throw new ValidationError("model health record schema_version must be 1");
   }
-  if (!["A", "B", "C", "D", "E"].includes(String(record.model_class))) {
+  if (!MODEL_CLASSES.includes(String(record.model_class) as ModelClass)) {
     throw new ValidationError("model health record model_class is invalid");
   }
   if (typeof record.resolved_model !== "string" || record.resolved_model.trim() === "") {

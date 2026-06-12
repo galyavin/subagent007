@@ -794,6 +794,36 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 126/126.
 
+## Loop 51 - Remove Redundant Schedule Wait Finiteness Check
+
+Finding: `scheduleWaitMs` in `src/runTask.ts` rejects invalid wait values with `typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value) || value < 0`. `Number.isInteger` already rejects non-numbers, `NaN`, and infinities, making the explicit type and finiteness checks redundant.
+
+Behavior check: replacing the predicate with `!Number.isInteger(value) || value < 0` should not change observable behavior because all previously rejected non-number, fractional, negative, `NaN`, and infinite values still reject with the same `ValidationError` message, while nonnegative integers still pass.
+
+Oracle: existing MCP schedule tests cover valid wait behavior but do not directly pin invalid exported-task validation. Add direct `scheduleRunTask` invalid `wait_ms` assertions before simplifying the predicate.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Targeted oracle result: failed at `npm run typecheck` before tests. TypeScript does not narrow `unknown` to `number` after `Number.isInteger(value)`, producing `TS2365` on `value < 0` and `TS2322` on returning `value`.
+
+Revert: reverted the `scheduleWaitMs` predicate simplification and the added invalid-wait test. Do not retry this candidate as-is.
+
+## Loop 52 - Use Canonical Model Class List In Health Validation
+
+Finding: `assertRecord` in `src/modelHealth.ts` validates health-record `model_class` with a duplicated literal `["A", "B", "C", "D", "E"]` instead of the canonical `MODEL_CLASSES` constant used elsewhere.
+
+Behavior check: replacing the literal with `MODEL_CLASSES` should not change observable behavior because the constant currently contains the same ordered set and the existing `String(record.model_class)` coercion can be preserved.
+
+Oracle: existing MCP model-health tests cover valid cached health records. Add a direct invalid health-record assertion before replacing the duplicate literal.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added a direct invalid model-health-record assertion and replaced the duplicated model-class literal in `assertRecord` with `MODEL_CLASSES`.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/validation.test.ts tests/run-subagent.test.ts` passed; targeted tests passed 61/61.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 127/127.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
