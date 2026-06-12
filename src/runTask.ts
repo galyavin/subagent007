@@ -347,6 +347,12 @@ function markChildRunningSilently(state: RunTaskState): void {
   setTaskProgress(state, "child process running; waiting for output");
 }
 
+async function prepareChildRun(state: RunTaskState): Promise<void> {
+  await appendChildSpawnEvent(state);
+  markChildRunningSilently(state);
+  await writeTaskSnapshot(await getRunTask(state.runId));
+}
+
 async function appendClosedInputEvents(
   state: RunTaskState,
   closed: Awaited<ReturnType<typeof closePendingInputRequestsForRun>>,
@@ -588,9 +594,7 @@ export async function startRunTask(
 
   state.promise = (async () => {
     try {
-      await appendChildSpawnEvent(state);
-      markChildRunningSilently(state);
-      await writeTaskSnapshot(await getRunTask(state.runId));
+      await prepareChildRun(state);
       state.result = await runSubagentCore(request, {
         runId: state.runId,
         mailboxRoot: state.mailboxRoot,
@@ -696,9 +700,7 @@ export async function startSessionRunTask(
 
   state.promise = (async () => {
     try {
-      await appendChildSpawnEvent(state);
-      markChildRunningSilently(state);
-      await writeTaskSnapshot(await getRunTask(state.runId));
+      await prepareChildRun(state);
       state.result = await runSubagentSession(request, {
         sessionsDir: options.sessionsDir,
         heartbeat: async (beat, message) => {
@@ -770,9 +772,7 @@ export async function runSubagentOneShotTask(
 
   state.promise = (async () => {
     try {
-      await appendChildSpawnEvent(state);
-      markChildRunningSilently(state);
-      await writeTaskSnapshot(await getRunTask(state.runId));
+      await prepareChildRun(state);
       state.result = await runSubagentCore(request, {
         runId: state.runId,
         mailboxRoot: state.mailboxRoot,

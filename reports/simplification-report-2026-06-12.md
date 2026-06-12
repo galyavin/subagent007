@@ -82,4 +82,22 @@ Full oracle result: `npm test` passed 125/125.
 
 ## Current Constraints
 
+## Loop 6 - Shared Child-Spawn Prelude
+
+Finding: `src/runTask.ts` still repeats the same child-spawn prelude in `startRunTask`, `startSessionRunTask`, and `runSubagentOneShotTask`: append the child-spawn event, move to `running_silent` if no child output has arrived, and persist the updated task snapshot. This is internal lifecycle bookkeeping that must stay identical across all three public run paths.
+
+Behavior check: extracting this prelude into one helper should not change observable behavior if it preserves operation order and still writes the snapshot after `running_silent` is set.
+
+Oracle: existing lifecycle tests assert `child_spawned` events, `running_silent` initial active phase, snapshot progression, and one-shot/start/session task behavior. No new pinning test is needed for this pure helper extraction.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added `prepareChildRun` and replaced the three repeated child-spawn prelude blocks. The helper preserves the prior order: append child-spawn event, mark silent running, then persist the task snapshot.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts` passed; targeted tests passed 41/41.
+
+Full oracle result: `npm test` passed 125/125.
+
+## Current Constraints
+
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage.
