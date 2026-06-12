@@ -300,6 +300,35 @@ export function failureClassForToolHandlerError(
     : thrownClass;
 }
 
+function sessionFailureProjection(
+  result: {
+    session_established: boolean;
+    packet_parse_status: string;
+    timed_out: boolean;
+    exit_code: number | null;
+  },
+  packetSatisfied: boolean,
+): { failureClass: FailureClass; reasonCode: FailureReasonCode } {
+  if (result.timed_out) {
+    return { failureClass: "timeout", reasonCode: "timeout" };
+  }
+  if (result.exit_code !== null && result.exit_code !== 0) {
+    return { failureClass: "nonzero_exit", reasonCode: "nonzero_exit" };
+  }
+  if (!result.session_established) {
+    return { failureClass: "missing_session_id", reasonCode: "missing_session_id" };
+  }
+  if (!packetSatisfied) {
+    return {
+      failureClass: "packet_failed",
+      reasonCode: result.packet_parse_status === "missing"
+        ? "packet_required_missing"
+        : "packet_required_invalid",
+    };
+  }
+  return { failureClass: "unknown_error", reasonCode: "unknown_error" };
+}
+
 export function failureClassForSessionResult(
   result: {
     session_established: boolean;
@@ -309,19 +338,7 @@ export function failureClassForSessionResult(
   },
   packetSatisfied: boolean,
 ): FailureClass {
-  if (result.timed_out) {
-    return "timeout";
-  }
-  if (result.exit_code !== null && result.exit_code !== 0) {
-    return "nonzero_exit";
-  }
-  if (!result.session_established) {
-    return "missing_session_id";
-  }
-  if (!packetSatisfied) {
-    return "packet_failed";
-  }
-  return failureClassForProcessResult(result);
+  return sessionFailureProjection(result, packetSatisfied).failureClass;
 }
 
 export function failureReasonCodeForSessionResult(
@@ -333,21 +350,7 @@ export function failureReasonCodeForSessionResult(
   },
   packetSatisfied: boolean,
 ): FailureReasonCode {
-  if (result.timed_out) {
-    return "timeout";
-  }
-  if (result.exit_code !== null && result.exit_code !== 0) {
-    return "nonzero_exit";
-  }
-  if (!result.session_established) {
-    return "missing_session_id";
-  }
-  if (!packetSatisfied) {
-    return result.packet_parse_status === "missing"
-      ? "packet_required_missing"
-      : "packet_required_invalid";
-  }
-  return "unknown_error";
+  return sessionFailureProjection(result, packetSatisfied).reasonCode;
 }
 
 export function cwdFromRequest(request: unknown): string | undefined {

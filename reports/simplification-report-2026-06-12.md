@@ -586,6 +586,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 38 - Single Session Failure Classification Projection
+
+Finding: `failureClassForSessionResult` and `failureReasonCodeForSessionResult` in `src/failureLog.ts` duplicate the same ordered session failure classification: timeout, nonzero exit, missing session, unsatisfied packet, otherwise unknown. The two exported functions project different fields from one classification.
+
+Behavior check: extracting a private session failure projection should not change observable behavior if the exported functions remain available, keep the same precedence, and return the same packet reason split between `packet_required_missing` and `packet_required_invalid`.
+
+Oracle: failure-log tests assert session missing-id and packet-invalid records, while session tests exercise missing packet and non-ready packet session failures. No new pinning test is needed for this private projection extraction.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added a private `sessionFailureProjection` helper and kept `failureClassForSessionResult` and `failureReasonCodeForSessionResult` as wrappers over it.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/failure-log.test.ts tests/session.test.ts` passed; targeted tests passed 24/24.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
