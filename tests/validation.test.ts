@@ -117,6 +117,37 @@ test("model health records reject unsupported model classes", async () => {
   );
 });
 
+test("model health records require nonempty string fields", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-model-health-fields-"));
+  const healthPath = path.join(dir, "model-health.json");
+  const baseRecord = {
+    schema_version: 1,
+    model_class: "C",
+    resolved_model: "openrouter/deepseek/deepseek-v4-pro",
+    surface: "run_subagent_one_shot",
+    checked_at: "2026-06-11T00:00:00.000Z",
+    usable_for_one_shot: true,
+  };
+
+  await fs.writeFile(
+    healthPath,
+    JSON.stringify([{ ...baseRecord, resolved_model: " " }]),
+  );
+  await assert.rejects(
+    modelHealthForClass("C", { healthPath }),
+    /model health record resolved_model must be a nonempty string/,
+  );
+
+  await fs.writeFile(
+    healthPath,
+    JSON.stringify([{ ...baseRecord, checked_at: "" }]),
+  );
+  await assert.rejects(
+    modelHealthForClass("C", { healthPath }),
+    /model health record checked_at must be a nonempty string/,
+  );
+});
+
 test("rejects unsupported config model classes", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-config-"));
   const configPath = path.join(dir, "config.json");

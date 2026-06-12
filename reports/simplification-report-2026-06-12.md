@@ -1080,6 +1080,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 131/131.
 
+## Loop 69 - Share Model-Health Nonempty Field Guard
+
+Finding: `src/modelHealth.ts` repeats the same model-health record check for `resolved_model` and `checked_at`: each field must be a string and must not trim to empty, with only the field name changing in the error message.
+
+Behavior check: extracting a local field guard should not change observable behavior if invalid `resolved_model` and invalid `checked_at` still produce the exact same `ValidationError` messages and valid records are still accepted.
+
+Oracle: existing tests cover invalid model-health `model_class` but do not pin these two field messages. Add focused validation tests for empty `resolved_model` and empty `checked_at` before extracting the helper.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added invalid `resolved_model` and `checked_at` model-health assertions, then introduced `assertNonEmptyStringField` for the shared record-field guard.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/validation.test.ts tests/model-health-probe.test.ts` passed; targeted tests passed 24/24.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 132/132.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

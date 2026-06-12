@@ -53,17 +53,20 @@ function assertRecord(value: unknown): asserts value is ModelHealthRecord {
   if (!MODEL_CLASSES.includes(String(record.model_class) as ModelClass)) {
     throw new ValidationError("model health record model_class is invalid");
   }
-  if (typeof record.resolved_model !== "string" || record.resolved_model.trim() === "") {
-    throw new ValidationError("model health record resolved_model must be a nonempty string");
-  }
+  assertNonEmptyStringField(record, "resolved_model");
   if (record.surface !== MODEL_HEALTH_SURFACE_ONE_SHOT) {
     throw new ValidationError("model health record surface is invalid");
   }
-  if (typeof record.checked_at !== "string" || record.checked_at.trim() === "") {
-    throw new ValidationError("model health record checked_at must be a nonempty string");
-  }
+  assertNonEmptyStringField(record, "checked_at");
   if (typeof record.usable_for_one_shot !== "boolean") {
     throw new ValidationError("model health record usable_for_one_shot must be boolean");
+  }
+}
+
+function assertNonEmptyStringField(record: Record<string, unknown>, field: string): void {
+  const value = record[field];
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new ValidationError(`model health record ${field} must be a nonempty string`);
   }
 }
 
