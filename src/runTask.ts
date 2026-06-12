@@ -401,6 +401,39 @@ async function logBackgroundHandlerError(
   });
 }
 
+function terminalEventDetails(result: RunTaskTerminalResult): {
+  event: "cancellation_settled" | "timeout" | "completed" | "failed";
+  text: string;
+  progressMessage: string;
+} {
+  if (result.stop_reason === "cancelled") {
+    return {
+      event: "cancellation_settled",
+      text: "[cancellation_settled] run cancelled",
+      progressMessage: "run cancelled",
+    };
+  }
+  if (result.stop_reason === "timeout") {
+    return {
+      event: "timeout",
+      text: "[timeout] run timed out",
+      progressMessage: "run timed out",
+    };
+  }
+  if (result.success) {
+    return {
+      event: "completed",
+      text: "[completed] run completed",
+      progressMessage: "run completed",
+    };
+  }
+  return {
+    event: "failed",
+    text: "[failed] run failed",
+    progressMessage: "run failed",
+  };
+}
+
 async function appendTerminalEvent(state: RunTaskState): Promise<void> {
   const result = state.result;
   const occurredAt = state.finishedAt ?? new Date().toISOString();
@@ -421,25 +454,12 @@ async function appendTerminalEvent(state: RunTaskState): Promise<void> {
         },
       }, packetAccepted ? "packet accepted" : "packet rejected");
     }
-    const event = result.stop_reason === "cancelled"
-      ? "cancellation_settled"
-      : result.stop_reason === "timeout"
-        ? "timeout"
-        : result.success
-          ? "completed"
-          : "failed";
+    const terminalEvent = terminalEventDetails(result);
     setTaskPhase(state, terminalPhase(result), occurredAt);
-    const text = event === "cancellation_settled"
-      ? "[cancellation_settled] run cancelled"
-      : event === "timeout"
-        ? "[timeout] run timed out"
-        : event === "completed"
-          ? "[completed] run completed"
-          : "[failed] run failed";
     await appendStatusEvent(state, {
       kind: "terminal",
-      event,
-      text,
+      event: terminalEvent.event,
+      text: terminalEvent.text,
       occurred_at: occurredAt,
       metadata: {
         success: result.success,
@@ -447,7 +467,7 @@ async function appendTerminalEvent(state: RunTaskState): Promise<void> {
         exit_code: result.exit_code,
         timed_out: result.timed_out,
       },
-    }, text.replace(/^\[[^\]]+\]\s*/, ""));
+    }, terminalEvent.progressMessage);
     return;
   }
   if (state.error) {

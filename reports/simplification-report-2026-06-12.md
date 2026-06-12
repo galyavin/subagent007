@@ -538,6 +538,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 35 - Single Run Task Terminal Event Projection
+
+Finding: `appendTerminalEvent` in `src/runTask.ts` computes the terminal event name and terminal event text with parallel conditionals over the same result state: cancelled, timeout, completed, or failed. This is one public terminal-event projection split into two decision trees.
+
+Behavior check: extracting the projection should not change observable behavior if each terminal result still emits the same `event`, `text`, and progress message, and the public event object keeps the same field order.
+
+Oracle: existing run lifecycle, timeout, session, and cancellation tests assert terminal phases, timeout/cancellation event counts, packet terminal events, and completed/failed run views. No new pinning test is needed for this local projection extraction.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added `terminalEventDetails` and reused it when appending result-backed terminal run-task events.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts tests/timeout-budget.test.ts tests/session.test.ts` passed; targeted tests passed 59/59.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
