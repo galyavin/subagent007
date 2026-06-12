@@ -1160,6 +1160,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 134/134.
 
+## Loop 74 - Share Safe Integer Env Parsing
+
+Finding: `src/timeoutBudget.ts` and `src/progress.ts` repeat the same environment parser shape: read an env var, return fallback when unset or blank, parse with `Number`, require a safe integer, reject values below a minimum, otherwise return the parsed value.
+
+Behavior check: extracting a shared parser with an explicit inclusive minimum should not change observable behavior if timeout-budget env values still accept nonnegative safe integers and heartbeat interval env values still accept only positive safe integers.
+
+Oracle: existing timeout-budget tests cover nonnegative timeout env parsing and positive heartbeat interval parsing, including invalid fallback behavior. No new pinning test is needed.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added `safeIntegerFromEnv` and used it for timeout-budget nonnegative env values and heartbeat positive interval env values.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/timeout-budget.test.ts tests/validation.test.ts tests/run-subagent.test.ts` passed; targeted tests passed 71/71.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 134/134.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

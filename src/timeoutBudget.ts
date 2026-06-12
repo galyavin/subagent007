@@ -1,3 +1,5 @@
+import { safeIntegerFromEnv } from "./env.js";
+
 export const DEFAULT_TIMEOUT_RESPONSE_HEADROOM_MS = 5000;
 export const DEFAULT_TIMEOUT_KILL_GRACE_MS = 1000;
 export const DEFAULT_TIMEOUT_FORCE_GRACE_MS = 1000;
@@ -22,15 +24,7 @@ export interface TimeoutBudgetOptions {
 }
 
 function nonnegativeIntegerFromEnv(key: string, fallback: number): number {
-  const raw = process.env[key];
-  if (raw === undefined || raw.trim() === "") {
-    return fallback;
-  }
-  const parsed = Number(raw);
-  if (!Number.isSafeInteger(parsed) || parsed < 0) {
-    return fallback;
-  }
-  return parsed;
+  return safeIntegerFromEnv(key, fallback, 0);
 }
 
 function resolveOptions(options: TimeoutBudgetOptions = {}): Required<TimeoutBudgetOptions> {

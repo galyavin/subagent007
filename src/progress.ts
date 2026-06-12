@@ -1,5 +1,6 @@
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
+import { safeIntegerFromEnv } from "./env.js";
 
 export type ServerExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 export type HeartbeatNotify = (beat: number, message?: string) => void | Promise<void>;
@@ -9,15 +10,7 @@ export const DEFAULT_HEARTBEAT_MESSAGE = "running";
 export const HEARTBEAT_INTERVAL_ENV = "SUBAGENT007_HEARTBEAT_INTERVAL_MS";
 
 export function heartbeatIntervalMsFromEnv(): number {
-  const raw = process.env[HEARTBEAT_INTERVAL_ENV];
-  if (raw === undefined || raw.trim() === "") {
-    return DEFAULT_HEARTBEAT_INTERVAL_MS;
-  }
-  const parsed = Number(raw);
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-    return DEFAULT_HEARTBEAT_INTERVAL_MS;
-  }
-  return parsed;
+  return safeIntegerFromEnv(HEARTBEAT_INTERVAL_ENV, DEFAULT_HEARTBEAT_INTERVAL_MS, 1);
 }
 
 export function heartbeatFromExtra(extra: ServerExtra): HeartbeatNotify | undefined {
