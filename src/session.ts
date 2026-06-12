@@ -605,10 +605,11 @@ export async function runSubagentSession(
     const missingSessionIdError = attemptSubagentSessionId
       ? undefined
       : "Pi did not report a persisted session file";
+    const packetIsSatisfied = packetSatisfied(packetPolicy, packet.packetParseStatus, packet.claimedPacket);
     const success =
       processSuccess &&
       attemptSessionEstablished &&
-      packetSatisfied(packetPolicy, packet.packetParseStatus, packet.claimedPacket);
+      packetIsSatisfied;
     const committedSubagentSessionId = success && attemptSubagentSessionId
       ? await promoteAttemptSession({
           sessionDir,
@@ -729,20 +730,15 @@ export async function runSubagentSession(
       ),
     };
     if (!result.success && result.run_record.stop_reason !== "cancelled") {
-      const isPacketSatisfied = packetSatisfied(
-        packetPolicy,
-        result.packet_parse_status,
-        result.claimed_packet,
-      );
       await logFailure({
         tool: "run_subagent_session",
         failure_class: failureClassForSessionResult(
           { ...result, session_established: attemptSessionEstablished },
-          isPacketSatisfied,
+          packetIsSatisfied,
         ),
         reason_code: failureReasonCodeForSessionResult(
           { ...result, session_established: attemptSessionEstablished },
-          isPacketSatisfied,
+          packetIsSatisfied,
         ),
         cwd,
         output_path: result.output_path,

@@ -178,4 +178,22 @@ Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.json
 
 ## Current Constraints
 
+## Loop 12 - Single Packet Satisfaction Evaluation
+
+Finding: `runSubagentSession` in `src/session.ts` evaluates `packetSatisfied(packetPolicy, packet.packetParseStatus, packet.claimedPacket)` once to compute session success, then evaluates the same predicate again later when logging a failed session result. This repeats a deterministic policy decision inside one run result construction.
+
+Behavior check: storing the packet satisfaction result in a local variable should not change observable behavior. It preserves the same inputs, success condition, and failure classification inputs.
+
+Oracle: existing session and failure-log tests cover packet-required success/failure, missing/invalid packets, non-ready packet failures, and failure-log classification. No new pinning test is needed.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: introduced `packetIsSatisfied` and reused it for both session success computation and failure-log classification.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/session.test.ts tests/failure-log.test.ts` passed; targeted tests passed 24/24.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
+## Current Constraints
+
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
