@@ -77,7 +77,7 @@ function eventMessageLine(event: Record<string, unknown>): PublicOutputLine | nu
     return null;
   }
   const text = textPartsFromContent((message as { content?: unknown }).content).join("");
-  if (text.trim() === "") {
+  if (text === "") {
     return null;
   }
   return {

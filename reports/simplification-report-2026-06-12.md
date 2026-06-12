@@ -762,6 +762,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 126/126.
 
+## Loop 49 - Direct Empty Transcript Message Check
+
+Finding: `eventMessageLine` in `src/transcript.ts` joins the output of `textPartsFromContent`, which already filters out text parts whose trimmed content is empty, then checks `text.trim() === ""`. After that upstream filter, the joined string can only be empty when no text parts remain.
+
+Behavior check: replacing the post-join trim check with `text === ""` should not change observable behavior because every retained text part already contains non-whitespace content.
+
+Oracle: run-subagent transcript tests cover assistant and user message extraction, public content flags, truncation behavior, timeout/cancellation markers, and transcript redaction. No new pinning test is needed for this pure transcript helper cleanup.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: replaced the redundant `text.trim() === ""` post-join check with `text === ""` in `eventMessageLine`.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts tests/observed-campaign.test.ts` passed; targeted tests passed 55/55.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 126/126.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
