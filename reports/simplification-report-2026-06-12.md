@@ -144,6 +144,20 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `npm test` failed because `scripts/run-tests-with-ledger-guard.mjs` detected that the default failure ledger at `/Users/rgalyavin/.codex/subagent007-pi/failures.jsonl` changed during the full run. Per the loop rule, the code patch was reverted and this simplification was not retried.
 
+## Loop 10 - Private Test Failure Ledger By Default
+
+Finding: `scripts/run-tests-with-ledger-guard.mjs` fingerprints the user-level default failure ledger when `SUBAGENT007_FAILURE_LOG_PATH` is not set, but it also spawns tests without forcing a private failure ledger. That makes the oracle depend on ambient writes to `/Users/rgalyavin/.codex/subagent007-pi/failures.jsonl` by any concurrent process, and it can fail a behavior-preserving code change after all test assertions pass.
+
+Behavior check: when callers explicitly provide `SUBAGENT007_FAILURE_LOG_PATH`, the guard must preserve and guard that path. When callers omit it, the guard can set a private temp failure ledger for the spawned test process. That changes no MCP API, error contract, data format, or production side effect; it only removes user-global telemetry coupling from the test oracle.
+
+Oracle: add a pinning test that runs the guard without an inherited `SUBAGENT007_FAILURE_LOG_PATH` and asserts the child test process receives a private temp failure ledger path rather than the user-level default path.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch attempted: changed the guard to create a private temp `SUBAGENT007_FAILURE_LOG_PATH` when none is inherited, and added `tests/test-ledger-guard.test.ts` to pin that behavior.
+
+Targeted oracle result: `npm run typecheck` and `git diff --check` passed, but `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/test-ledger-guard.test.ts` failed because the dummy child test did not write the expected env-capture file. Per the loop rule, the guard and test patches were reverted and this simplification was not retried.
+
 ## Current Constraints
 
-The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The loop-9 full-oracle failure also exposed an incoherent constraint in the current oracle: the ledger guard can fail a behavior-preserving code change because a default user-level telemetry file changed during the run, even when the targeted isolated tests passed.
+The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
