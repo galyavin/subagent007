@@ -984,6 +984,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 131/131.
 
+## Loop 63 - Share Task Child Runtime Options
+
+Finding: `src/runTask.ts` repeats the same child runtime option bundle in durable run, durable session, and one-shot run launch paths: task heartbeat handler, heartbeat interval, task abort signal, and task output observer.
+
+Behavior check: extracting that bundle into a local helper should not change observable behavior if each child call still receives the same heartbeat notification wrapper, interval, abort signal, and output-line observer while keeping call-specific fields such as `failureLogTool`, `allowTimeout`, `runsDir`, `sessionsDir`, and mailbox IDs explicit.
+
+Oracle: existing `tests/run-subagent.test.ts`, `tests/timeout-budget.test.ts`, and `tests/failure-log.test.ts` cover heartbeats, cancellation, timeout metadata, public events, durable session runs, and failure log behavior. No new pinning test is needed.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added `taskChildRuntimeOptions` and reused it across durable run, durable session, and one-shot run child launches.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts tests/timeout-budget.test.ts tests/failure-log.test.ts` passed; targeted tests passed 62/62.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 131/131.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

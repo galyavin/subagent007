@@ -519,6 +519,23 @@ function taskOutputObserver(state: RunTaskState): (line: string) => Promise<void
   return (line) => observeOutputLine(state, line);
 }
 
+function taskChildRuntimeOptions(
+  state: RunTaskState,
+  options: { heartbeat?: HeartbeatNotify; heartbeatIntervalMs?: number },
+): {
+  heartbeat: HeartbeatNotify;
+  heartbeatIntervalMs?: number;
+  abortSignal: AbortSignal;
+  onOutputLine: (line: string) => Promise<void>;
+} {
+  return {
+    heartbeat: taskHeartbeatHandler(state, options.heartbeat),
+    heartbeatIntervalMs: options.heartbeatIntervalMs,
+    abortSignal: state.abortController.signal,
+    onOutputLine: taskOutputObserver(state),
+  };
+}
+
 async function loadSnapshotEvents(
   snapshot: RunTaskView,
 ): Promise<Pick<RunTaskView, "recent_events" | "last_public_output_excerpt">> {
@@ -640,10 +657,7 @@ export async function startRunTask(
         runsDir: options.runsDir,
         failureLogTool: "start_run",
         allowTimeout: true,
-        heartbeat: taskHeartbeatHandler(state, options.heartbeat),
-        heartbeatIntervalMs: options.heartbeatIntervalMs,
-        abortSignal: state.abortController.signal,
-        onOutputLine: taskOutputObserver(state),
+        ...taskChildRuntimeOptions(state, options),
       });
     } catch (error) {
       state.error = error as Error;
@@ -727,13 +741,10 @@ export async function startSessionRunTask(
       await prepareChildRun(state);
       state.result = await runSubagentSession(request, {
         sessionsDir: options.sessionsDir,
-        heartbeat: taskHeartbeatHandler(state, options.heartbeat),
-        heartbeatIntervalMs: options.heartbeatIntervalMs,
-        abortSignal: state.abortController.signal,
         mailboxRoot: state.mailboxRoot,
         childRunId: state.runId,
         taskId: state.runId,
-        onOutputLine: taskOutputObserver(state),
+        ...taskChildRuntimeOptions(state, options),
       });
     } catch (error) {
       state.error = error as Error;
@@ -787,10 +798,7 @@ export async function runSubagentOneShotTask(
         mailboxRoot: state.mailboxRoot,
         runsDir: options.runsDir,
         failureLogTool: "run_subagent",
-        heartbeat: taskHeartbeatHandler(state, options.heartbeat),
-        heartbeatIntervalMs: options.heartbeatIntervalMs,
-        abortSignal: state.abortController.signal,
-        onOutputLine: taskOutputObserver(state),
+        ...taskChildRuntimeOptions(state, options),
       });
     } catch (error) {
       state.error = error as Error;
