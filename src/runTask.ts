@@ -216,13 +216,6 @@ function activeProgressView(state: RunTaskState): RunTaskProgressView {
   return progressView(state, Math.max(0, Date.now() - Date.parse(state.startedAt)));
 }
 
-function terminalProgressView(
-  state: RunTaskState,
-  result: RunTaskTerminalResult,
-): RunTaskProgressView {
-  return progressView(state, result.duration_ms);
-}
-
 function setTaskProgress(state: RunTaskState, message: string, heartbeatCount = state.heartbeatCount): void {
   if (state.terminalSnapshotStarted) {
     return;
@@ -612,7 +605,7 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
       finished_at: state.finishedAt,
       input_requests_dir: state.inputRequestsDir,
       input_requests: inputRequests,
-      ...terminalProgressView(state, state.result),
+      ...progressView(state, state.result.duration_ms),
     };
   }
   if (state.error) {
