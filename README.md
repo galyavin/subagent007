@@ -61,9 +61,9 @@ Use model classes instead of concrete model IDs. The default class is `C`; calle
 
 | Class | Use when | Current calibration |
 | --- | --- | --- |
-| `A` | Simplest mechanistic tasks with low abstraction and low technical difficulty | `ollama/gemma4:12b-mlx`, `high` |
-| `B` | Simple coding, review, or search tasks with limited ambiguity | `openrouter/deepseek/deepseek-v4-flash`, `high` |
-| `C` | Default class for ordinary software engineering and technical reasoning | `openrouter/deepseek/deepseek-v4-pro`, `high` |
+| `A` | Best local/offline class for narrow, low-risk tasks and concise first-pass judgment. Prefer `B` or `C` when repo-grounded investigation, architectural judgment, or predictable tool use matters. | `ollama/qwen3.5:9b-mlx`, `high` |
+| `B` | Fast bounded tasks: factual repo lookups, concise summaries, and no-tool first-pass judgment. Use strict prompts/timeouts for anything exploratory because tool loops can stall. | `openrouter/deepseek/deepseek-v4-flash`, `high` |
+| `C` | Default for ordinary agentic development: repo-grounded engineering judgment, API-contract review, implementation planning, and tool-backed synthesis. Require repo inspection when decisions depend on local context. | `openrouter/deepseek/deepseek-v4-pro`, `high` |
 | `D` | Complex multi-file debugging, planning, synthesis, and high-abstraction work | `openai-codex/gpt-5.5`, `high` |
 | `E` | Highest-abstraction, highest-difficulty work requiring deepest technical judgment | `openai-codex/gpt-5.5`, `xhigh` |
 

@@ -928,7 +928,7 @@ test("MCP run_subagent auto-promotes skill-bound work without one-shot health ga
           {
             schema_version: 1,
             model_class: "A",
-            resolved_model: "ollama/gemma4:12b-mlx",
+            resolved_model: "ollama/qwen3.5:9b-mlx",
             surface: "run_subagent_one_shot",
             checked_at: "2026-06-11T00:00:00.000Z",
             usable_for_one_shot: false,
@@ -966,7 +966,7 @@ test("MCP run_subagent auto-promotes skill-bound work without one-shot health ga
       assert.equal(logs.length, 1);
       assert.equal(logs[0].request.skill, skillName);
       assert.equal(logs[0].request.skillFilePath, skillPath);
-      assert.equal(logs[0].request.model, "ollama/gemma4:12b-mlx");
+      assert.equal(logs[0].request.model, "ollama/qwen3.5:9b-mlx");
 
       const rawEvents = await fs.readFile(path.join(runTasksDir, `${metadata.run_id}.events.jsonl`), "utf8");
       assert.match(rawEvents, /\[auto_promoted\] run_subagent -> durable_run/);
@@ -1084,7 +1084,7 @@ test("MCP run_subagent fails fast for known unhealthy one-shot model class", asy
         {
           schema_version: 1,
           model_class: "A",
-          resolved_model: "ollama/gemma4:12b-mlx",
+          resolved_model: "ollama/qwen3.5:9b-mlx",
           surface: "run_subagent_one_shot",
           checked_at: "2026-06-11T00:00:00.000Z",
           usable_for_one_shot: false,
