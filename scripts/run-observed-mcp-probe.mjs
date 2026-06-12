@@ -140,6 +140,10 @@ function unique(values) {
   return [...new Set(values)].sort();
 }
 
+function uniqueRecordValues(records, field) {
+  return unique(records.map((record) => record[field]).filter(Boolean));
+}
+
 function evidenceClassForMode(mode) {
   return mode === "protocol-deterministic" ? "protocol-deterministic" : "live-model-smoke";
 }
@@ -739,9 +743,9 @@ async function runCall(client, ledgerPath, evidenceClass, scenario, call) {
       scenario,
       tool: call.tool,
       delta_count: delta.length,
-      failure_classes: [...new Set(delta.map((record) => record.failure_class).filter(Boolean))].sort(),
-      reason_codes: [...new Set(delta.map((record) => record.reason_code).filter(Boolean))].sort(),
-      tools: [...new Set(delta.map((record) => record.tool).filter(Boolean))].sort(),
+      failure_classes: uniqueRecordValues(delta, "failure_class"),
+      reason_codes: uniqueRecordValues(delta, "reason_code"),
+      tools: uniqueRecordValues(delta, "tool"),
     });
   }
 
