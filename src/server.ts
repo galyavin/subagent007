@@ -142,11 +142,11 @@ function withPreflightRejection<TRequest, TResult extends object>(
   return async (request, extra) => {
     try {
       const result = await handler(request, extra);
-      return jsonToolResult(result, { ...result } as Record<string, unknown>);
+      return jsonObjectToolResult(result);
     } catch (error) {
       if (error instanceof ValidationError) {
         const result = await preflightRejectedResult(tool, request, error);
-        return jsonToolResult(result, { ...result });
+        return jsonObjectToolResult(result);
       }
       await logFailure({
         tool,
@@ -158,6 +158,12 @@ function withPreflightRejection<TRequest, TResult extends object>(
       throw error;
     }
   };
+}
+
+function jsonObjectToolResult<TResult extends object>(
+  result: TResult,
+): ReturnType<typeof jsonToolResult<Record<string, unknown>>> {
+  return jsonToolResult(result, { ...result } as Record<string, unknown>);
 }
 
 function jsonToolResult<TStructured extends Record<string, unknown>>(
@@ -384,7 +390,7 @@ server.registerTool(
   },
   withRunFailureLogging("get_run", async (request) => {
     const result = await getRunTask(request.run_id);
-    return jsonToolResult(result, { ...result });
+    return jsonObjectToolResult(result);
   }),
 );
 
@@ -406,7 +412,7 @@ server.registerTool(
       requestId: request.request_id,
       answer: request.answer,
     });
-    return jsonToolResult(result, { ...result });
+    return jsonObjectToolResult(result);
   }),
 );
 
@@ -421,7 +427,7 @@ server.registerTool(
   },
   withRunFailureLogging("cancel_run", async (request) => {
     const result = await cancelRunTask(request.run_id);
-    return jsonToolResult(result, { ...result });
+    return jsonObjectToolResult(result);
   }),
 );
 

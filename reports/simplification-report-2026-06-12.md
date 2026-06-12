@@ -1032,6 +1032,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 131/131.
 
+## Loop 66 - Share Object Tool Result Projection
+
+Finding: `src/server.ts` repeats `jsonToolResult(result, { ...result })` in preflight-aware handlers and run-scoped handlers whenever an object result should be returned as both formatted text and structured content.
+
+Behavior check: extracting a local `jsonObjectToolResult` helper should not change observable behavior if the text remains `JSON.stringify(result, null, 2)` and structured content remains a shallow object copy of the same result.
+
+Oracle: existing MCP tests cover successful object results, preflight rejection structured content, `get_run`, `answer_run_input`, and `cancel_run`. No new pinning test is needed.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added `jsonObjectToolResult` and reused it in preflight-aware handlers and run-scoped object-result handlers.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts tests/failure-log.test.ts` passed; targeted tests passed 55/55.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 131/131.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
