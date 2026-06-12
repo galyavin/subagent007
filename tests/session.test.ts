@@ -104,6 +104,8 @@ test("run_subagent_session creates, resumes, and appends an auditable Pi ledger"
 
       assert.equal(created.success, true);
       assert.equal(created.created_or_resumed, "created");
+      assert.equal(created.model_changed_from_manifest, false);
+      assert.equal(created.thinking_level_changed_from_manifest, false);
       assert.match(created.subagent_session_id ?? "", /pi-session\/fake-pi-session\.jsonl$/);
       assert.match(created.attempt_subagent_session_id ?? "", /attempt-pi-sessions\/0001-/);
       assert.equal(created.attempt_session_established, true);
@@ -115,9 +117,32 @@ test("run_subagent_session creates, resumes, and appends an auditable Pi ledger"
       assert.equal(manifest.session_key, "coherent-execution:T001");
       assert.equal(manifest.subagent_session_id, created.subagent_session_id);
       assert.equal(manifest.run_count, 1);
+      const legacyManifest = { ...manifest };
+      delete legacyManifest.initial_model_class;
       await fs.writeFile(
         created.manifest_path,
-        `${JSON.stringify({ ...manifest, initial_model_class: "D", initial_thinking_level: "xhigh" }, null, 2)}\n`,
+        `${JSON.stringify(legacyManifest, null, 2)}\n`,
+      );
+
+      const resumedLegacy = await runSubagentSession(
+        {
+          cwd: fixture.projectDir,
+          prompt: "FAST",
+          session_key: "coherent-execution:T001",
+          model_class: "C",
+        },
+        { sessionsDir: fixture.sessionsDir },
+      );
+
+      assert.equal(resumedLegacy.success, true);
+      assert.equal(resumedLegacy.created_or_resumed, "resumed");
+      assert.equal(resumedLegacy.model_changed_from_manifest, false);
+      assert.equal(resumedLegacy.thinking_level_changed_from_manifest, false);
+
+      const resumedLegacyManifest = JSON.parse(await fs.readFile(created.manifest_path, "utf8")) as SessionManifest;
+      await fs.writeFile(
+        created.manifest_path,
+        `${JSON.stringify({ ...resumedLegacyManifest, initial_model_class: "D", initial_thinking_level: "xhigh" }, null, 2)}\n`,
       );
 
       const resumed = await runSubagentSession(
@@ -133,18 +158,22 @@ test("run_subagent_session creates, resumes, and appends an auditable Pi ledger"
       assert.equal(resumed.success, true);
       assert.equal(resumed.created_or_resumed, "resumed");
       assert.equal(resumed.subagent_session_id, created.subagent_session_id);
-      assert.match(resumed.attempt_subagent_session_id ?? "", /attempt-pi-sessions\/0002-/);
+      assert.match(resumed.attempt_subagent_session_id ?? "", /attempt-pi-sessions\/0003-/);
       assert.equal(resumed.attempt_session_established, true);
       assert.equal(resumed.model_changed_from_manifest, true);
       assert.equal(resumed.thinking_level_changed_from_manifest, true);
 
       const records = await readJsonl<SessionRunRecord>(created.ledger_path);
-      assert.equal(records.length, 2);
+      assert.equal(records.length, 3);
       assert.equal(records[0].action, "created");
       assert.equal(records[1].action, "resumed");
+      assert.equal(records[2].action, "resumed");
       assert.equal(records[1].subagent_session_id, created.subagent_session_id);
-      assert.equal(records[1].attempt_subagent_session_id, resumed.attempt_subagent_session_id);
+      assert.equal(records[1].attempt_subagent_session_id, resumedLegacy.attempt_subagent_session_id);
       assert.equal(records[1].attempt_session_established, true);
+      assert.equal(records[2].subagent_session_id, created.subagent_session_id);
+      assert.equal(records[2].attempt_subagent_session_id, resumed.attempt_subagent_session_id);
+      assert.equal(records[2].attempt_session_established, true);
 
       const childLogs = await readJsonl<{ request: Record<string, unknown> }>(fixture.fakeLogPath);
       assert.equal(childLogs[0].request.sessionMode, "fresh");
@@ -153,6 +182,10 @@ test("run_subagent_session creates, resumes, and appends an auditable Pi ledger"
       assert.equal(childLogs[1].request.toolProfile, "inspect");
       assert.match(String(childLogs[1].request.sessionFile), /attempt-pi-sessions\/0002-/);
       assert.match(String(childLogs[1].request.sessionFile), /fake-pi-session\.jsonl$/);
+      assert.equal(childLogs[2].request.sessionMode, "resume");
+      assert.equal(childLogs[2].request.toolProfile, "inspect");
+      assert.match(String(childLogs[2].request.sessionFile), /attempt-pi-sessions\/0003-/);
+      assert.match(String(childLogs[2].request.sessionFile), /fake-pi-session\.jsonl$/);
     },
   );
 });

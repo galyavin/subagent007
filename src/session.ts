@@ -467,6 +467,25 @@ function modelRefForComparison(modelRef: string): string {
   }
 }
 
+function modelChangedFromManifest(
+  manifest: SessionManifest | null,
+  resolved: Awaited<ReturnType<typeof validateAndResolveRequest>>,
+): boolean {
+  if (!manifest) {
+    return false;
+  }
+  return manifest.initial_model_class
+    ? manifest.initial_model_class !== resolved.modelClass
+    : modelRefForComparison(manifest.initial_model) !== resolved.model;
+}
+
+function thinkingLevelChangedFromManifest(
+  manifest: SessionManifest | null,
+  resolved: Awaited<ReturnType<typeof validateAndResolveRequest>>,
+): boolean {
+  return Boolean(manifest && manifest.initial_thinking_level !== resolved.thinkingLevel);
+}
+
 async function copyDirectoryContents(sourceDir: string, targetDir: string): Promise<void> {
   await fs.rm(targetDir, { recursive: true, force: true });
   await fs.mkdir(path.dirname(targetDir), { recursive: true });
@@ -719,15 +738,8 @@ export async function runSubagentSession(
       packet_error: packet.packetError,
       claimed_packet: packet.claimedPacket,
       run_record: runRecord,
-      model_changed_from_manifest: Boolean(
-        manifest &&
-          (manifest.initial_model_class
-            ? manifest.initial_model_class !== resolved.modelClass
-            : modelRefForComparison(manifest.initial_model) !== resolved.model),
-      ),
-      thinking_level_changed_from_manifest: Boolean(
-        manifest && manifest.initial_thinking_level !== resolved.thinkingLevel,
-      ),
+      model_changed_from_manifest: modelChangedFromManifest(manifest, resolved),
+      thinking_level_changed_from_manifest: thinkingLevelChangedFromManifest(manifest, resolved),
     };
     if (!result.success && result.run_record.stop_reason !== "cancelled") {
       const failureInput = { ...result, session_established: attemptSessionEstablished };

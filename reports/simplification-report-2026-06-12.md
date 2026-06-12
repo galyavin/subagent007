@@ -778,6 +778,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 126/126.
 
+## Loop 50 - Named Session Manifest Drift Predicates
+
+Finding: `runSubagentSession` computes `model_changed_from_manifest` and `thinking_level_changed_from_manifest` inline inside the public result object. The predicates are session-manifest drift rules, not result-shape construction, and one embeds the legacy manifest fallback through `modelRefForComparison`.
+
+Behavior check: extracting the predicates should not change observable behavior if null manifests still produce `false`, current class-based manifests still compare `initial_model_class` to the resolved model class, legacy manifests without `initial_model_class` still compare normalized `initial_model` to the resolved model, and thinking-level drift still compares `initial_thinking_level` directly.
+
+Oracle: the existing session test already covers the true class-based drift case. Add pinning assertions for the null-manifest false case and the legacy no-class false fallback before extracting the predicates.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added pinning assertions for null-manifest and legacy no-class manifest drift behavior, then extracted `modelChangedFromManifest` and `thinkingLevelChangedFromManifest`.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/session.test.ts` passed; targeted tests passed 11/11.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 126/126.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
