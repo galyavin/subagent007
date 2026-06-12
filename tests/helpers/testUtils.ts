@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 
 export async function readJsonl<T>(filePath: string): Promise<T[]> {
@@ -7,6 +8,10 @@ export async function readJsonl<T>(filePath: string): Promise<T[]> {
     .split("\n")
     .filter((line) => line.trim() !== "")
     .map((line) => JSON.parse(line) as T);
+}
+
+export async function sha256File(filePath: string): Promise<string> {
+  return createHash("sha256").update(await fs.readFile(filePath)).digest("hex");
 }
 
 export async function withEnv<T>(

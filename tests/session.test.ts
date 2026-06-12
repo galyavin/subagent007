@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -7,7 +6,7 @@ import { test } from "node:test";
 import { runSubagentSession } from "../src/session.js";
 import type { SessionManifest, SessionRunRecord } from "../src/types.js";
 import { createFakePiChild } from "./helpers/fakePiChild.js";
-import { readJsonl, withEnv } from "./helpers/testUtils.js";
+import { readJsonl, sha256File, withEnv } from "./helpers/testUtils.js";
 
 async function createSessionFixture(): Promise<{
   projectDir: string;
@@ -57,10 +56,6 @@ async function writeSkillFixture(root: string, name: string): Promise<string> {
     "utf8",
   );
   return skillPath;
-}
-
-async function sha256File(filePath: string): Promise<string> {
-  return createHash("sha256").update(await fs.readFile(filePath)).digest("hex");
 }
 
 test("run_subagent_session rejects raw session_id", async () => {

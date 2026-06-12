@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -15,7 +14,7 @@ import {
 } from "../src/runSubagent.js";
 import { preparePublicTranscriptFromProcessOutput } from "../src/transcript.js";
 import { createFakePiChild } from "./helpers/fakePiChild.js";
-import { readJsonl, withEnv } from "./helpers/testUtils.js";
+import { readJsonl, sha256File, withEnv } from "./helpers/testUtils.js";
 
 type RunSubagentMetadata = {
   run_id: string;
@@ -119,10 +118,6 @@ async function writeSkillFixture(root: string, name: string): Promise<string> {
     "utf8",
   );
   return skillPath;
-}
-
-async function sha256File(filePath: string): Promise<string> {
-  return createHash("sha256").update(await fs.readFile(filePath)).digest("hex");
 }
 
 async function waitForTerminalRun(client: Client, runId: string): Promise<RunSubagentMetadata> {
