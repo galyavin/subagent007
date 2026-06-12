@@ -414,6 +414,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 27 - Single Transcript Input Request Id Projection
+
+Finding: `publicLineForEvent` in `src/transcript.ts` repeats the same request-id fallback expression in the three input-event branches: `input_request`, `input_timed_out`, and `input_closed`. This is one transcript projection primitive duplicated across three public input status lines.
+
+Behavior check: extracting the request-id projection should not change observable behavior if missing or non-string request ids still render as `unknown` and each branch keeps the same text, kind, and event values.
+
+Oracle: existing run lifecycle and input mailbox tests cover pending input, input timeouts, input closure, public events, transcript redaction, and late-answer handling. No new pinning test is needed for this expression-only extraction.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added `eventRequestId` and reused it for input-required, input-timeout, and input-closed transcript event rendering.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts tests/input-mailbox.test.ts tests/timeout-budget.test.ts` passed; targeted tests passed 53/53.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

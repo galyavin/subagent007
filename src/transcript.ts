@@ -86,20 +86,24 @@ function eventMessageLine(event: Record<string, unknown>): PublicOutputLine | nu
   };
 }
 
+function eventRequestId(event: Record<string, unknown>): string {
+  return typeof event.request_id === "string" ? event.request_id : "unknown";
+}
+
 function publicLineForEvent(event: Record<string, unknown>): PublicOutputLine | null {
   switch (event.type) {
     case "subagent007.input_request": {
-      const requestId = typeof event.request_id === "string" ? event.request_id : "unknown";
+      const requestId = eventRequestId(event);
       const question = typeof event.question === "string" ? event.question : "";
       const suffix = question.trim() === "" ? "" : ` ${question.trim()}`;
       return { text: `[input_required] ${requestId}${suffix}`, kind: "input", event: "input_required" };
     }
     case "subagent007.input_timed_out": {
-      const requestId = typeof event.request_id === "string" ? event.request_id : "unknown";
+      const requestId = eventRequestId(event);
       return { text: `[input_timed_out] ${requestId}`, kind: "input", event: "input_timed_out" };
     }
     case "subagent007.input_closed": {
-      const requestId = typeof event.request_id === "string" ? event.request_id : "unknown";
+      const requestId = eventRequestId(event);
       return { text: `[input_closed] ${requestId}`, kind: "input", event: "input_closed" };
     }
     case "subagent007.error": {
