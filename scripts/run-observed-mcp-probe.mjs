@@ -208,6 +208,8 @@ function responseMatchesResultClass(response, resultClass) {
   if (!response) {
     return false;
   }
+  const completedAfterPolling =
+    response.success === true && response.status === "completed" && response.polled === true;
   if (resultClass === "success") {
     return response.is_error === false && response.success !== false;
   }
@@ -230,10 +232,10 @@ function responseMatchesResultClass(response, resultClass) {
     return response.success === false && response.timed_out === true && response.timeout_recovery_hint === true;
   }
   if (resultClass === "async_polling") {
-    return response.success === true && response.status === "completed" && response.polled === true;
+    return completedAfterPolling;
   }
   if (resultClass === "scheduled_durable") {
-    return response.success === true && response.status === "completed" && response.polled === true && response.scheduled === true;
+    return completedAfterPolling && response.scheduled === true;
   }
   if (resultClass === "input_answered") {
     return response.success === true && response.input_answered === true;
