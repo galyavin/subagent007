@@ -570,6 +570,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 37 - Shared Child Termination Mechanics
+
+Finding: `runChildProcess` handles timeout and cancellation with duplicated mechanics after setting their distinct state: append a control marker to output, emit each marker line through the best-effort public output callback, send SIGTERM, then schedule SIGKILL and forced finish using the same grace timers.
+
+Behavior check: extracting only those shared mechanics should not change observable behavior if timeout still sets `timedOut`, cancellation still sets `cancelled`, marker text and line emission order stay the same, and the same timers are assigned after SIGTERM.
+
+Oracle: existing timeout-budget tests cover timeout markers, cancellation markers through run-task cancellation paths, stop reasons, forced timeout cleanup, and heartbeat timer cleanup. No new pinning test is needed for this local process-runner mechanics extraction.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added `appendControlMarker` and `startGracefulTermination` inside `runChildProcess`, then reused them for timeout and cancellation termination paths.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/timeout-budget.test.ts tests/run-subagent.test.ts` passed; targeted tests passed 48/48.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

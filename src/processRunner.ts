@@ -160,38 +160,14 @@ export function runChildProcess(options: ProcessRunOptions): Promise<ProcessRunR
       child.kill(signal);
     };
 
-    if (options.timeoutBudget.effectiveTimeoutMs !== null) {
-      timeout = setTimeout(() => {
-        timedOut = true;
-        const marker = timeoutMarker(options.timeoutBudget);
-        chunks.push(Buffer.from(marker));
-        for (const line of marker.split(/\r?\n/)) {
-          emitOutputLine(line);
-        }
-        signalChild("SIGTERM");
-        killTimeout = setTimeout(() => {
-          if (!closed) {
-            signalChild("SIGKILL");
-          }
-        }, options.timeoutBudget.killGraceMs);
-        forceTimeout = setTimeout(() => {
-          if (!closed) {
-            finish(null);
-          }
-        }, forceFinishDelayMs);
-      }, options.timeoutBudget.effectiveTimeoutMs);
-    }
-
-    abortListener = () => {
-      if (settled || closed) {
-        return;
-      }
-      cancelled = true;
-      const marker = "\n[subagent007 cancelled]\n";
+    const appendControlMarker = (marker: string) => {
       chunks.push(Buffer.from(marker));
       for (const line of marker.split(/\r?\n/)) {
         emitOutputLine(line);
       }
+    };
+
+    const startGracefulTermination = () => {
       signalChild("SIGTERM");
       killTimeout = setTimeout(() => {
         if (!closed) {
@@ -203,6 +179,25 @@ export function runChildProcess(options: ProcessRunOptions): Promise<ProcessRunR
           finish(null);
         }
       }, forceFinishDelayMs);
+    };
+
+    if (options.timeoutBudget.effectiveTimeoutMs !== null) {
+      timeout = setTimeout(() => {
+        timedOut = true;
+        const marker = timeoutMarker(options.timeoutBudget);
+        appendControlMarker(marker);
+        startGracefulTermination();
+      }, options.timeoutBudget.effectiveTimeoutMs);
+    }
+
+    abortListener = () => {
+      if (settled || closed) {
+        return;
+      }
+      cancelled = true;
+      const marker = "\n[subagent007 cancelled]\n";
+      appendControlMarker(marker);
+      startGracefulTermination();
     };
     if (options.abortSignal?.aborted) {
       abortListener();
