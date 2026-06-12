@@ -523,10 +523,11 @@ async function loadSnapshotEvents(
         : {}),
     };
   }
+  const lastPublicOutputExcerpt = publicOutputExcerptProjection(events);
   return {
     recent_events: recentEventsProjection(events),
-    ...(publicOutputExcerptProjection(events)
-      ? { last_public_output_excerpt: publicOutputExcerptProjection(events) }
+    ...(lastPublicOutputExcerpt
+      ? { last_public_output_excerpt: lastPublicOutputExcerpt }
       : {}),
   };
 }
