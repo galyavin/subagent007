@@ -1240,6 +1240,22 @@ Targeted oracle result: `npm run typecheck`, `npm run build`, `node scripts/run-
 
 Full oracle result: `npm test` passed 136/136.
 
+## Loop 79 - Inline Single-Use Schedule Terminal Status Helper
+
+Finding: `isTerminalStatus()` in `src/runTask.ts` is a one-call helper used only by `isScheduleReturnableStatus()`. It no longer removes duplication; it splits one local scheduler-return predicate across two tiny functions.
+
+Behavior check: inlining the same terminal status checks into `isScheduleReturnableStatus()` should not change observable behavior if completed, failed, cancelled, and input-required statuses remain the only schedule-returnable states.
+
+Oracle: existing run-subagent tests cover `schedule_run` immediate completion, active working return, input-required return, cancellation, and terminal polling. No new pinning test is needed for a same-predicate inline.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: removed `isTerminalStatus()` and inlined the exact completed/failed/cancelled/input-required predicate in `isScheduleReturnableStatus()`.
+
+Targeted oracle result: `npm run typecheck`, `npm run build`, and `node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts` passed; targeted tests passed 43/43.
+
+Full oracle result: `npm test` passed 136/136.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle has historically had an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run; the latest sequential `npm test` completed cleanly, but the constraint is still part of the oracle design.

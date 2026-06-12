@@ -709,12 +709,8 @@ function scheduleWaitMs(value: unknown): number {
   return value;
 }
 
-function isTerminalStatus(status: RunTaskStatus): boolean {
-  return status === "completed" || status === "failed" || status === "cancelled";
-}
-
 function isScheduleReturnableStatus(status: RunTaskStatus): boolean {
-  return isTerminalStatus(status) || status === "input_required";
+  return status === "completed" || status === "failed" || status === "cancelled" || status === "input_required";
 }
 
 async function waitForReturnableRun(started: RunTaskView, waitMs: number): Promise<RunTaskView> {
