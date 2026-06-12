@@ -106,6 +106,18 @@ interface RunTaskState {
   sessionKey?: string;
 }
 
+type RunTaskProgressView = Pick<
+  RunTaskView,
+  | "elapsed_ms"
+  | "last_progress_at"
+  | "last_progress_message"
+  | "heartbeat_count"
+  | "active_phase"
+  | "last_phase_at"
+  | "recent_events"
+  | "last_public_output_excerpt"
+>;
+
 const tasks = new Map<string, RunTaskState>();
 const DEFAULT_SCHEDULE_WAIT_MS = 1_000;
 
@@ -193,19 +205,9 @@ async function taskInputRequests(state: RunTaskState): Promise<InputRequestView[
   return listInputRequests({ mailboxRoot: state.mailboxRoot, runId: state.runId });
 }
 
-function activeProgressView(state: RunTaskState): Pick<
-  RunTaskView,
-  | "elapsed_ms"
-  | "last_progress_at"
-  | "last_progress_message"
-  | "heartbeat_count"
-  | "active_phase"
-  | "last_phase_at"
-  | "recent_events"
-  | "last_public_output_excerpt"
-> {
+function progressView(state: RunTaskState, elapsedMs: number): RunTaskProgressView {
   return {
-    elapsed_ms: Math.max(0, Date.now() - Date.parse(state.startedAt)),
+    elapsed_ms: elapsedMs,
     ...(state.lastProgressAt ? { last_progress_at: state.lastProgressAt } : {}),
     ...(state.lastProgressMessage ? { last_progress_message: state.lastProgressMessage } : {}),
     heartbeat_count: state.heartbeatCount,
@@ -216,30 +218,15 @@ function activeProgressView(state: RunTaskState): Pick<
   };
 }
 
+function activeProgressView(state: RunTaskState): RunTaskProgressView {
+  return progressView(state, Math.max(0, Date.now() - Date.parse(state.startedAt)));
+}
+
 function terminalProgressView(
   state: RunTaskState,
   result: RunTaskTerminalResult,
-): Pick<
-  RunTaskView,
-  | "elapsed_ms"
-  | "last_progress_at"
-  | "last_progress_message"
-  | "heartbeat_count"
-  | "active_phase"
-  | "last_phase_at"
-  | "recent_events"
-  | "last_public_output_excerpt"
-> {
-  return {
-    elapsed_ms: result.duration_ms,
-    ...(state.lastProgressAt ? { last_progress_at: state.lastProgressAt } : {}),
-    ...(state.lastProgressMessage ? { last_progress_message: state.lastProgressMessage } : {}),
-    heartbeat_count: state.heartbeatCount,
-    active_phase: state.activePhase,
-    last_phase_at: state.lastPhaseAt,
-    recent_events: state.recentEvents,
-    ...(state.lastPublicOutputExcerpt ? { last_public_output_excerpt: state.lastPublicOutputExcerpt } : {}),
-  };
+): RunTaskProgressView {
+  return progressView(state, result.duration_ms);
 }
 
 function setTaskProgress(state: RunTaskState, message: string, heartbeatCount = state.heartbeatCount): void {

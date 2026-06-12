@@ -398,6 +398,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 26 - Single Run Task Progress Projection
+
+Finding: `activeProgressView` and `terminalProgressView` in `src/runTask.ts` duplicate the same public progress fields: last progress timestamp/message, heartbeat count, active phase, phase timestamp, recent events, and optional public-output excerpt. They differ only in the source of `elapsed_ms`.
+
+Behavior check: extracting a shared projection should not change observable behavior if both callers keep the same `elapsed_ms` value and the returned public task view preserves the same field names, insertion order, and optional-field omission rules.
+
+Oracle: existing run lifecycle, timeout, session, and input mailbox tests assert active progress, terminal snapshots, heartbeat counts, recent events, timeout metadata, and restart snapshots. No new pinning test is needed for this projection-only extraction.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: introduced `RunTaskProgressView` and `progressView`, then reused the shared projection from active and terminal task views while leaving each caller's `elapsed_ms` calculation unchanged.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts tests/session.test.ts tests/input-mailbox.test.ts tests/timeout-budget.test.ts` passed; targeted tests passed 64/64.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
