@@ -521,10 +521,6 @@ async function observeOutputLine(state: RunTaskState, line: string): Promise<voi
   await writeTaskSnapshot(await getRunTask(state.runId));
 }
 
-function taskOutputObserver(state: RunTaskState): (line: string) => Promise<void> {
-  return (line) => observeOutputLine(state, line);
-}
-
 function taskChildRuntimeOptions(
   state: RunTaskState,
   options: { heartbeat?: HeartbeatNotify; heartbeatIntervalMs?: number },
@@ -538,7 +534,7 @@ function taskChildRuntimeOptions(
     heartbeat: (beat, message) => handleTaskHeartbeat(state, beat, message, options.heartbeat),
     heartbeatIntervalMs: options.heartbeatIntervalMs,
     abortSignal: state.abortController.signal,
-    onOutputLine: taskOutputObserver(state),
+    onOutputLine: (line) => observeOutputLine(state, line),
   };
 }
 
