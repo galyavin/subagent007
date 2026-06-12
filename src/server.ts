@@ -229,10 +229,11 @@ const runInputSchema = z.strictObject({
   run_kind: runKindSchema,
   continuity: continuitySchema.optional(),
 }, {
-  error: (issue) =>
-    issue.code === "unrecognized_keys" && issue.keys.includes("timeout_ms")
-      ? "timeout_ms is not supported by run_subagent; use schedule_run or start_run for timed work"
-      : undefined,
+  error: (issue) => unrecognizedKeySchemaError(
+    issue,
+    "timeout_ms",
+    "timeout_ms is not supported by run_subagent; use schedule_run or start_run for timed work",
+  ),
 });
 
 const timedRunInputSchema = {
@@ -254,13 +255,25 @@ const timedSessionInputSchema = {
     .optional(),
 };
 
+function unrecognizedKeySchemaError(
+  issue: { code: string; keys?: string[] },
+  key: string,
+  message: string,
+): string | undefined {
+  return issue.code === "unrecognized_keys" && issue.keys?.includes(key)
+    ? message
+    : undefined;
+}
+
 function rawSessionIdSchemaError(
   toolName: "start_run" | "schedule_run",
   issue: { code: string; keys?: string[] },
 ): string | undefined {
-  return issue.code === "unrecognized_keys" && issue.keys?.includes("session_id")
-    ? `session_id is not a ${toolName} input; use continuity.mode fresh or continuity.mode resume with continuity.session_id`
-    : undefined;
+  return unrecognizedKeySchemaError(
+    issue,
+    "session_id",
+    `session_id is not a ${toolName} input; use continuity.mode fresh or continuity.mode resume with continuity.session_id`,
+  );
 }
 
 const startRunInputSchema = z.strictObject(timedRunInputSchema, {
@@ -285,10 +298,11 @@ const runSessionInputSchema = z.strictObject({
   resume_mode: z.enum(RESUME_MODES).optional(),
   packet_policy: z.enum(SESSION_PACKET_POLICIES).optional(),
 }, {
-  error: (issue) =>
-    issue.code === "unrecognized_keys" && issue.keys.includes("continuity")
-      ? "continuity is not supported by run_subagent_session; use session_key and resume_mode"
-      : undefined,
+  error: (issue) => unrecognizedKeySchemaError(
+    issue,
+    "continuity",
+    "continuity is not supported by run_subagent_session; use session_key and resume_mode",
+  ),
 });
 
 async function listModelClassesResult(): Promise<ReturnType<typeof jsonToolResult<Record<string, unknown>>>> {

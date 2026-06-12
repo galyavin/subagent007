@@ -1459,6 +1459,22 @@ test("MCP start_session_run rejects invalid session input before creating a task
 
 test("MCP run_subagent_session returns structured preflight rejection for invalid session input", async () => {
   await connectFakeClient(async (client, { projectDir }) => {
+    const rawContinuityResponse = await client.callTool({
+      name: "run_subagent_session",
+      arguments: {
+        cwd: projectDir,
+        prompt: "FAST",
+        session_key: "coherent-execution:T000-continuity",
+        continuity: { mode: "fresh" },
+      },
+    });
+    assert.equal(rawContinuityResponse.isError, true);
+    const rawContinuityContent = rawContinuityResponse.content as Array<{ type: string; text?: string }>;
+    assert.match(
+      rawContinuityContent[0]?.type === "text" ? (rawContinuityContent[0].text ?? "") : "",
+      /continuity is not supported by run_subagent_session/,
+    );
+
     const response = await client.callTool({
       name: "run_subagent_session",
       arguments: {
