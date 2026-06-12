@@ -140,6 +140,30 @@ function taskNotFound(runId: string): ValidationError {
   return new ValidationError(`run not found: ${runId}`);
 }
 
+function createRunTaskState(taskKind: "run" | "session", sessionKey?: string): RunTaskState {
+  const runId = newRunId();
+  const mailboxRoot = defaultInputRequestsDir();
+  const startedAt = new Date().toISOString();
+  const state: RunTaskState = {
+    runId,
+    startedAt,
+    mailboxRoot,
+    inputRequestsDir: path.join(mailboxRoot, runId),
+    abortController: new AbortController(),
+    taskKind,
+    cancelRequested: false,
+    heartbeatCount: 0,
+    activePhase: "starting",
+    lastPhaseAt: startedAt,
+    recentEvents: [],
+    terminalSnapshotStarted: false,
+    promise: Promise.resolve(),
+    ...(sessionKey ? { sessionKey } : {}),
+  };
+  setTaskProgress(state, DEFAULT_HEARTBEAT_MESSAGE, 0);
+  return state;
+}
+
 function setTaskPhase(state: RunTaskState, phase: RunTaskActivePhase, occurredAt = new Date().toISOString()): void {
   if (state.terminalSnapshotStarted) {
     return;
@@ -530,40 +554,19 @@ export async function startRunTask(
   const config = await loadConfig();
   await validateAndResolveRequest(request, config);
 
-  const runId = newRunId();
-  const mailboxRoot = defaultInputRequestsDir();
-  const abortController = new AbortController();
-  const startedAt = new Date().toISOString();
-  const inputRequestsDir = path.join(mailboxRoot, runId);
-
-  const state: RunTaskState = {
-    runId,
-    startedAt,
-    mailboxRoot,
-    inputRequestsDir,
-    abortController,
-    taskKind: "run",
-    cancelRequested: false,
-    heartbeatCount: 0,
-    activePhase: "starting",
-    lastPhaseAt: startedAt,
-    recentEvents: [],
-    terminalSnapshotStarted: false,
-    promise: Promise.resolve(),
-  };
-  setTaskProgress(state, DEFAULT_HEARTBEAT_MESSAGE, 0);
-  tasks.set(runId, state);
+  const state = createRunTaskState("run");
+  tasks.set(state.runId, state);
   await appendRunStartedEvent(state, request);
-  await writeTaskSnapshot(await getRunTask(runId));
+  await writeTaskSnapshot(await getRunTask(state.runId));
 
   state.promise = (async () => {
     try {
       await appendChildSpawnEvent(state);
       markChildRunningSilently(state);
-      await writeTaskSnapshot(await getRunTask(runId));
+      await writeTaskSnapshot(await getRunTask(state.runId));
       state.result = await runSubagentCore(request, {
-        runId,
-        mailboxRoot,
+        runId: state.runId,
+        mailboxRoot: state.mailboxRoot,
         runsDir: options.runsDir,
         failureLogTool: "start_run",
         allowTimeout: true,
@@ -572,11 +575,11 @@ export async function startRunTask(
             setTaskPhase(state, "running");
           }
           setTaskProgress(state, message ?? DEFAULT_HEARTBEAT_MESSAGE, beat);
-          await writeTaskSnapshot(await getRunTask(runId));
+          await writeTaskSnapshot(await getRunTask(state.runId));
           await options.heartbeat?.(beat, message);
         },
         heartbeatIntervalMs: options.heartbeatIntervalMs,
-        abortSignal: abortController.signal,
+        abortSignal: state.abortController.signal,
         onOutputLine: (line) => observeOutputLine(state, line),
       });
     } catch (error) {
@@ -594,17 +597,17 @@ export async function startRunTask(
       state.finishedAt = new Date().toISOString();
       const closed = await closePendingInputRequestsForRun({
         mailboxRoot: state.mailboxRoot,
-        runId,
+        runId: state.runId,
         reason: state.cancelRequested ? "run cancelled" : "run reached a terminal state",
       });
       await appendClosedInputEvents(state, closed);
       await appendTerminalEvent(state);
       state.terminalSnapshotStarted = true;
-      await writeTaskSnapshot(await getRunTask(runId));
+      await writeTaskSnapshot(await getRunTask(state.runId));
     }
   })();
 
-  return getRunTask(runId);
+  return getRunTask(state.runId);
 }
 
 function scheduleWaitMs(value: unknown): number {
@@ -667,38 +670,19 @@ export async function startSessionRunTask(
 ): Promise<RunTaskView> {
   await validateRunSubagentSessionRequestPreflight(request);
 
-  const runId = newRunId();
-  const mailboxRoot = defaultInputRequestsDir();
-  const abortController = new AbortController();
-  const startedAt = new Date().toISOString();
-  const inputRequestsDir = path.join(mailboxRoot, runId);
-
-  const state: RunTaskState = {
-    runId,
-    startedAt,
-    mailboxRoot,
-    inputRequestsDir,
-    abortController,
-    taskKind: "session",
-    cancelRequested: false,
-    heartbeatCount: 0,
-    activePhase: "starting",
-    lastPhaseAt: startedAt,
-    recentEvents: [],
-    terminalSnapshotStarted: false,
-    promise: Promise.resolve(),
-    sessionKey: typeof request.session_key === "string" ? request.session_key : undefined,
-  };
-  setTaskProgress(state, DEFAULT_HEARTBEAT_MESSAGE, 0);
-  tasks.set(runId, state);
+  const state = createRunTaskState(
+    "session",
+    typeof request.session_key === "string" ? request.session_key : undefined,
+  );
+  tasks.set(state.runId, state);
   await appendRunStartedEvent(state, request);
-  await writeTaskSnapshot(await getRunTask(runId));
+  await writeTaskSnapshot(await getRunTask(state.runId));
 
   state.promise = (async () => {
     try {
       await appendChildSpawnEvent(state);
       markChildRunningSilently(state);
-      await writeTaskSnapshot(await getRunTask(runId));
+      await writeTaskSnapshot(await getRunTask(state.runId));
       state.result = await runSubagentSession(request, {
         sessionsDir: options.sessionsDir,
         heartbeat: async (beat, message) => {
@@ -706,14 +690,14 @@ export async function startSessionRunTask(
             setTaskPhase(state, "running");
           }
           setTaskProgress(state, message ?? DEFAULT_HEARTBEAT_MESSAGE, beat);
-          await writeTaskSnapshot(await getRunTask(runId));
+          await writeTaskSnapshot(await getRunTask(state.runId));
           await options.heartbeat?.(beat, message);
         },
         heartbeatIntervalMs: options.heartbeatIntervalMs,
-        abortSignal: abortController.signal,
-        mailboxRoot,
-        childRunId: runId,
-        taskId: runId,
+        abortSignal: state.abortController.signal,
+        mailboxRoot: state.mailboxRoot,
+        childRunId: state.runId,
+        taskId: state.runId,
         onOutputLine: (line) => observeOutputLine(state, line),
       });
     } catch (error) {
@@ -731,17 +715,17 @@ export async function startSessionRunTask(
       state.finishedAt = new Date().toISOString();
       const closed = await closePendingInputRequestsForRun({
         mailboxRoot: state.mailboxRoot,
-        runId,
+        runId: state.runId,
         reason: state.cancelRequested ? "run cancelled" : "run reached a terminal state",
       });
       await appendClosedInputEvents(state, closed);
       await appendTerminalEvent(state);
       state.terminalSnapshotStarted = true;
-      await writeTaskSnapshot(await getRunTask(runId));
+      await writeTaskSnapshot(await getRunTask(state.runId));
     }
   })();
 
-  return getRunTask(runId);
+  return getRunTask(state.runId);
 }
 
 export async function runSubagentSessionTaskAndWait(
@@ -774,40 +758,19 @@ export async function runSubagentOneShotTask(
   assertRunSubagentOneShotCompatible(request, resolved);
   await assertModelClassUsableForOneShot(resolved.modelClass);
 
-  const runId = newRunId();
-  const mailboxRoot = defaultInputRequestsDir();
-  const abortController = new AbortController();
-  const startedAt = new Date().toISOString();
-  const inputRequestsDir = path.join(mailboxRoot, runId);
-
-  const state: RunTaskState = {
-    runId,
-    startedAt,
-    mailboxRoot,
-    inputRequestsDir,
-    abortController,
-    taskKind: "run",
-    cancelRequested: false,
-    heartbeatCount: 0,
-    activePhase: "starting",
-    lastPhaseAt: startedAt,
-    recentEvents: [],
-    terminalSnapshotStarted: false,
-    promise: Promise.resolve(),
-  };
-  setTaskProgress(state, DEFAULT_HEARTBEAT_MESSAGE, 0);
-  tasks.set(runId, state);
+  const state = createRunTaskState("run");
+  tasks.set(state.runId, state);
   await appendRunStartedEvent(state, request);
-  await writeTaskSnapshot(await getRunTask(runId));
+  await writeTaskSnapshot(await getRunTask(state.runId));
 
   state.promise = (async () => {
     try {
       await appendChildSpawnEvent(state);
       markChildRunningSilently(state);
-      await writeTaskSnapshot(await getRunTask(runId));
+      await writeTaskSnapshot(await getRunTask(state.runId));
       state.result = await runSubagentCore(request, {
-        runId,
-        mailboxRoot,
+        runId: state.runId,
+        mailboxRoot: state.mailboxRoot,
         runsDir: options.runsDir,
         failureLogTool: "run_subagent",
         heartbeat: async (beat, message) => {
@@ -815,11 +778,11 @@ export async function runSubagentOneShotTask(
             setTaskPhase(state, "running");
           }
           setTaskProgress(state, message ?? DEFAULT_HEARTBEAT_MESSAGE, beat);
-          await writeTaskSnapshot(await getRunTask(runId));
+          await writeTaskSnapshot(await getRunTask(state.runId));
           await options.heartbeat?.(beat, message);
         },
         heartbeatIntervalMs: options.heartbeatIntervalMs,
-        abortSignal: abortController.signal,
+        abortSignal: state.abortController.signal,
         onOutputLine: (line) => observeOutputLine(state, line),
       });
     } catch (error) {
@@ -837,25 +800,25 @@ export async function runSubagentOneShotTask(
       state.finishedAt = new Date().toISOString();
       const closed = await closePendingInputRequestsForRun({
         mailboxRoot: state.mailboxRoot,
-        runId,
+        runId: state.runId,
         reason: "run reached a terminal state",
       });
       await appendClosedInputEvents(state, closed);
       await appendTerminalEvent(state);
       state.terminalSnapshotStarted = true;
-      await writeTaskSnapshot(await getRunTask(runId));
+      await writeTaskSnapshot(await getRunTask(state.runId));
     }
   })();
 
   await state.promise;
-  const view = await getRunTask(runId);
+  const view = await getRunTask(state.runId);
   if (
     view.timed_out === true &&
     view.timeout_recovery_hint === undefined
   ) {
     const withHint: RunTaskView = {
       ...view,
-      timeout_recovery_hint: `${RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT} Inspect this run with get_run using run_id ${runId}.`,
+      timeout_recovery_hint: `${RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT} Inspect this run with get_run using run_id ${state.runId}.`,
     };
     await writeTaskSnapshot(withHint);
     if (state.result) {
@@ -866,7 +829,7 @@ export async function runSubagentOneShotTask(
   if (view.timeout_recovery_hint) {
     const withConcreteHint: RunTaskView = {
       ...view,
-      timeout_recovery_hint: `${view.timeout_recovery_hint} Inspect this run with get_run using run_id ${runId}.`,
+      timeout_recovery_hint: `${view.timeout_recovery_hint} Inspect this run with get_run using run_id ${state.runId}.`,
     };
     await writeTaskSnapshot(withConcreteHint);
     if (state.result) {
