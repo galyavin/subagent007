@@ -502,6 +502,14 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.equal(names.includes("list_allowed_models"), true);
     assert.equal(names.includes("run_codex"), false);
     assert.equal(names.includes("run_codex_session"), false);
+    const listModelClassesTool = response.tools.find((tool) => tool.name === "list_model_classes");
+    assert.ok(listModelClassesTool);
+    assert.equal(listModelClassesTool.title, "List Model Classes");
+    assert.equal(listModelClassesTool.description, "List the Subagent007 capability classes accepted by this MCP server.");
+    const listAllowedModelsTool = response.tools.find((tool) => tool.name === "list_allowed_models");
+    assert.ok(listAllowedModelsTool);
+    assert.equal(listAllowedModelsTool.title, "List Model Classes");
+    assert.equal(listAllowedModelsTool.description, "Compatibility alias for list_model_classes.");
     const runSubagentTool = response.tools.find((tool) => tool.name === "run_subagent");
     assert.ok(runSubagentTool);
     assert.equal(

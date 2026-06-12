@@ -1064,6 +1064,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 131/131.
 
+## Loop 68 - Share Model-Class Tool Registration
+
+Finding: `src/server.ts` registers `list_model_classes` and the compatibility alias `list_allowed_models` with the same title, empty input schema, failure-logging wrapper shape, and handler; only the tool name and description differ.
+
+Behavior check: extracting a small registration helper should not change observable behavior if both tool names, titles, descriptions, schemas, failure-log tool ids, and payloads remain unchanged.
+
+Oracle: existing MCP tests cover both tool names being exposed and `list_allowed_models` returning the same structured payload as `list_model_classes`, but they do not pin the listTools title/description metadata. Add those focused assertions before extracting the helper.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added listTools title/description assertions for `list_model_classes` and `list_allowed_models`, then introduced `registerModelClassListTool` for their shared registration shape.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts tests/failure-log.test.ts` passed; targeted tests passed 55/55.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 131/131.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

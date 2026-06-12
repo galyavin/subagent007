@@ -346,25 +346,26 @@ async function listModelClassesResult(): Promise<ReturnType<typeof jsonToolResul
   return jsonToolResult(result, result);
 }
 
-server.registerTool(
-  "list_model_classes",
-  {
-    title: "List Model Classes",
-    description: "List the Subagent007 capability classes accepted by this MCP server.",
-    inputSchema: {},
-  },
-  withFailureLogging("list_model_classes", async () => listModelClassesResult()),
-);
+function registerModelClassListTool(
+  name: Extract<FailureLogTool, "list_model_classes" | "list_allowed_models">,
+  description: string,
+): void {
+  server.registerTool(
+    name,
+    {
+      title: "List Model Classes",
+      description,
+      inputSchema: {},
+    },
+    withFailureLogging(name, async () => listModelClassesResult()),
+  );
+}
 
-server.registerTool(
-  "list_allowed_models",
-  {
-    title: "List Model Classes",
-    description: "Compatibility alias for list_model_classes.",
-    inputSchema: {},
-  },
-  withFailureLogging("list_allowed_models", async () => listModelClassesResult()),
+registerModelClassListTool(
+  "list_model_classes",
+  "List the Subagent007 capability classes accepted by this MCP server.",
 );
+registerModelClassListTool("list_allowed_models", "Compatibility alias for list_model_classes.");
 
 server.registerTool(
   "schedule_run",
