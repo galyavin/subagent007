@@ -49,6 +49,11 @@ export interface InputRequestView extends InputRequestRecord {
   closed_at?: string;
 }
 
+type InputRequestStatusView = Pick<
+  InputRequestView,
+  "status" | "settled_at" | "answered_at" | "timed_out_at" | "closed_at"
+>;
+
 export function defaultInputRequestsDir(): string {
   return defaultSubagentStatePath("SUBAGENT007_INPUT_REQUESTS_DIR", "input-requests");
 }
@@ -156,35 +161,33 @@ async function readSettledAnswer(recordPath: string): Promise<InputAnswerRecord 
   return readJson<InputAnswerRecord>(answerPathFor(recordPath));
 }
 
-function terminalStatusView(record: InputTerminalRecord): {
-  status: InputRequestStatus;
-  settled_at?: string;
-  answered_at?: string;
-  timed_out_at?: string;
-  closed_at?: string;
-} | null {
-  if (record.status === "answered") {
+function settlementStatusView(status: unknown, settledAt: string): InputRequestStatusView | null {
+  if (status === "answered") {
     return {
       status: "answered",
-      settled_at: record.settled_at,
-      answered_at: record.settled_at,
+      settled_at: settledAt,
+      answered_at: settledAt,
     };
   }
-  if (record.status === "timed_out") {
+  if (status === "timed_out") {
     return {
       status: "timed_out",
-      settled_at: record.settled_at,
-      timed_out_at: record.settled_at,
+      settled_at: settledAt,
+      timed_out_at: settledAt,
     };
   }
-  if (record.status === "closed") {
+  if (status === "closed") {
     return {
       status: "closed",
-      settled_at: record.settled_at,
-      closed_at: record.settled_at,
+      settled_at: settledAt,
+      closed_at: settledAt,
     };
   }
   return null;
+}
+
+function terminalStatusView(record: InputTerminalRecord): InputRequestStatusView | null {
+  return settlementStatusView(record.status, record.settled_at);
 }
 
 async function requestStatus(recordPath: string): Promise<{
@@ -203,11 +206,17 @@ async function requestStatus(recordPath: string): Promise<{
   }
   const answer = await readJson<InputAnswerRecord>(answerPathFor(recordPath));
   if (answer) {
-    return { status: "answered", settled_at: answer.answered_at, answered_at: answer.answered_at };
+    const answerView = settlementStatusView("answered", answer.answered_at);
+    if (answerView) {
+      return answerView;
+    }
   }
   const timeout = await readJson<InputTimeoutRecord>(timeoutPathFor(recordPath));
   if (timeout) {
-    return { status: "timed_out", settled_at: timeout.timed_out_at, timed_out_at: timeout.timed_out_at };
+    const timeoutView = settlementStatusView("timed_out", timeout.timed_out_at);
+    if (timeoutView) {
+      return timeoutView;
+    }
   }
   return { status: "pending" };
 }

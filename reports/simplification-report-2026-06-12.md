@@ -430,6 +430,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 28 - Single Input Request Settlement Status View
+
+Finding: `src/inputMailbox.ts` builds the same public settlement status view in two places: `terminalStatusView` for terminal records and `requestStatus` for legacy `.answer.json` / `.timed_out.json` markers. The answered and timed-out branches duplicate the `status`, `settled_at`, and status-specific timestamp shape.
+
+Behavior check: extracting the status-view construction should not change observable behavior if answered, timed-out, and closed records keep the same field names, insertion order, and omission rules, and unknown terminal statuses still fall back to legacy marker checks.
+
+Oracle: existing input mailbox tests cover answered, timed-out, closed, duplicate settlement, filtering by status, and legacy answer/timeout markers. No new pinning test is needed for this projection-only extraction.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added `InputRequestStatusView` and `settlementStatusView`, then reused the shared projection from terminal records and legacy answer/timeout marker handling.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/input-mailbox.test.ts tests/run-subagent.test.ts tests/timeout-budget.test.ts` passed; targeted tests passed 53/53.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
