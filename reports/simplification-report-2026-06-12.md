@@ -1128,6 +1128,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 134/134.
 
+## Loop 72 - Remove Script Timestamp Identity Replacement
+
+Finding: `scripts/run-observed-campaign.mjs` and `scripts/archive-failure-log.mjs` both apply `.replace(/Z$/, "Z")` immediately after ISO timestamp colon/dot removal. Replacing `Z` with `Z` is a no-op for every possible string and adds semantic noise.
+
+Behavior check: removing the identity replacement cannot change the timestamp string; the preceding `.replace(/[:.]/g, "")` remains unchanged.
+
+Oracle: existing archive and observed-campaign tests exercise generated archive/campaign paths and timestamped outputs. No new pinning test is needed because the removed operation is algebraically identical.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: removed the identity `.replace(/Z$/, "Z")` call from both script timestamp helpers.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/archive-failure-log.test.ts tests/observed-campaign.test.ts` passed; targeted tests passed 19/19.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 134/134.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

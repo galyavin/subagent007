@@ -26,7 +26,7 @@ function usage() {
 }
 
 function timestampSlug() {
-  return new Date().toISOString().replace(/[:.]/g, "").replace(/Z$/, "Z");
+  return new Date().toISOString().replace(/[:.]/g, "");
 }
 
 function generatedCampaignId() {

@@ -31,7 +31,7 @@ function parseArgs(argv) {
 }
 
 function timestampSlug() {
-  return new Date().toISOString().replace(/[:.]/g, "").replace(/Z$/, "Z");
+  return new Date().toISOString().replace(/[:.]/g, "");
 }
 
 function withoutPrivatePrefix(value) {
