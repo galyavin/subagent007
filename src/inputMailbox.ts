@@ -90,6 +90,15 @@ function terminalPathFor(recordPath: string): string {
   return sidecarPathFor(recordPath, ".terminal.json");
 }
 
+function isRequestRecordFile(file: import("node:fs").Dirent): boolean {
+  return file.isFile() &&
+    file.name.endsWith(".json") &&
+    !file.name.endsWith(".answer.json") &&
+    !file.name.endsWith(".timed_out.json") &&
+    !file.name.endsWith(".terminal.json") &&
+    !file.name.includes(".tmp-");
+}
+
 async function readJson<T>(filePath: string): Promise<T | null> {
   try {
     return JSON.parse(await fs.readFile(filePath, "utf8")) as T;
@@ -270,14 +279,7 @@ export async function listInputRequests(options: {
     const runDir = path.join(mailboxRoot, runEntry.name);
     const requestFiles = await fs.readdir(runDir, { withFileTypes: true });
     for (const requestFile of requestFiles) {
-      if (
-        !requestFile.isFile() ||
-        !requestFile.name.endsWith(".json") ||
-        requestFile.name.endsWith(".answer.json") ||
-        requestFile.name.endsWith(".timed_out.json") ||
-        requestFile.name.endsWith(".terminal.json") ||
-        requestFile.name.includes(".tmp-")
-      ) {
+      if (!isRequestRecordFile(requestFile)) {
         continue;
       }
       const filePath = path.join(runDir, requestFile.name);

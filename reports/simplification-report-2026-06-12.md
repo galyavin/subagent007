@@ -730,6 +730,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 47 - Named Mailbox Request File Predicate
+
+Finding: `listInputRequests` in `src/inputMailbox.ts` embeds the primary request-record file predicate inline: require a regular `.json` file while excluding `.answer.json`, `.timed_out.json`, `.terminal.json`, and temporary files. This file-kind rule is a single reusable mailbox primitive, not loop control.
+
+Behavior check: extracting the predicate should not change observable behavior if the exact same filename checks remain in the same truth conditions.
+
+Oracle: mailbox tests cover listing pending, answered, timed-out, closed, and legacy sidecar files, and run-subagent tests cover input closure through task views. No new pinning test is needed for this local predicate extraction.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: extracted `isRequestRecordFile` and reused it in `listInputRequests`.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/input-mailbox.test.ts tests/run-subagent.test.ts` passed; targeted tests passed 46/46.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
