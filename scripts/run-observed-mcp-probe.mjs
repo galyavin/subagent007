@@ -282,16 +282,18 @@ function coverageSummary(scenarios, mode, profileName, calls = []) {
     ]);
     return groups;
   }, {});
+  const optionalSurfaces = PRODUCT_SURFACES.filter((surface) => !profile.required_surfaces.includes(surface));
+  const uncoveredSurfaces = PRODUCT_SURFACES.filter((surface) => !coveredSurfaces.includes(surface));
   return {
     profile: profileName,
     scenarios: metadata,
     required_surfaces: [...profile.required_surfaces].sort(),
-    optional_surfaces: PRODUCT_SURFACES.filter((surface) => !profile.required_surfaces.includes(surface)),
-    out_of_scope_surfaces: PRODUCT_SURFACES.filter((surface) => !profile.required_surfaces.includes(surface)),
-    skipped_surfaces: PRODUCT_SURFACES.filter((surface) => !coveredSurfaces.includes(surface)),
+    optional_surfaces: optionalSurfaces,
+    out_of_scope_surfaces: optionalSurfaces,
+    skipped_surfaces: uncoveredSurfaces,
     covered_surfaces: coveredSurfaces,
     covered_surfaces_by_evidence_class: coveredByEvidenceClass,
-    uncovered_surfaces: PRODUCT_SURFACES.filter((surface) => !coveredSurfaces.includes(surface)),
+    uncovered_surfaces: uncoveredSurfaces,
     missing_required_surfaces: profile.required_surfaces.filter((surface) => !coveredSurfaces.includes(surface)).sort(),
     tools: unique(metadata.map((scenario) => scenario.tool)),
     lifecycle_phases: unique(metadata.flatMap((scenario) => scenario.lifecycle_phases)),

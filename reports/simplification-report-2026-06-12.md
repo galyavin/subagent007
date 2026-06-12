@@ -366,6 +366,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 24 - Single Observed Surface Set Projection
+
+Finding: `coverageSummary` in `scripts/run-observed-mcp-probe.mjs` computes the same product-surface complement twice for `optional_surfaces` and `out_of_scope_surfaces`, and computes the same uncovered-surface complement twice for `skipped_surfaces` and `uncovered_surfaces`. These are paired legacy/current output names for two surface sets, but the underlying set construction is duplicated.
+
+Behavior check: reusing local arrays should not change observable behavior if the emitted JSON keeps the same field names, field order, and values. The arrays are constructed and immediately returned without later mutation.
+
+Oracle: existing observed campaign tests assert coverage summary fields including `uncovered_surfaces` and `missing_required_surfaces`, and the full campaign summary shape is exercised through the probe harness. No new pinning test is needed for this projection-only simplification.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: introduced `optionalSurfaces` and `uncoveredSurfaces` locals in `coverageSummary`, then reused them for the paired legacy/current summary fields.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/observed-campaign.test.ts` passed; targeted tests passed 14/14.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
