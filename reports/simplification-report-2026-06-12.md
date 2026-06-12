@@ -904,6 +904,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 129/129.
 
+## Loop 58 - Reuse Choice Validation For Continuity Mode
+
+Finding: `src/validate.ts` manually trims and checks `continuity.mode` against `RUN_CONTINUITY_MODES`, duplicating the shared `validateChoice` helper used by the other enum-like request fields.
+
+Behavior check: replacing the manual membership check with `validateChoice(continuity.mode, "continuity.mode", RUN_CONTINUITY_MODES)` should not change observable behavior if missing/blank/invalid modes still produce `continuity.mode must be one of: ephemeral, fresh, resume`, non-string modes still produce `continuity.mode must be a string`, and valid resume/fresh behavior is preserved.
+
+Oracle: existing validation tests cover valid `fresh`, valid `resume`, resume file errors, and illegal session IDs. Add a focused invalid `continuity.mode` assertion before replacing the manual check.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added an invalid `continuity.mode` pinning assertion and reused `validateChoice` for continuity mode parsing.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/validation.test.ts` passed; targeted tests passed 20/20.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 129/129.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

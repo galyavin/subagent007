@@ -508,6 +508,19 @@ test("rejects invalid preflight input before any child spawn is possible", async
       {
         prompt: "x",
         cwd,
+        continuity: { mode: "invalid" as never },
+        model_class: "C",
+      },
+      {},
+    ),
+    /continuity.mode must be one of: ephemeral, fresh, resume/,
+  );
+
+  await assert.rejects(
+    validateAndResolveRequest(
+      {
+        prompt: "x",
+        cwd,
         continuity: { mode: "fresh", session_id: "/tmp/session.jsonl" } as never,
         model_class: "C",
       },

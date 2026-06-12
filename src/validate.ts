@@ -146,8 +146,8 @@ function validateContinuity(value: unknown, request: unknown): RunContinuity {
     throw new ValidationError("continuity must be an object when provided");
   }
   const continuity = value as Record<string, unknown>;
-  const mode = trimOptional(continuity.mode, "continuity.mode");
-  if (!mode || !RUN_CONTINUITY_MODES.includes(mode as RunContinuity["mode"])) {
+  const mode = validateChoice(continuity.mode, "continuity.mode", RUN_CONTINUITY_MODES);
+  if (!mode) {
     throw new ValidationError(
       `continuity.mode must be one of: ${RUN_CONTINUITY_MODES.join(", ")}`,
     );
@@ -167,7 +167,7 @@ function validateContinuity(value: unknown, request: unknown): RunContinuity {
       "continuity.session_id is only valid when continuity.mode is resume",
     );
   }
-  return { mode: mode as "ephemeral" | "fresh" };
+  return { mode };
 }
 
 async function validateResumeSessionFile(continuity: RunContinuity): Promise<void> {
