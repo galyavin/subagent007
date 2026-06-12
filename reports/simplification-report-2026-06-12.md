@@ -824,6 +824,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 127/127.
 
+## Loop 53 - Use Model-Class Choices In Health Probe Script
+
+Finding: `scripts/probe-model-health.mjs` defines its own `new Set(["A", "B", "C", "D", "E"])` even though it already imports the built model allowlist module that exposes `modelClassChoices()`.
+
+Behavior check: using `modelClassChoices()` for the accepted CLI classes should not change observable behavior if the same classes and the same comma-separated invalid-class error text are preserved.
+
+Oracle: no direct test currently executes `scripts/probe-model-health.mjs`. Add focused CLI tests for invalid `--model-class` rejection and direct healthy record mode before replacing the duplicate set.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added focused `model-health-probe` CLI tests and replaced the duplicate script-local model-class set with `modelClassChoices()`.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/model-health-probe.test.ts tests/run-subagent.test.ts` passed; targeted tests passed 43/43.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 129/129.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

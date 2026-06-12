@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 import path from "node:path";
-import { resolveModelClass } from "../dist/modelAllowlist.js";
+import { modelClassChoices, resolveModelClass } from "../dist/modelAllowlist.js";
 import {
   MODEL_HEALTH_SURFACE_ONE_SHOT,
   upsertModelHealthRecord,
 } from "../dist/modelHealth.js";
 import { runSubagentCore } from "../dist/runSubagent.js";
 
-const MODEL_CLASSES = new Set(["A", "B", "C", "D", "E"]);
+const MODEL_CLASS_CHOICES = modelClassChoices();
+const MODEL_CLASSES = new Set(MODEL_CLASS_CHOICES);
 
 function usage() {
   return [
@@ -80,7 +81,7 @@ function parseArgs(argv) {
     return { mode: "help" };
   }
   if (!MODEL_CLASSES.has(options.modelClass)) {
-    throw new Error("--model-class must be one of: A, B, C, D, E");
+    throw new Error(`--model-class must be one of: ${MODEL_CLASS_CHOICES.join(", ")}`);
   }
   if (
     options.recordStatus !== undefined &&
