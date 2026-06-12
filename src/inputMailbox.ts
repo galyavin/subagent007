@@ -156,6 +156,37 @@ async function readSettledAnswer(recordPath: string): Promise<InputAnswerRecord 
   return readJson<InputAnswerRecord>(answerPathFor(recordPath));
 }
 
+function terminalStatusView(record: InputTerminalRecord): {
+  status: InputRequestStatus;
+  settled_at?: string;
+  answered_at?: string;
+  timed_out_at?: string;
+  closed_at?: string;
+} | null {
+  if (record.status === "answered") {
+    return {
+      status: "answered",
+      settled_at: record.settled_at,
+      answered_at: record.settled_at,
+    };
+  }
+  if (record.status === "timed_out") {
+    return {
+      status: "timed_out",
+      settled_at: record.settled_at,
+      timed_out_at: record.settled_at,
+    };
+  }
+  if (record.status === "closed") {
+    return {
+      status: "closed",
+      settled_at: record.settled_at,
+      closed_at: record.settled_at,
+    };
+  }
+  return null;
+}
+
 async function requestStatus(recordPath: string): Promise<{
   status: InputRequestStatus;
   settled_at?: string;
@@ -165,26 +196,9 @@ async function requestStatus(recordPath: string): Promise<{
 }> {
   const terminal = await readJson<InputTerminalRecord>(terminalPathFor(recordPath));
   if (terminal) {
-    if (terminal.status === "answered") {
-      return {
-        status: "answered",
-        settled_at: terminal.settled_at,
-        answered_at: terminal.settled_at,
-      };
-    }
-    if (terminal.status === "timed_out") {
-      return {
-        status: "timed_out",
-        settled_at: terminal.settled_at,
-        timed_out_at: terminal.settled_at,
-      };
-    }
-    if (terminal.status === "closed") {
-      return {
-        status: "closed",
-        settled_at: terminal.settled_at,
-        closed_at: terminal.settled_at,
-      };
+    const terminalView = terminalStatusView(terminal);
+    if (terminalView) {
+      return terminalView;
     }
   }
   const answer = await readJson<InputAnswerRecord>(answerPathFor(recordPath));
