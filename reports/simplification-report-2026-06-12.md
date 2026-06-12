@@ -302,6 +302,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 20 - Single Observed Campaign State Path Set
+
+Finding: `scripts/run-observed-campaign.mjs` derives campaign state paths in scattered places: `failureLogPath` and `campaignLedgerPath` locals, then repeated `path.join(stateRoot, ...)` expressions inside the child environment, then reads those env fields back into the JSON summary. This is one campaign state-path set split across construction and reporting.
+
+Behavior check: collecting the paths into one local object should not change observable behavior if configured failure-log and campaign-ledger overrides still resolve the same way, directories are created before use, child environment variables keep the same values, and the JSON summary keeps the same field names and values.
+
+Oracle: existing observed campaign tests assert isolated default paths, production failure-log preservation, child env equality with summary fields, campaign ledger use, and archive behavior. No new pinning test is needed for this harness-internal path projection.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: introduced one `statePaths` object in `run-observed-campaign.mjs` and reused it for campaign environment variables and JSON summary fields.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/observed-campaign.test.ts` passed; targeted tests passed 14/14.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

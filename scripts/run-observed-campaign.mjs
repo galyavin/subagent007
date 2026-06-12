@@ -166,18 +166,28 @@ const campaignLedgerPath = process.env.SUBAGENT007_CAMPAIGN_LEDGER_PATH
   ? path.resolve(process.env.SUBAGENT007_CAMPAIGN_LEDGER_PATH)
   : path.join(stateRoot, "campaign-ledger.jsonl");
 await fs.mkdir(path.dirname(campaignLedgerPath), { recursive: true });
+const statePaths = {
+  failureLogPath,
+  campaignLedgerPath,
+  runsDir: path.join(stateRoot, "runs"),
+  runTasksDir: path.join(stateRoot, "run-tasks"),
+  inputRequestsDir: path.join(stateRoot, "input-requests"),
+  sessionsDir: path.join(stateRoot, "sessions"),
+  piRawSessionsDir: path.join(stateRoot, "pi-raw-sessions"),
+  modelHealthPath: path.join(stateRoot, "model-health.json"),
+};
 
 const campaignEnv = {
   ...process.env,
   SUBAGENT007_CAMPAIGN_ID: parsed.options.campaignId,
-  SUBAGENT007_FAILURE_LOG_PATH: failureLogPath,
-  SUBAGENT007_CAMPAIGN_LEDGER_PATH: campaignLedgerPath,
-  SUBAGENT007_RUNS_DIR: path.join(stateRoot, "runs"),
-  SUBAGENT007_RUN_TASKS_DIR: path.join(stateRoot, "run-tasks"),
-  SUBAGENT007_INPUT_REQUESTS_DIR: path.join(stateRoot, "input-requests"),
-  SUBAGENT007_SESSIONS_DIR: path.join(stateRoot, "sessions"),
-  SUBAGENT007_PI_RAW_SESSIONS_DIR: path.join(stateRoot, "pi-raw-sessions"),
-  SUBAGENT007_MODEL_HEALTH_PATH: path.join(stateRoot, "model-health.json"),
+  SUBAGENT007_FAILURE_LOG_PATH: statePaths.failureLogPath,
+  SUBAGENT007_CAMPAIGN_LEDGER_PATH: statePaths.campaignLedgerPath,
+  SUBAGENT007_RUNS_DIR: statePaths.runsDir,
+  SUBAGENT007_RUN_TASKS_DIR: statePaths.runTasksDir,
+  SUBAGENT007_INPUT_REQUESTS_DIR: statePaths.inputRequestsDir,
+  SUBAGENT007_SESSIONS_DIR: statePaths.sessionsDir,
+  SUBAGENT007_PI_RAW_SESSIONS_DIR: statePaths.piRawSessionsDir,
+  SUBAGENT007_MODEL_HEALTH_PATH: statePaths.modelHealthPath,
 };
 
 const [command, ...args] = parsed.command;
@@ -197,14 +207,14 @@ console.log(JSON.stringify(
     campaign_id: parsed.options.campaignId,
     evidence_class: "campaign-scoped",
     state_root: stateRoot,
-    failure_log_path: failureLogPath,
-    campaign_ledger_path: campaignLedgerPath,
-    runs_dir: campaignEnv.SUBAGENT007_RUNS_DIR,
-    run_tasks_dir: campaignEnv.SUBAGENT007_RUN_TASKS_DIR,
-    input_requests_dir: campaignEnv.SUBAGENT007_INPUT_REQUESTS_DIR,
-    sessions_dir: campaignEnv.SUBAGENT007_SESSIONS_DIR,
-    pi_raw_sessions_dir: campaignEnv.SUBAGENT007_PI_RAW_SESSIONS_DIR,
-    model_health_path: campaignEnv.SUBAGENT007_MODEL_HEALTH_PATH,
+    failure_log_path: statePaths.failureLogPath,
+    campaign_ledger_path: statePaths.campaignLedgerPath,
+    runs_dir: statePaths.runsDir,
+    run_tasks_dir: statePaths.runTasksDir,
+    input_requests_dir: statePaths.inputRequestsDir,
+    sessions_dir: statePaths.sessionsDir,
+    pi_raw_sessions_dir: statePaths.piRawSessionsDir,
+    model_health_path: statePaths.modelHealthPath,
     archive,
     command_exit_code: childResult.code,
     command_signal: childResult.signal,
