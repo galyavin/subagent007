@@ -1224,6 +1224,22 @@ Targeted oracle result: `npm run typecheck`, `npm run build`, `node scripts/run-
 
 Full oracle result: `npm test` passed 136/136.
 
+## Loop 78 - Inline Single-Branch Preflight Retry Guidance
+
+Finding: after Loop 77, `preflightRetryGuidance()` in `src/server.ts` became a one-condition helper with exactly one caller. The helper no longer names a general policy decision; it only checks the active `timeout_ms is not supported by run_subagent` message and returns one fixed guidance string.
+
+Behavior check: inlining the condition into `preflightRejectedResult()` should not change observable behavior if the same message substring still produces the same `retry_guidance` value and all other ValidationErrors still omit `retry_guidance`.
+
+Oracle: existing failure-log and run-subagent tests cover current preflight rejection behavior, schema-level timeout handling, and structured MCP results. No new pinning test is needed for a same-expression inline.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: removed `preflightRetryGuidance()` and inlined the exact timeout-guidance condition into `preflightRejectedResult()`.
+
+Targeted oracle result: `npm run typecheck`, `npm run build`, `node scripts/run-tests-with-ledger-guard.mjs tests/failure-log.test.ts`, and `node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts` passed; targeted tests passed 57/57.
+
+Full oracle result: `npm test` passed 136/136.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle has historically had an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run; the latest sequential `npm test` completed cleanly, but the constraint is still part of the oracle design.

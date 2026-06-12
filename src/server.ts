@@ -99,20 +99,15 @@ function withRunFailureLogging<TRequest, TResult>(
   };
 }
 
-function preflightRetryGuidance(message: string): string | undefined {
-  if (message.includes("timeout_ms is not supported by run_subagent")) {
-    return "Use schedule_run or start_run for timed work.";
-  }
-  return undefined;
-}
-
 async function preflightRejectedResult(
   tool: FailureLogTool,
   request: unknown,
   error: ValidationError,
 ): Promise<PreflightRejectedResult> {
   const reasonCode = failureReasonCodeForError(error);
-  const retryGuidance = preflightRetryGuidance(error.message);
+  const retryGuidance = error.message.includes("timeout_ms is not supported by run_subagent")
+    ? "Use schedule_run or start_run for timed work."
+    : undefined;
   await logFailure({
     tool,
     failure_class: "validation_error",
