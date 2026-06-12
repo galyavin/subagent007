@@ -326,17 +326,12 @@ async function appendChildSpawnEvent(state: RunTaskState): Promise<void> {
   }, "child process starting");
 }
 
-function markChildRunningSilently(state: RunTaskState): void {
-  if (state.activePhase !== "awaiting_child_event") {
-    return;
-  }
-  setTaskPhase(state, "running_silent");
-  setTaskProgress(state, "child process running; waiting for output");
-}
-
 async function prepareChildRun(state: RunTaskState): Promise<void> {
   await appendChildSpawnEvent(state);
-  markChildRunningSilently(state);
+  if (state.activePhase === "awaiting_child_event") {
+    setTaskPhase(state, "running_silent");
+    setTaskProgress(state, "child process running; waiting for output");
+  }
   await writeTaskSnapshot(await getRunTask(state.runId));
 }
 
