@@ -160,4 +160,22 @@ Targeted oracle result: `npm run typecheck` and `git diff --check` passed, but `
 
 ## Current Constraints
 
+## Loop 11 - Single One-Shot Timeout Hint Persistence
+
+Finding: `runSubagentOneShotTask` in `src/runTask.ts` has two branches that both append `Inspect this run with get_run using run_id ...`, write the updated snapshot, mirror the hint into `state.result`, and return the updated view. The only difference is the base hint: default one-shot recovery text when a timed-out view has no hint, or the existing `view.timeout_recovery_hint` when present.
+
+Behavior check: computing the base hint first and using one persistence branch should not change observable behavior if it preserves the current conditions and the exact final hint text.
+
+Oracle: existing lifecycle tests assert timeout recovery guidance and concrete `run_id` inclusion for `run_subagent`. No new pinning test is needed.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: computed `timeoutRecoveryHint` first, then used one branch to append the concrete `get_run` instruction, write the snapshot, mirror the hint into `state.result`, and return the updated view.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts` passed; targeted tests passed 41/41.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125. The explicit private ledger path avoids the known ambient default-ledger guard issue recorded in loops 9 and 10.
+
+## Current Constraints
+
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

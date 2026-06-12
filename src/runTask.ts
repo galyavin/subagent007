@@ -799,24 +799,13 @@ export async function runSubagentOneShotTask(
 
   await state.promise;
   const view = await getRunTask(state.runId);
-  if (
-    view.timed_out === true &&
-    view.timeout_recovery_hint === undefined
-  ) {
-    const withHint: RunTaskView = {
-      ...view,
-      timeout_recovery_hint: `${RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT} Inspect this run with get_run using run_id ${state.runId}.`,
-    };
-    await writeTaskSnapshot(withHint);
-    if (state.result) {
-      state.result = { ...state.result, timeout_recovery_hint: withHint.timeout_recovery_hint };
-    }
-    return withHint;
-  }
-  if (view.timeout_recovery_hint) {
+  const timeoutRecoveryHint = view.timed_out === true && view.timeout_recovery_hint === undefined
+    ? RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT
+    : view.timeout_recovery_hint;
+  if (timeoutRecoveryHint) {
     const withConcreteHint: RunTaskView = {
       ...view,
-      timeout_recovery_hint: `${view.timeout_recovery_hint} Inspect this run with get_run using run_id ${state.runId}.`,
+      timeout_recovery_hint: `${timeoutRecoveryHint} Inspect this run with get_run using run_id ${state.runId}.`,
     };
     await writeTaskSnapshot(withConcreteHint);
     if (state.result) {
