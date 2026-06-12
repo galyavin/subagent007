@@ -554,6 +554,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 36 - Single Run Task Terminal State Projection
+
+Finding: after Loop 35, `appendTerminalEvent` uses `terminalEventDetails` for terminal event name, text, and progress message, but still calls `terminalPhase` to reclassify the same terminal result into an active phase. This leaves one terminal-state projection split across two helpers.
+
+Behavior check: folding the active phase into `terminalEventDetails` should not change observable behavior if cancelled still maps to `cancellation_settled`/`cancelled`, timeout still maps to `timeout`/`timed_out`, success still maps to `completed`/`completed`, and other failures still map to `failed`/`failed`.
+
+Oracle: existing run lifecycle, timeout, session, and cancellation tests assert terminal `status`, `active_phase`, terminal events, timeout events, and cancellation-settled events. No new pinning test is needed for this local projection consolidation.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: folded terminal active phase into `terminalEventDetails` and removed the separate `terminalPhase` helper.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts tests/timeout-budget.test.ts tests/session.test.ts` passed; targeted tests passed 59/59.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

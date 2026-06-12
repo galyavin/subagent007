@@ -191,16 +191,6 @@ function terminalStatus(result: RunTaskTerminalResult): RunTaskStatus {
   return result.success ? "completed" : "failed";
 }
 
-function terminalPhase(result: RunTaskTerminalResult): RunTaskActivePhase {
-  if (result.stop_reason === "cancelled") {
-    return "cancelled";
-  }
-  if (result.stop_reason === "timeout") {
-    return "timed_out";
-  }
-  return result.success ? "completed" : "failed";
-}
-
 async function taskInputRequests(state: RunTaskState): Promise<InputRequestView[]> {
   return listInputRequests({ mailboxRoot: state.mailboxRoot, runId: state.runId });
 }
@@ -402,12 +392,14 @@ async function logBackgroundHandlerError(
 }
 
 function terminalEventDetails(result: RunTaskTerminalResult): {
+  phase: RunTaskActivePhase;
   event: "cancellation_settled" | "timeout" | "completed" | "failed";
   text: string;
   progressMessage: string;
 } {
   if (result.stop_reason === "cancelled") {
     return {
+      phase: "cancelled",
       event: "cancellation_settled",
       text: "[cancellation_settled] run cancelled",
       progressMessage: "run cancelled",
@@ -415,6 +407,7 @@ function terminalEventDetails(result: RunTaskTerminalResult): {
   }
   if (result.stop_reason === "timeout") {
     return {
+      phase: "timed_out",
       event: "timeout",
       text: "[timeout] run timed out",
       progressMessage: "run timed out",
@@ -422,12 +415,14 @@ function terminalEventDetails(result: RunTaskTerminalResult): {
   }
   if (result.success) {
     return {
+      phase: "completed",
       event: "completed",
       text: "[completed] run completed",
       progressMessage: "run completed",
     };
   }
   return {
+    phase: "failed",
     event: "failed",
     text: "[failed] run failed",
     progressMessage: "run failed",
@@ -455,7 +450,7 @@ async function appendTerminalEvent(state: RunTaskState): Promise<void> {
       }, packetAccepted ? "packet accepted" : "packet rejected");
     }
     const terminalEvent = terminalEventDetails(result);
-    setTaskPhase(state, terminalPhase(result), occurredAt);
+    setTaskPhase(state, terminalEvent.phase, occurredAt);
     await appendStatusEvent(state, {
       kind: "terminal",
       event: terminalEvent.event,
