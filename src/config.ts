@@ -14,16 +14,6 @@ export function defaultConfigPath(): string {
   return defaultSubagentStatePath("SUBAGENT007_CONFIG_PATH", "config.json");
 }
 
-function nonEmptyString(value: unknown, key: string): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (typeof value !== "string" || value.trim() === "") {
-    throw new ValidationError(`${key} must be a nonempty string when provided`);
-  }
-  return value.trim();
-}
-
 function legacyNonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
 }
@@ -34,10 +24,13 @@ function legacyThinkingLevel(value: unknown): ThinkingLevel | undefined {
 }
 
 function modelClass(value: unknown, key: string): ModelClass | undefined {
-  const modelClassValue = nonEmptyString(value, key);
-  if (modelClassValue === undefined) {
+  if (value === undefined) {
     return undefined;
   }
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new ValidationError(`${key} must be a nonempty string when provided`);
+  }
+  const modelClassValue = value.trim();
   if (!MODEL_CLASSES.includes(modelClassValue as ModelClass)) {
     throw new ValidationError(`${key} must be one of: ${MODEL_CLASSES.join(", ")}`);
   }
