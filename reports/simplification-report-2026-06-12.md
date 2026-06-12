@@ -10,11 +10,27 @@ Oracle: existing MCP lifecycle tests cover `run_subagent`, `schedule_run`, `star
 
 Decision: patch minimally. If any test fails, revert this loop and do not retry it.
 
+Patch: added `finalizeRunTask` and replaced the three repeated terminal cleanup blocks. Cancellable task paths still pass `run cancelled` when cancellation was requested and `run reached a terminal state` otherwise; the one-shot path still always passes `run reached a terminal state`.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts tests/input-mailbox.test.ts tests/failure-log.test.ts` passed; targeted tests passed 59/59.
+
+Full oracle result: `npm test` passed 125/125.
+
 Patch: computed `cwdFromRunStartedEvent(events)` once in `resolveRunOperationContext` and reused the local value in the returned context object.
 
 Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/failure-log.test.ts tests/run-subagent.test.ts` passed; targeted tests passed 54/54.
 
 Full oracle result: `npm test` passed 125/125.
+
+## Loop 5 - Shared Run Task Finalization
+
+Finding: `src/runTask.ts` repeats the same terminal cleanup sequence in `startRunTask`, `startSessionRunTask`, and `runSubagentOneShotTask`: set `finishedAt`, close pending input requests, append input-closed events, append the terminal event, mark terminal snapshot started, and write the final snapshot. The only intentional behavioral difference is the close reason string used by the one-shot path versus cancellable task paths.
+
+Behavior check: extracting the cleanup sequence into one helper should not change observable behavior if each caller passes the same close reason it uses today and the helper preserves operation order.
+
+Oracle: existing lifecycle tests cover terminal snapshots, cancellation, input closure, timeout metadata, and one-shot result handling across all three paths. No new pinning test is needed for a pure helper extraction with preserved close reasons.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
 
 ## Loop 4 - Single Preflight Retry Guidance Classification
 

@@ -365,6 +365,19 @@ async function appendClosedInputEvents(
   }
 }
 
+async function finalizeRunTask(state: RunTaskState, closeReason: string): Promise<void> {
+  state.finishedAt = new Date().toISOString();
+  const closed = await closePendingInputRequestsForRun({
+    mailboxRoot: state.mailboxRoot,
+    runId: state.runId,
+    reason: closeReason,
+  });
+  await appendClosedInputEvents(state, closed);
+  await appendTerminalEvent(state);
+  state.terminalSnapshotStarted = true;
+  await writeTaskSnapshot(await getRunTask(state.runId));
+}
+
 async function appendTerminalEvent(state: RunTaskState): Promise<void> {
   const result = state.result;
   const occurredAt = state.finishedAt ?? new Date().toISOString();
@@ -603,16 +616,10 @@ export async function startRunTask(
         });
       }
     } finally {
-      state.finishedAt = new Date().toISOString();
-      const closed = await closePendingInputRequestsForRun({
-        mailboxRoot: state.mailboxRoot,
-        runId: state.runId,
-        reason: state.cancelRequested ? "run cancelled" : "run reached a terminal state",
-      });
-      await appendClosedInputEvents(state, closed);
-      await appendTerminalEvent(state);
-      state.terminalSnapshotStarted = true;
-      await writeTaskSnapshot(await getRunTask(state.runId));
+      await finalizeRunTask(
+        state,
+        state.cancelRequested ? "run cancelled" : "run reached a terminal state",
+      );
     }
   })();
 
@@ -716,16 +723,10 @@ export async function startSessionRunTask(
         });
       }
     } finally {
-      state.finishedAt = new Date().toISOString();
-      const closed = await closePendingInputRequestsForRun({
-        mailboxRoot: state.mailboxRoot,
-        runId: state.runId,
-        reason: state.cancelRequested ? "run cancelled" : "run reached a terminal state",
-      });
-      await appendClosedInputEvents(state, closed);
-      await appendTerminalEvent(state);
-      state.terminalSnapshotStarted = true;
-      await writeTaskSnapshot(await getRunTask(state.runId));
+      await finalizeRunTask(
+        state,
+        state.cancelRequested ? "run cancelled" : "run reached a terminal state",
+      );
     }
   })();
 
@@ -796,16 +797,7 @@ export async function runSubagentOneShotTask(
         });
       }
     } finally {
-      state.finishedAt = new Date().toISOString();
-      const closed = await closePendingInputRequestsForRun({
-        mailboxRoot: state.mailboxRoot,
-        runId: state.runId,
-        reason: "run reached a terminal state",
-      });
-      await appendClosedInputEvents(state, closed);
-      await appendTerminalEvent(state);
-      state.terminalSnapshotStarted = true;
-      await writeTaskSnapshot(await getRunTask(state.runId));
+      await finalizeRunTask(state, "run reached a terminal state");
     }
   })();
 
