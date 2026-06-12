@@ -118,10 +118,6 @@ function defaultFailureLogPath(): string {
     : path.join(os.homedir(), ".codex", "subagent007-pi", "failures.jsonl");
 }
 
-function failureLoggingDisabled(): boolean {
-  return process.env.SUBAGENT007_FAILURE_LOG === "off";
-}
-
 function recordSourceFromEnv(): FailureRecordSource {
   const source = process.env.SUBAGENT007_RECORD_SOURCE;
   return source === "production" || source === "test" || source === "unknown" ? source : "production";
@@ -187,7 +183,7 @@ export async function logFailure(
     | "calibration_era"
   > & { reason_code?: FailureReasonCode },
 ): Promise<void> {
-  if (failureLoggingDisabled()) {
+  if (process.env.SUBAGENT007_FAILURE_LOG === "off") {
     return;
   }
   try {
