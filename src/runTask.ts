@@ -779,18 +779,6 @@ export async function runSubagentSessionTaskAndWait(
   return getRunTask(started.run_id);
 }
 
-function promotionMetadata(
-  incompatibility: RunSubagentOneShotIncompatibility,
-): RunSubagentPromotion {
-  return {
-    auto_promoted_from: "run_subagent",
-    promotion_reason_code: incompatibility.reason_code,
-    promotion_reason: incompatibility.message,
-    poll_with: "get_run",
-    cancel_with: "cancel_run",
-  };
-}
-
 function runSubagentResultWithConcreteTimeoutRecoveryHint(
   result: RunSubagentResult,
   runId: string,
@@ -816,7 +804,13 @@ async function runSubagentPromotedTask(
     heartbeatIntervalMs?: number;
   },
 ): Promise<RunTaskView> {
-  const promotion = promotionMetadata(incompatibility);
+  const promotion: RunSubagentPromotion = {
+    auto_promoted_from: "run_subagent",
+    promotion_reason_code: incompatibility.reason_code,
+    promotion_reason: incompatibility.message,
+    poll_with: "get_run",
+    cancel_with: "cancel_run",
+  };
   const state = createRunTaskState("run");
   state.promotion = promotion;
   await registerRunTaskState(state, request);
