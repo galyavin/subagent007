@@ -2,12 +2,25 @@
 
 Subagent007 Pi is a private MCP server that delegates work to a separate Pi-backed child agent.
 
+## Agent Quickstart
+
+Use this server as a durable delegation boundary, not just as a synchronous helper call.
+
+- Default to `schedule_run` for work that may be broad, slow, skill-bound, interactive, or worth cancelling.
+- Use `start_run` when you always want an immediate `run_id` without any initial wait.
+- Use `run_subagent` only when the task is genuinely quick, bounded, non-interactive, and deadline-compatible.
+- Poll `get_run` with the returned `run_id`; cancel active work with `cancel_run`; answer child questions with `answer_run_input`.
+- Bind skills with the `skill_name` field. Do not put `/skill:...`, `$skill`, markdown links, paths, or prose skill references in the prompt.
+- Treat `preflight_rejected` plus `child_started:false` as a front-door validation failure. No child model work ran.
+
+Important lifecycle contract: `schedule_run` always creates the durable task before waiting. Long waits are capped by the server, so a caller should expect a pollable run view instead of assuming the MCP call will remain open until the child finishes.
+
 ## Tool Selection
 
 | Situation | Tool | Key constraints |
 | --- | --- | --- |
 | Quick, bounded, non-interactive one-shot work | `run_subagent` | Requires `run_kind: "quick_noninteractive"`; rejects caller `timeout_ms`; valid requests that are only one-shot-incompatible auto-promote to a durable run inspectable with `get_run`. |
-| Broad, long, cancellable, polling, or caller-interactive work | `schedule_run` or `start_run` plus `get_run` | Prefer `schedule_run` for uncertain work: it creates the durable task first and waits briefly for immediate completion. Use `start_run` when the caller always wants an immediate task handle. Pass `timeout_ms` when a hard deadline matters; answer pending input with `answer_run_input`; cancel with `cancel_run`. |
+| Broad, long, cancellable, polling, or caller-interactive work | `schedule_run` or `start_run` plus `get_run` | Prefer `schedule_run` for uncertain work: it creates the durable task first and waits briefly for immediate completion. The initial wait is capped and reports `wait_truncated` when shortened. Use `start_run` when the caller always wants an immediate task handle. Pass `timeout_ms` when a hard deadline matters; answer pending input with `answer_run_input`; cancel with `cancel_run`. |
 | Durable continuity by semantic key | `start_session_run` plus `get_run`, or `run_subagent_session` for compatibility | Requires `session_key`; use when manifest/ledger continuity matters. Prefer the async task form for long, cancellable, or abandoned-client-safe work. |
 | Model-class/config health | `list_model_classes` | `list_allowed_models` is a compatibility alias. |
 
@@ -116,7 +129,7 @@ Tool profiles:
 
 Use `workspace_write` only when the child is expected to modify files. Use `shell` only when command execution is necessary. The default `inspect` profile is intended for review, research, and report-only delegation.
 
-Bind skills with `skill_name`, not prompt syntax. It must be a bare name such as `pda-lite` or `google-drive:google-docs`, not `$skill`, `/skill:name`, markdown, prose, or a path. Child runs receive no ambient skill catalog; omission means no skills. A provided name must resolve to exactly one skill from configured lookup paths (`SUBAGENT007_PI_SKILL_PATHS`, existing Codex skill/plugin cache paths, and Pi defaults) before model invocation.
+Bind skills with `skill_name`, not prompt syntax. It must be a bare name such as `pda-lite` or `google-drive:google-docs`, not `$skill`, `/skill:name`, markdown, prose, or a path. Child runs receive no ambient skill catalog; omission means no skills. A provided name must resolve to exactly one skill from configured lookup paths (`SUBAGENT007_PI_SKILL_PATHS`, existing Codex skill/plugin cache paths, and Pi defaults) before model invocation. Unknown or ambiguous skills return `preflight_rejected` with `child_started:false`; successful skill-bound runs pass the exact resolved `SKILL.md` path to the child so parent and child do not re-resolve different skills.
 
 Result semantics:
 
@@ -160,7 +173,15 @@ Use `schedule_run` for the default durable-first path:
 
 Use `start_run` instead when the caller always wants an immediate task handle; it accepts the same fields except `wait_ms`.
 
-`schedule_run` creates the durable task before waiting. If the child completes or requests caller input within `wait_ms`, it returns that state; otherwise it returns the active run view with the same `run_id`, mailbox, progress fields, and cancellation behavior as `start_run`. Default `wait_ms` is 1000; set `wait_ms:0` to get immediate durable-task behavior without the one-shot preflight restrictions.
+`schedule_run` creates the durable task before waiting. If the child completes or requests caller input within the effective wait window, it returns that state; otherwise it returns the active run view with the same `run_id`, mailbox, progress fields, and cancellation behavior as `start_run`. Default `wait_ms` is 1000; set `wait_ms:0` to get immediate durable-task behavior without the one-shot preflight restrictions.
+
+The server caps the initial `schedule_run` wait at 30000 ms by default, even if the caller requests more. The returned view always includes:
+
+- `requested_wait_ms`: the caller's requested wait
+- `effective_wait_ms`: the wait the server actually used
+- `wait_truncated`: true when the server shortened the requested wait
+
+This cap prevents an MCP caller deadline from hiding the durable run id. If `wait_truncated:true`, continue with `get_run` instead of retrying the same request.
 
 Flow:
 
@@ -229,13 +250,13 @@ Default state root:
 Environment overrides:
 
 - Paths: `SUBAGENT007_CONFIG_PATH`, `SUBAGENT007_RUNS_DIR`, `SUBAGENT007_RUN_TASKS_DIR`, `SUBAGENT007_PI_RAW_SESSIONS_DIR`, `SUBAGENT007_SESSIONS_DIR`, `SUBAGENT007_INPUT_REQUESTS_DIR`, `SUBAGENT007_FAILURE_LOG_PATH`, `SUBAGENT007_MODEL_HEALTH_PATH`
-- Timeouts/progress: `SUBAGENT007_INPUT_REQUEST_TIMEOUT_MS`, `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`, `SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS`, `SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS`, `SUBAGENT007_TIMEOUT_KILL_GRACE_MS`, `SUBAGENT007_TIMEOUT_FORCE_GRACE_MS`, `SUBAGENT007_HEARTBEAT_INTERVAL_MS`, `SUBAGENT007_MAX_TRANSCRIPT_BYTES`, `SUBAGENT007_SESSION_LOCK_LEASE_MS`
+- Timeouts/progress: `SUBAGENT007_INPUT_REQUEST_TIMEOUT_MS`, `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`, `SUBAGENT007_SCHEDULE_RUN_MAX_WAIT_MS`, `SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS`, `SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS`, `SUBAGENT007_TIMEOUT_KILL_GRACE_MS`, `SUBAGENT007_TIMEOUT_FORCE_GRACE_MS`, `SUBAGENT007_HEARTBEAT_INTERVAL_MS`, `SUBAGENT007_MAX_TRANSCRIPT_BYTES`, `SUBAGENT007_SESSION_LOCK_LEASE_MS`
 - Pi/runtime: `SUBAGENT007_PI_AGENT_DIR`, `PI_CODING_AGENT_DIR`, `SUBAGENT007_PI_SKILL_PATHS`
 - Failure logging and campaigns: `SUBAGENT007_FAILURE_LOG=off`, `SUBAGENT007_BUILD_SHA`, `GIT_COMMIT`, `SUBAGENT007_RECORD_SOURCE`, `SUBAGENT007_CAMPAIGN_ID`, `SUBAGENT007_CAMPAIGN_LEDGER_PATH`, `SUBAGENT007_COVERAGE_MANIFEST_PATH`
 
 `SUBAGENT007_PI_AGENT_DIR` wins over Pi's native `PI_CODING_AGENT_DIR`; otherwise the Pi agent directory defaults to `~/.pi/agent`. The resolved agent directory is used for Pi auth, custom models, settings/resources, and session behavior.
 
-`SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS`, `SUBAGENT007_TIMEOUT_KILL_GRACE_MS`, and `SUBAGENT007_TIMEOUT_FORCE_GRACE_MS` reserve time inside caller-provided `timeout_ms` so the MCP server can terminate the child process and return metadata before the caller deadline. `SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS` can raise the accepted floor for timed tools. `SUBAGENT007_HEARTBEAT_INTERVAL_MS` controls active-run snapshot cadence and MCP progress notification cadence when the client provides a progress token.
+`SUBAGENT007_SCHEDULE_RUN_MAX_WAIT_MS` caps how long `schedule_run` may keep the MCP call open before returning a pollable active run view; the default is 30000. `SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS`, `SUBAGENT007_TIMEOUT_KILL_GRACE_MS`, and `SUBAGENT007_TIMEOUT_FORCE_GRACE_MS` reserve time inside caller-provided `timeout_ms` so the MCP server can terminate the child process and return metadata before the caller deadline. `SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS` can raise the accepted floor for timed tools. `SUBAGENT007_HEARTBEAT_INTERVAL_MS` controls active-run snapshot cadence and MCP progress notification cadence when the client provides a progress token.
 
 `SUBAGENT007_BUILD_SHA` or `GIT_COMMIT` is copied into failure-log records when present. `SUBAGENT007_RECORD_SOURCE` may be `production`, `test`, or `unknown`; invalid values default to `production`. `SUBAGENT007_CAMPAIGN_ID` is copied into failure-log records when it is a short token containing only letters, digits, `_`, `-`, `.`, or `:`. New failure records include `calibration_era:"model_class_v1"`; archive summaries classify older records without this field as `legacy_unclassified`.
 
