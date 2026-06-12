@@ -21,6 +21,12 @@ const RETIRED_BUNDLED_ALIAS = "all-bundled";
 const RETIRED_BUNDLED_ALIAS_MESSAGE =
   "all-bundled is retired; use --profile protocol-core for the historical bundled protocol-core scenario set";
 
+function selectProfile(options, profile) {
+  options.profile = profile;
+  options.scenarioSet = profile;
+  options.mode = MANIFEST.profiles[profile].mode;
+}
+
 function usage() {
   return [
     "usage: node scripts/run-observed-mcp-probe.mjs [options]",
@@ -81,9 +87,7 @@ function parseArgs(argv) {
       if (!PROFILES.has(canonical)) {
         throw new Error(`unknown profile: ${profile}`);
       }
-      options.profile = canonical;
-      options.scenarioSet = canonical;
-      options.mode = MANIFEST.profiles[canonical].mode;
+      selectProfile(options, canonical);
       index += 1;
     } else if (arg === "--scenario") {
       const scenario = nextValue(index, arg);
@@ -92,10 +96,8 @@ function parseArgs(argv) {
       }
       if (scenario === "all") {
         const profile = MANIFEST.aliases[scenario];
-        options.profile = profile;
+        selectProfile(options, profile);
         options.scenarios.push(...MANIFEST.profiles[profile].scenarios);
-        options.scenarioSet = profile;
-        options.mode = MANIFEST.profiles[profile].mode;
       } else if (!SCENARIOS.has(scenario)) {
         throw new Error(`unknown scenario: ${scenario}`);
       } else {

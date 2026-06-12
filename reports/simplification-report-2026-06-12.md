@@ -872,6 +872,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 129/129.
 
+## Loop 56 - Share Observed Probe Profile Selection
+
+Finding: `scripts/run-observed-mcp-probe.mjs` repeats the same profile-selection assignments in `--profile` handling and the `--scenario all` alias path: set `options.profile`, `options.scenarioSet`, and `options.mode` from `MANIFEST.profiles[profile]`.
+
+Behavior check: extracting those assignments into a local helper should not change observable behavior if `--profile` still validates aliases before selecting, `--scenario all` still appends the full-current scenarios, and both paths keep the same mode and scenario-set values.
+
+Oracle: `tests/observed-campaign.test.ts` directly covers `--scenario all` mapping to `full-current`, live profile aliases, retired alias rejection, mode compatibility, and full-current coverage. No new pinning test is needed.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added `selectProfile` and reused it for `--profile` and `--scenario all` profile assignment.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/observed-campaign.test.ts` passed; targeted tests passed 14/14.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 129/129.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
