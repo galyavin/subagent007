@@ -22,10 +22,6 @@ export function defaultSessionsDir(): string {
   return defaultSubagentStatePath("SUBAGENT007_SESSIONS_DIR", "sessions");
 }
 
-function uniqueRunPath(runsDir: string): string {
-  return path.join(runsDir, `${timestampedRandomId()}.md`);
-}
-
 export function timestampedRandomId(): string {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "");
   const suffix = randomBytes(6).toString("hex");
@@ -81,7 +77,7 @@ export async function writeRunOutput(
   hasPublicSubagentError: boolean;
 }> {
   await fs.mkdir(runsDir, { recursive: true });
-  const outputPath = uniqueRunPath(runsDir);
+  const outputPath = path.join(runsDir, `${timestampedRandomId()}.md`);
   const transcript = options.processTranscript
     ? preparePublicTranscriptFromProcessOutput(rawOutput, { promptProvenance: options.promptProvenance })
     : null;
