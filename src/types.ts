@@ -85,6 +85,8 @@ export interface SubagentRunResultBase {
   resolved_thinking_level: string;
   resolved_model_class: ModelClass;
   requested_skill: string | null;
+  resolved_skill_path: string | null;
+  resolved_skill_sha256: string | null;
   requested_output_mode: OutputMode;
   written_output_mode: OutputMode;
   resolved_tool_profile: ToolProfile;
@@ -158,6 +160,8 @@ export interface SessionRunRecord {
   resolved_thinking_level: string;
   resolved_model_class?: ModelClass;
   requested_skill: string | null;
+  resolved_skill_path?: string | null;
+  resolved_skill_sha256?: string | null;
   requested_output_mode: OutputMode;
   written_output_mode: OutputMode;
   resolved_tool_profile?: ToolProfile;

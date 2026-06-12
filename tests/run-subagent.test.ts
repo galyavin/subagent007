@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -40,6 +41,9 @@ type RunSubagentMetadata = {
   requested_wait_ms?: number;
   effective_wait_ms?: number;
   wait_truncated?: boolean;
+  requested_skill?: string | null;
+  resolved_skill_path?: string | null;
+  resolved_skill_sha256?: string | null;
   auto_promoted_from?: "run_subagent";
   promotion_reason_code?: "skill_bound" | "prompt_too_long" | "broad_work" | "workspace_write";
   promotion_reason?: string;
@@ -115,6 +119,10 @@ async function writeSkillFixture(root: string, name: string): Promise<string> {
     "utf8",
   );
   return skillPath;
+}
+
+async function sha256File(filePath: string): Promise<string> {
+  return createHash("sha256").update(await fs.readFile(filePath)).digest("hex");
 }
 
 async function waitForTerminalRun(client: Client, runId: string): Promise<RunSubagentMetadata> {
@@ -235,6 +243,8 @@ test("runSubagent is ephemeral by default and invokes the Pi child request-file 
       assert.equal(result.success, true);
       assert.equal(result.session_id, null);
       assert.equal(result.session_established, false);
+      assert.equal(result.resolved_skill_path, skillPath);
+      assert.equal(result.resolved_skill_sha256, await sha256File(skillPath));
       assert.equal(path.dirname(result.output_path), runsDir);
       assert.equal(await fs.readFile(result.output_path, "utf8"), "FAST FINAL");
 
@@ -286,6 +296,8 @@ test("runSubagent accepts skill_name and passes a normalized skill to the Pi chi
 
       assert.equal(result.success, true);
       assert.equal(result.requested_skill, skillName);
+      assert.equal(result.resolved_skill_path, skillPath);
+      assert.equal(result.resolved_skill_sha256, await sha256File(skillPath));
 
       const logs = await readJsonl<{ request: Record<string, unknown> }>(fake.logPath);
       assert.equal(logs.length, 1);
@@ -950,6 +962,9 @@ test("MCP run_subagent auto-promotes skill-bound work without one-shot health ga
       assert.match(metadata.promotion_reason ?? "", /skill-bound work/);
       assert.equal(metadata.poll_with, "get_run");
       assert.equal(metadata.cancel_with, "cancel_run");
+      assert.equal(metadata.requested_skill, skillName);
+      assert.equal(metadata.resolved_skill_path, skillPath);
+      assert.equal(metadata.resolved_skill_sha256, await sha256File(skillPath));
       assert.equal(await fs.readFile(metadata.output_path, "utf8"), "FAST FINAL");
 
       const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
@@ -1399,6 +1414,9 @@ test("MCP start_run resolves skill_name before child spawn and passes the resolv
       const metadata = response.structuredContent as RunSubagentMetadata;
       const terminal = await waitForTerminalRun(client, metadata.run_id);
       assert.equal(terminal.status, "completed");
+      assert.equal(terminal.requested_skill, "requested-skill");
+      assert.equal(terminal.resolved_skill_path, skillPath);
+      assert.equal(terminal.resolved_skill_sha256, await sha256File(skillPath));
 
       const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
       assert.equal(logs.length, 1);

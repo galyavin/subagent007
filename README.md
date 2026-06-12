@@ -10,6 +10,7 @@ Use this server as a durable delegation boundary, not just as a synchronous help
 - Use `start_run` when you always want an immediate `run_id` without any initial wait.
 - Use `run_subagent` only when the task is genuinely quick, bounded, non-interactive, and deadline-compatible.
 - Poll `get_run` with the returned `run_id`; cancel active work with `cancel_run`; answer child questions with `answer_run_input`.
+- If a call returns `status:"working"` or `status:"input_required"`, continue that `run_id`; do not resubmit the same prompt to recover progress.
 - Bind skills with the `skill_name` field. Do not put `/skill:...`, `$skill`, markdown links, paths, or prose skill references in the prompt.
 - Treat `preflight_rejected` plus `child_started:false` as a front-door validation failure. No child model work ran.
 
@@ -24,7 +25,7 @@ Important lifecycle contract: `schedule_run` always creates the durable task bef
 | Durable continuity by semantic key | `start_session_run` plus `get_run`, or `run_subagent_session` for compatibility | Requires `session_key`; use when manifest/ledger continuity matters. Prefer the async task form for long, cancellable, or abandoned-client-safe work. |
 | Model-class/config health | `list_model_classes` | `list_allowed_models` is a compatibility alias. |
 
-Agent rule of thumb: if the task may need shell/write tools, skills, edits, caller input, cancellation, or more than a short answer, call `schedule_run`, `start_run`, or `start_session_run` directly and poll `get_run`. Use `run_subagent` only for genuinely quick, bounded, non-interactive work; skill-bound and write-heavy one-shot calls are compatibility cases that auto-promote. The child starts with `tool_profile:"inspect"`; set `shell` only for command execution and `workspace_write` only for intended edits.
+Tool-profile rule of thumb: the child starts with `tool_profile:"inspect"`; set `shell` only for command execution and `workspace_write` only for intended edits.
 
 ## Requirements
 
@@ -111,7 +112,7 @@ Optional common fields:
 
 Tool-specific input rules:
 
-| Tool | Required beyond `cwd`/`prompt` | Accepted control fields | Rejected fields |
+| Tool | Required beyond `cwd`/`prompt` | Accepted fields beyond common inputs | Rejected fields |
 | --- | --- | --- | --- |
 | `run_subagent` | `run_kind: "quick_noninteractive"` | `continuity` | `timeout_ms`, top-level `session_id` |
 | `schedule_run` | none | `continuity`, `timeout_ms`, `wait_ms` | top-level `session_id` |
@@ -129,12 +130,13 @@ Tool profiles:
 
 Use `workspace_write` only when the child is expected to modify files. Use `shell` only when command execution is necessary. The default `inspect` profile is intended for review, research, and report-only delegation.
 
-Bind skills with `skill_name`, not prompt syntax. It must be a bare name such as `pda-lite` or `google-drive:google-docs`, not `$skill`, `/skill:name`, markdown, prose, or a path. Child runs receive no ambient skill catalog; omission means no skills. A provided name must resolve to exactly one skill from configured lookup paths (`SUBAGENT007_PI_SKILL_PATHS`, existing Codex skill/plugin cache paths, and Pi defaults) before model invocation. Unknown or ambiguous skills return `preflight_rejected` with `child_started:false`; successful skill-bound runs pass the exact resolved `SKILL.md` path to the child so parent and child do not re-resolve different skills.
+Bind skills with `skill_name`, not prompt syntax. It must be a bare name such as `pda-lite` or `google-drive:google-docs`, not `$skill`, `/skill:name`, markdown, prose, or a path. Child runs receive no ambient skill catalog; omission means no skills. A provided name must resolve to exactly one skill from configured lookup paths (`SUBAGENT007_PI_SKILL_PATHS`, existing Codex skill/plugin cache paths, and Pi defaults) before model invocation. Unknown or ambiguous skills return `preflight_rejected` with `child_started:false`; successful skill-bound runs pass the exact resolved `SKILL.md` path to the child so parent and child do not re-resolve different skills. Terminal run metadata includes `resolved_skill_path` and `resolved_skill_sha256` so callers can audit the skill file used without repeating skill names or paths in the prompt.
 
 Result semantics:
 
-- Runs that reach child execution return `output_path` on terminal completion; schema and preflight rejections do not.
+- Runs that reach child execution return `output_path` on terminal completion; read that file for the full final answer or transcript. Schema and preflight rejections do not create output artifacts.
 - Expected handler-level semantic rejections return structured content with `kind:"preflight_rejected"`, `success:false`, and `child_started:false`; SDK schema errors remain MCP input validation errors.
+- Skill-bound terminal results include `requested_skill`, `resolved_skill_path`, and `resolved_skill_sha256`; unbound runs use `null` for those skill audit fields.
 - Valid `run_subagent` requests that are incompatible only with one-shot execution auto-promote and include `auto_promoted_from`, `promotion_reason_code`, `promotion_reason`, `poll_with`, and `cancel_with`.
 - `run_subagent`, `schedule_run`, `start_run`, `start_session_run`, and `run_subagent_session` create durable run-task snapshots inspectable with `get_run` by `run_id`.
 - Active `get_run` views expose sanitized `recent_events` and `last_public_output_excerpt`; raw thinking, private tool payloads, full packet instructions, composed child prompts, and input answer values are not input/public event fields.
@@ -189,7 +191,7 @@ Flow:
 2. Poll `get_run` with the returned `run_id`.
 3. If status is `input_required`, read `input_requests`.
 4. Call `answer_run_input` with `run_id`, `request_id`, and `answer`.
-5. Keep polling until status is `completed`, `failed`, or `cancelled`.
+5. Keep polling until status is `completed`, `failed`, or `cancelled`, then read `output_path` when present.
 
 `start_run` accepts the same `continuity` object as `run_subagent` when async raw Pi continuity is needed.
 
@@ -268,9 +270,7 @@ Use the campaign harness for scripted real-use probes so trial activity does not
 npm run observed-campaign -- --campaign-id campaign.example-1 -- node ./your-probe.mjs
 ```
 
-When `--state-root` is omitted, the harness creates a temp campaign state root and sets `SUBAGENT007_FAILURE_LOG_PATH`, `SUBAGENT007_CAMPAIGN_LEDGER_PATH`, `SUBAGENT007_RUNS_DIR`, `SUBAGENT007_RUN_TASKS_DIR`, `SUBAGENT007_INPUT_REQUESTS_DIR`, `SUBAGENT007_SESSIONS_DIR`, `SUBAGENT007_PI_RAW_SESSIONS_DIR`, `SUBAGENT007_MODEL_HEALTH_PATH`, and `SUBAGENT007_CAMPAIGN_ID` for the probe command. Its JSON summary includes `campaign_id`, `state_root`, `failure_log_path`, `campaign_ledger_path`, `model_health_path`, and `evidence_class: "campaign-scoped"`.
-
-Observed trial reports must record those summary fields for harness-launched probes. Calls made through an already-running installed MCP server are production-state observations unless that server process was itself launched under the campaign environment; do not label those records as campaign-scoped after the fact.
+When `--state-root` is omitted, the harness creates an isolated temp state root for failure logs, run artifacts, sessions, input requests, raw Pi sessions, model health, and the campaign ledger. Reports should cite the JSON summary fields, especially `campaign_id`, `state_root`, `failure_log_path`, `campaign_ledger_path`, and `evidence_class`. Calls made through an already-running installed MCP server are production-state observations unless that server process was launched under the campaign environment.
 
 Use the bundled MCP probe when a report needs deterministic current-surface call-attempt evidence:
 
@@ -278,9 +278,7 @@ Use the bundled MCP probe when a report needs deterministic current-surface call
 npm run observed-campaign -- --campaign-id campaign.example-1 -- npm run observed-mcp-probe -- --server ./dist/server.js --cwd /absolute/project/path --profile full-current
 ```
 
-Only probe calls recorded in `campaign_ledger_path` should claim MCP call-attempt coverage. Server-side `failures.jsonl` remains handler and child failure telemetry; SDK schema rejections happen before server handlers and are recorded by the probe ledger as `call_schema_error`; structured semantic preflight rejections are recorded as `call_preflight_rejected`. The bundled MCP probe defaults to `protocol-core`, a historical subset; pass `--profile full-current` for current deterministic surface coverage. It injects a deterministic fake child with `SUBAGENT007_PI_CHILD_PATH` and labels raw ledger records and coverage summaries with `evidence_class: "protocol-deterministic"`.
-
-Coverage profiles are declared in `scripts/observed-coverage-manifest.json` and fail closed when required surfaces are unknown, have no selected scenario, or have no evidence-class-compatible selected scenario. `protocol-core` is the deterministic historical core subset; `full-current` is the deterministic current required protocol surface set and excludes live-only `installed-pi-integration`; `live-current` is live-model smoke coverage for installed Pi integration and live-compatible surfaces. Profile and scenario alias `all` maps to `full-current`; `live-smoke` and `stateful-live` map to `live-current`. `all-bundled` is retired and rejects with guidance to use `--profile protocol-core`. Aliases are not product-complete E2E claims by name alone. The probe prints `scenario_set`, `profile`, `mode`, `required_surfaces`, `covered_surfaces`, `covered_surfaces_by_evidence_class`, `missing_required_surfaces`, `skipped_surfaces`, and `out_of_scope_surfaces`. Use `--mode live-model` only for live provider smoke evidence; scenarios whose surfaces are not compatible with live-model evidence are rejected in live mode.
+Only probe calls recorded in `campaign_ledger_path` should claim MCP call-attempt coverage. Server-side `failures.jsonl` remains handler and child failure telemetry; SDK schema rejections are recorded by the probe ledger as `call_schema_error`, while structured semantic preflight rejections are recorded as `call_preflight_rejected`. The bundled MCP probe defaults to `protocol-core`; use `--profile full-current` for current deterministic surface coverage. Profiles live in `scripts/observed-coverage-manifest.json` and fail closed when required surfaces are unknown, unselected, or covered only by an incompatible evidence class. Use `--mode live-model` only for live provider smoke evidence.
 
 ## Development
 

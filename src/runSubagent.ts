@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.js";
 import { failureClassForProcessResult, logFailure, type FailureLogTool } from "./failureLog.js";
@@ -200,6 +200,27 @@ export function resolveSkillFilePathForRequest(
   }).filePath;
 }
 
+async function resolvedSkillAuditMetadata(
+  resolved: Pick<ResolvedRunSubagentRequest, "skill">,
+  skillFilePath: string | undefined,
+): Promise<{
+  resolvedSkillPath: string | null;
+  resolvedSkillSha256: string | null;
+}> {
+  if (!resolved.skill || !skillFilePath) {
+    return {
+      resolvedSkillPath: null,
+      resolvedSkillSha256: null,
+    };
+  }
+  const resolvedSkillPath = path.resolve(skillFilePath);
+  const content = await fs.readFile(resolvedSkillPath);
+  return {
+    resolvedSkillPath,
+    resolvedSkillSha256: createHash("sha256").update(content).digest("hex"),
+  };
+}
+
 export async function runSubagentCore(
   request: RunSubagentRequest,
   options: {
@@ -224,6 +245,7 @@ export async function runSubagentCore(
   const config = await loadConfig();
   const resolved = await validateAndResolveRequest(request, config);
   const skillFilePath = options.skillFilePath ?? resolveSkillFilePathForRequest(resolved);
+  const skillAudit = await resolvedSkillAuditMetadata(resolved, skillFilePath);
   const runId = options.runId ?? newRunId();
   const mailboxRoot = options.mailboxRoot ?? defaultInputRequestsDir();
   const inputRequestsDir = path.join(mailboxRoot, runId);
@@ -240,13 +262,14 @@ export async function runSubagentCore(
       publicPrompt: resolved.prompt,
       skill: resolved.skill,
     });
+    const childSkillFilePath = resolved.skill ? skillAudit.resolvedSkillPath ?? skillFilePath : undefined;
     const childPayload: PiChildRequestFile = {
       prompt: promptProvenance.composed_child_prompt,
       cwd: resolved.cwd,
       model: resolved.model,
       thinkingLevel: resolved.thinkingLevel,
       skill: resolved.skill,
-      skillFilePath,
+      skillFilePath: childSkillFilePath,
       outputMode: resolved.outputMode,
       toolProfile: resolved.toolProfile,
       outputLastMessagePath: finalMessageTarget.outputLastMessagePath,
@@ -337,6 +360,8 @@ export async function runSubagentCore(
       resolved_model: resolved.model,
       resolved_thinking_level: resolved.thinkingLevel,
       requested_skill: resolved.skill ?? null,
+      resolved_skill_path: skillAudit.resolvedSkillPath,
+      resolved_skill_sha256: skillAudit.resolvedSkillSha256,
       requested_output_mode: resolved.outputMode,
       written_output_mode: writtenOutputMode,
       resolved_tool_profile: resolved.toolProfile,

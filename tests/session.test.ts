@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -15,14 +16,14 @@ async function createSessionFixture(): Promise<{
   fakeChildPath: string;
   fakeLogPath: string;
   skillsRoot: string;
-  pdaLiteSkillPath: string;
+  sessionSkillPath: string;
 }> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-session-"));
   const projectDir = path.join(tmp, "project");
   const sessionsDir = path.join(tmp, "sessions");
   const failureLogPath = path.join(tmp, "failures.jsonl");
   const skillsRoot = path.join(tmp, "skills");
-  const pdaLiteSkillPath = await writeSkillFixture(skillsRoot, "pda-lite");
+  const sessionSkillPath = await writeSkillFixture(skillsRoot, "session-audit-skill");
   const fake = await createFakePiChild();
   await fs.mkdir(projectDir, { recursive: true });
   return {
@@ -32,7 +33,7 @@ async function createSessionFixture(): Promise<{
     fakeChildPath: fake.childPath,
     fakeLogPath: fake.logPath,
     skillsRoot,
-    pdaLiteSkillPath,
+    sessionSkillPath,
   };
 }
 
@@ -56,6 +57,10 @@ async function writeSkillFixture(root: string, name: string): Promise<string> {
     "utf8",
   );
   return skillPath;
+}
+
+async function sha256File(filePath: string): Promise<string> {
+  return createHash("sha256").update(await fs.readFile(filePath)).digest("hex");
 }
 
 test("run_subagent_session rejects raw session_id", async () => {
@@ -408,18 +413,24 @@ test("run_subagent_session enforces cwd identity and immutable skill binding", a
       SUBAGENT007_PI_CHILD_PATH: fixture.fakeChildPath,
       FAKE_PI_LOG_PATH: fixture.fakeLogPath,
       SUBAGENT007_FAILURE_LOG: "off",
+      SUBAGENT007_PI_SKILL_PATHS: fixture.skillsRoot,
     },
     async () => {
-      await runSubagentSession(
+      const created = await runSubagentSession(
         {
           cwd: fixture.projectDir,
           prompt: "FAST",
           session_key: "coherent-execution:T004",
-          skill_name: "pda-lite",
+          skill_name: "session-audit-skill",
           model_class: "C",
         },
         { sessionsDir: fixture.sessionsDir },
       );
+      assert.equal(created.requested_skill, "session-audit-skill");
+      assert.equal(created.resolved_skill_path, fixture.sessionSkillPath);
+      assert.equal(created.resolved_skill_sha256, await sha256File(fixture.sessionSkillPath));
+      assert.equal(created.run_record.resolved_skill_path, fixture.sessionSkillPath);
+      assert.equal(created.run_record.resolved_skill_sha256, await sha256File(fixture.sessionSkillPath));
 
       await assert.rejects(
         runSubagentSession(
@@ -428,7 +439,7 @@ test("run_subagent_session enforces cwd identity and immutable skill binding", a
             prompt: "FAST",
             session_key: "coherent-execution:T004",
             resume_mode: "require_existing",
-            skill_name: "pda-lite",
+            skill_name: "session-audit-skill",
             model_class: "C",
           },
           { sessionsDir: fixture.sessionsDir },
