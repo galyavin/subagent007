@@ -34,17 +34,15 @@ function timestampSlug() {
   return new Date().toISOString().replace(/[:.]/g, "").replace(/Z$/, "Z");
 }
 
+function withoutPrivatePrefix(value) {
+  return value.startsWith("/private/") ? value.slice("/private".length) : value;
+}
+
 function classifyCwd(cwd) {
   if (typeof cwd !== "string" || cwd.trim() === "") return "missing";
   if (!path.isAbsolute(cwd)) return "relative";
-  const normalizedCwd = path.normalize(cwd);
-  const normalizedTmp = path.normalize(os.tmpdir());
-  const tmpWithoutPrivate = normalizedTmp.startsWith("/private/")
-    ? normalizedTmp.slice("/private".length)
-    : normalizedTmp;
-  const cwdWithoutPrivate = normalizedCwd.startsWith("/private/")
-    ? normalizedCwd.slice("/private".length)
-    : normalizedCwd;
+  const cwdWithoutPrivate = withoutPrivatePrefix(path.normalize(cwd));
+  const tmpWithoutPrivate = withoutPrivatePrefix(path.normalize(os.tmpdir()));
   return cwdWithoutPrivate === tmpWithoutPrivate || cwdWithoutPrivate.startsWith(`${tmpWithoutPrivate}${path.sep}`)
     ? "temp"
     : "absolute";

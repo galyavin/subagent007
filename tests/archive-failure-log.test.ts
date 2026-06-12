@@ -126,12 +126,14 @@ test("archive no-arg invocation moves the configured failure log and writes a su
   const summary = JSON.parse(await fs.readFile(parsed.summary_path, "utf8")) as {
     total_records: number;
     by_tool: Record<string, number>;
+    by_cwd_class: Record<string, number>;
     by_campaign_id: Record<string, number>;
     by_calibration_era: Record<string, number>;
   };
   assert.equal(summary.total_records, 2);
   assert.equal(summary.by_tool.run_subagent, 1);
   assert.equal(summary.by_tool.start_run, 1);
+  assert.equal(summary.by_cwd_class.temp, 2);
   assert.equal(summary.by_campaign_id["campaign.archive-1"], 1);
   assert.equal(summary.by_campaign_id.uncategorized, 1);
   assert.equal(summary.by_calibration_era.model_class_v1, 1);
