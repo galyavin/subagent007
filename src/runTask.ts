@@ -302,19 +302,6 @@ async function appendRunStartedEvent(
   }
 }
 
-async function appendAutoPromotedEvent(
-  state: RunTaskState,
-  promotion: RunSubagentPromotion,
-): Promise<void> {
-  await appendStatusEvent(state, {
-    kind: "task",
-    event: "auto_promoted",
-    text: "[auto_promoted] run_subagent -> durable_run",
-    occurred_at: new Date().toISOString(),
-    metadata: { ...promotion },
-  }, "run_subagent auto-promoted to durable run");
-}
-
 async function prepareChildRun(state: RunTaskState): Promise<void> {
   const occurredAt = new Date().toISOString();
   setTaskPhase(state, "awaiting_child_event", occurredAt);
@@ -805,7 +792,13 @@ async function runSubagentPromotedTask(
   const state = createRunTaskState("run");
   state.promotion = promotion;
   await registerRunTaskState(state, request);
-  await appendAutoPromotedEvent(state, promotion);
+  await appendStatusEvent(state, {
+    kind: "task",
+    event: "auto_promoted",
+    text: "[auto_promoted] run_subagent -> durable_run",
+    occurred_at: new Date().toISOString(),
+    metadata: { ...promotion },
+  }, "run_subagent auto-promoted to durable run");
   await writeTaskSnapshot(await getRunTask(state.runId));
 
   state.promise = (async () => {
