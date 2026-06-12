@@ -856,6 +856,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 129/129.
 
+## Loop 55 - Cache Model-Class Choices In Config Migration CLI
+
+Finding: `scripts/migrate-config.mjs` calls `modelClassChoices()` separately for the allowed-classes display and canonical `default_model_class` validation. The valid class set is one CLI invariant and does not need repeated projection.
+
+Behavior check: caching `modelClassChoices()` in a local constant should not change observable behavior if the same choices are used for `.join(", ")` and `.includes(...)`, preserving the same invalid-class JSON field and exit behavior.
+
+Oracle: `tests/config-migrate.test.ts` directly covers unsupported class reporting, canonical class no-op, whitespace migration, legacy pair migration, and missing/invalid config behavior. No new pinning test is needed.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: cached `modelClassChoices()` in `MODEL_CLASS_CHOICES` and reused it for migration allowed-class rendering and validation.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/config-migrate.test.ts` passed; targeted tests passed 7/7.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 129/129.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

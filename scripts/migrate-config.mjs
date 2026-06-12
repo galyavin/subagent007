@@ -7,6 +7,8 @@ import {
   modelClassForResolvedPair,
 } from "../dist/modelAllowlist.js";
 
+const MODEL_CLASS_CHOICES = modelClassChoices();
+
 function usage() {
   return [
     "usage: node scripts/migrate-config.mjs",
@@ -86,7 +88,7 @@ if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
 }
 
 function allowedClasses() {
-  return modelClassChoices().join(", ");
+  return MODEL_CLASS_CHOICES.join(", ");
 }
 
 function unrepairableModelClassResult(details) {
@@ -108,7 +110,7 @@ function migratedConfig(value, modelClass) {
 const rawModelClass = parsed.default_model_class;
 if (typeof rawModelClass === "string" && rawModelClass.trim() !== "") {
   const canonicalModelClass = rawModelClass.trim();
-  if (!modelClassChoices().includes(canonicalModelClass)) {
+  if (!MODEL_CLASS_CHOICES.includes(canonicalModelClass)) {
     print(unrepairableModelClassResult({
       default_model_class: rawModelClass,
     }));
