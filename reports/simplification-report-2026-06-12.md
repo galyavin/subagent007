@@ -714,6 +714,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 46 - Shared Mailbox Sidecar Path Projection
+
+Finding: `answerPathFor`, `timeoutPathFor`, and `terminalPathFor` in `src/inputMailbox.ts` repeat the same `recordPath.replace(/\.json$/, ...)` sidecar path projection, differing only by the sidecar suffix.
+
+Behavior check: extracting a private sidecar path helper should not change observable behavior if `.answer.json`, `.timed_out.json`, and `.terminal.json` paths are still produced by replacing the trailing `.json` suffix exactly as before.
+
+Oracle: mailbox tests cover answer settlement, timeout settlement, terminal settlement, closed settlement, duplicate rejection, and legacy `.answer.json`/`.timed_out.json` markers. No new pinning test is needed for this local path projection extraction.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added `sidecarPathFor` and reused it for answer, timeout, and terminal mailbox sidecar paths.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/input-mailbox.test.ts tests/run-subagent.test.ts` passed; targeted tests passed 46/46.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

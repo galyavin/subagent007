@@ -74,16 +74,20 @@ function requestPath(mailboxRoot: string, runId: string, requestId: string): str
   return path.join(mailboxRoot, runId, `${requestId}.json`);
 }
 
+function sidecarPathFor(recordPath: string, suffix: string): string {
+  return recordPath.replace(/\.json$/, suffix);
+}
+
 function answerPathFor(recordPath: string): string {
-  return recordPath.replace(/\.json$/, ".answer.json");
+  return sidecarPathFor(recordPath, ".answer.json");
 }
 
 function timeoutPathFor(recordPath: string): string {
-  return recordPath.replace(/\.json$/, ".timed_out.json");
+  return sidecarPathFor(recordPath, ".timed_out.json");
 }
 
 function terminalPathFor(recordPath: string): string {
-  return recordPath.replace(/\.json$/, ".terminal.json");
+  return sidecarPathFor(recordPath, ".terminal.json");
 }
 
 async function readJson<T>(filePath: string): Promise<T | null> {
