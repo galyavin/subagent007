@@ -522,6 +522,22 @@ Targeted oracle result: failed at `npm run typecheck`; replacing the top-level p
 
 Reversion: reverted the server change. Do not retry this default model-health command reuse in this campaign.
 
+## Loop 34 - Single Observed Run Subagent Call Builder
+
+Finding: `scenarioCall` in `scripts/run-observed-mcp-probe.mjs` repeats the same `run_subagent` request skeleton across successful, validation, child-failure, transcript-redaction, timeout-recovery, and installed-Pi scenarios: `tool: "run_subagent"` plus `cwd`, `prompt`, and `run_kind: "quick_noninteractive"`.
+
+Behavior check: extracting a small `runSubagentScenarioCall` helper should not change observable behavior if each scenario keeps the same argument keys, insertion order, and optional scenario-specific fields such as `output_mode`.
+
+Oracle: existing observed campaign tests exercise the affected scenarios, assert call attempts and redaction, and inspect ledger argument-shape presence. No new pinning test is needed for this scenario-call construction helper.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added `runSubagentScenarioCall` and reused it for the observed probe scenarios that call `run_subagent`.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/observed-campaign.test.ts` passed; targeted tests passed 14/14.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

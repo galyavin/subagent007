@@ -542,6 +542,18 @@ async function responseSummaryForScenario(response, scenario) {
   }
 }
 
+function runSubagentScenarioCall(cwd, prompt, extraArgs = {}) {
+  return {
+    tool: "run_subagent",
+    args: {
+      cwd,
+      prompt,
+      run_kind: "quick_noninteractive",
+      ...extraArgs,
+    },
+  };
+}
+
 function scenarioCall(scenario, cwd) {
   if (scenario === "tool-listing") {
     return {
@@ -556,14 +568,7 @@ function scenarioCall(scenario, cwd) {
     };
   }
   if (scenario === "success") {
-    return {
-      tool: "run_subagent",
-      args: {
-        cwd,
-        prompt: "FAST",
-        run_kind: "quick_noninteractive",
-      },
-    };
+    return runSubagentScenarioCall(cwd, "FAST");
   }
   if (scenario === "schema-error") {
     return {
@@ -574,25 +579,12 @@ function scenarioCall(scenario, cwd) {
     };
   }
   if (scenario === "handler-validation") {
-    return {
-      tool: "run_subagent",
-      args: {
-        cwd: "relative-path",
-        prompt: "SECRET_LEDGER_PROMPT_HANDLER_VALIDATION",
-        run_kind: "quick_noninteractive",
-      },
-    };
+    return runSubagentScenarioCall("relative-path", "SECRET_LEDGER_PROMPT_HANDLER_VALIDATION");
   }
   if (scenario === "child-failure") {
-    return {
-      tool: "run_subagent",
-      args: {
-        cwd,
-        prompt: "FAIL_EXIT SECRET_LEDGER_PROMPT_CHILD_FAILURE",
-        run_kind: "quick_noninteractive",
-        output_mode: "transcript",
-      },
-    };
+    return runSubagentScenarioCall(cwd, "FAIL_EXIT SECRET_LEDGER_PROMPT_CHILD_FAILURE", {
+      output_mode: "transcript",
+    });
   }
   if (scenario === "packet-failure") {
     return {
@@ -607,26 +599,14 @@ function scenarioCall(scenario, cwd) {
     };
   }
   if (scenario === "transcript-redaction") {
-    return {
-      tool: "run_subagent",
-      args: {
-        cwd,
-        prompt: "RAW_THINKING_TRANSCRIPT",
-        run_kind: "quick_noninteractive",
-        output_mode: "transcript",
-      },
-    };
+    return runSubagentScenarioCall(cwd, "RAW_THINKING_TRANSCRIPT", {
+      output_mode: "transcript",
+    });
   }
   if (scenario === "timeout-recovery") {
-    return {
-      tool: "run_subagent",
-      args: {
-        cwd,
-        prompt: "TIMEOUT_ASSISTANT_EVENT",
-        run_kind: "quick_noninteractive",
-        output_mode: "transcript",
-      },
-    };
+    return runSubagentScenarioCall(cwd, "TIMEOUT_ASSISTANT_EVENT", {
+      output_mode: "transcript",
+    });
   }
   if (scenario === "session-valid-closure") {
     return {
@@ -653,14 +633,7 @@ function scenarioCall(scenario, cwd) {
     };
   }
   if (scenario === "installed-pi-integration") {
-    return {
-      tool: "run_subagent",
-      args: {
-        cwd,
-        prompt: "Reply with the single word READY.",
-        run_kind: "quick_noninteractive",
-      },
-    };
+    return runSubagentScenarioCall(cwd, "Reply with the single word READY.");
   }
   throw new Error(`unknown scenario: ${scenario}`);
 }
