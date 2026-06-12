@@ -353,6 +353,15 @@ async function prepareChildRun(state: RunTaskState): Promise<void> {
   await writeTaskSnapshot(await getRunTask(state.runId));
 }
 
+async function registerRunTaskState(
+  state: RunTaskState,
+  request: RunSubagentRequest | RunSubagentSessionRequest,
+): Promise<void> {
+  tasks.set(state.runId, state);
+  await appendRunStartedEvent(state, request);
+  await writeTaskSnapshot(await getRunTask(state.runId));
+}
+
 async function appendClosedInputEvents(
   state: RunTaskState,
   closed: Awaited<ReturnType<typeof closePendingInputRequestsForRun>>,
@@ -605,9 +614,7 @@ export async function startRunTask(
   await validateAndResolveRequest(request, config);
 
   const state = createRunTaskState("run");
-  tasks.set(state.runId, state);
-  await appendRunStartedEvent(state, request);
-  await writeTaskSnapshot(await getRunTask(state.runId));
+  await registerRunTaskState(state, request);
 
   state.promise = (async () => {
     try {
@@ -703,9 +710,7 @@ export async function startSessionRunTask(
     "session",
     typeof request.session_key === "string" ? request.session_key : undefined,
   );
-  tasks.set(state.runId, state);
-  await appendRunStartedEvent(state, request);
-  await writeTaskSnapshot(await getRunTask(state.runId));
+  await registerRunTaskState(state, request);
 
   state.promise = (async () => {
     try {
@@ -767,9 +772,7 @@ export async function runSubagentOneShotTask(
   await assertModelClassUsableForOneShot(resolved.modelClass);
 
   const state = createRunTaskState("run");
-  tasks.set(state.runId, state);
-  await appendRunStartedEvent(state, request);
-  await writeTaskSnapshot(await getRunTask(state.runId));
+  await registerRunTaskState(state, request);
 
   state.promise = (async () => {
     try {

@@ -112,6 +112,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `npm test` passed 125/125.
 
+## Loop 8 - Shared Task Registration Snapshot
+
+Finding: `src/runTask.ts` repeats the same initial task registration sequence in `startRunTask`, `startSessionRunTask`, and `runSubagentOneShotTask`: put the state in the process-local task map, append the public `run_started` event, and write the first persisted task snapshot. This is one lifecycle primitive and should not be manually repeated across public run paths.
+
+Behavior check: extracting this registration sequence should not change observable behavior if the state is inserted before `appendRunStartedEvent`, and the snapshot is still written after the run-started event is appended.
+
+Oracle: existing lifecycle tests cover initial `working` views, `run_started` events, persisted snapshots, and server-restart snapshot reads. No new pinning test is needed for this helper extraction.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added `registerRunTaskState` and replaced the three repeated state-registration/start-event/initial-snapshot blocks. The helper preserves insertion into `tasks` before the public run-started event and preserves snapshot writing after that event.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts` passed; targeted tests passed 41/41.
+
+Full oracle result: `npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage.
