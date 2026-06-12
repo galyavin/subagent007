@@ -59,6 +59,10 @@ function resolveOptions(options: TimeoutBudgetOptions = {}): Required<TimeoutBud
   };
 }
 
+function reservedTimeoutMs(resolved: Required<TimeoutBudgetOptions>): number {
+  return resolved.responseHeadroomMs + resolved.killGraceMs + resolved.forceGraceMs;
+}
+
 export function computeTimeoutBudget(
   requestedTimeoutMs: number | undefined,
   options: TimeoutBudgetOptions = {},
@@ -77,7 +81,7 @@ export function computeTimeoutBudget(
   }
 
   const resolvedTimeoutMs = Math.max(requestedTimeoutMs, resolved.minRequestedTimeoutMs);
-  const reservedMs = resolved.responseHeadroomMs + resolved.killGraceMs + resolved.forceGraceMs;
+  const reservedMs = reservedTimeoutMs(resolved);
   return {
     requestedTimeoutMs,
     resolvedTimeoutMs,
@@ -91,6 +95,6 @@ export function computeTimeoutBudget(
 
 export function minimumRequestedTimeoutMs(options: TimeoutBudgetOptions = {}): number {
   const resolved = resolveOptions(options);
-  const reservedMs = resolved.responseHeadroomMs + resolved.killGraceMs + resolved.forceGraceMs;
+  const reservedMs = reservedTimeoutMs(resolved);
   return Math.max(resolved.minRequestedTimeoutMs, reservedMs + MIN_EFFECTIVE_TIMEOUT_MS);
 }
