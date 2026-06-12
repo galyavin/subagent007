@@ -350,6 +350,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 23 - Single Skill Ambiguity Error Message
+
+Finding: `resolveRequestedSkill` in `src/skillResources.ts` repeats the exact same ambiguity error message for loader diagnostics and duplicate skill matches. This is one user-facing ambiguity contract duplicated across two detection paths.
+
+Behavior check: extracting the message into a helper should not change observable behavior if both branches still throw `Error` with the same `JSON.stringify(skillName)` formatting and text.
+
+Oracle: existing skill-resource tests assert unknown skill behavior and ambiguous skill rejection. No new pinning test is needed for this message-helper extraction.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: added `ambiguousSkillError` and reused it for both skill ambiguity detection paths.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/skill-resources.test.ts` passed; targeted tests passed 3/3.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.

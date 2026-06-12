@@ -42,6 +42,12 @@ function collisionName(diagnostic: unknown): string | undefined {
   return undefined;
 }
 
+function ambiguousSkillError(skillName: string): Error {
+  return new Error(
+    `skill ${JSON.stringify(skillName)} is ambiguous across configured Subagent007 skill paths`,
+  );
+}
+
 export function resolveRequestedSkill(skillName: string, options: Omit<SkillResourceOptions, "skill">): Skill {
   const result = loadSkills({
     cwd: options.cwd,
@@ -50,9 +56,7 @@ export function resolveRequestedSkill(skillName: string, options: Omit<SkillReso
     includeDefaults: true,
   });
   if (result.diagnostics.some((diagnostic) => collisionName(diagnostic) === skillName)) {
-    throw new Error(
-      `skill ${JSON.stringify(skillName)} is ambiguous across configured Subagent007 skill paths`,
-    );
+    throw ambiguousSkillError(skillName);
   }
 
   const matches = result.skills.filter((skill) => skill.name === skillName);
@@ -62,9 +66,7 @@ export function resolveRequestedSkill(skillName: string, options: Omit<SkillReso
     );
   }
   if (matches.length > 1) {
-    throw new Error(
-      `skill ${JSON.stringify(skillName)} is ambiguous across configured Subagent007 skill paths`,
-    );
+    throw ambiguousSkillError(skillName);
   }
   return matches[0];
 }
