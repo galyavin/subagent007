@@ -899,11 +899,12 @@ export async function resolveRunOperationContext(runId: string): Promise<RunOper
     return { runId };
   }
   const events = await readRunPublicEvents(defaultRunTasksDir(), runId);
+  const cwd = cwdFromRunStartedEvent(events);
   return {
     runId,
     ...(snapshot.task_kind ? { taskKind: snapshot.task_kind } : {}),
     ...(snapshot.session_key ? { sessionKey: snapshot.session_key } : {}),
-    ...(cwdFromRunStartedEvent(events) ? { cwd: cwdFromRunStartedEvent(events) } : {}),
+    ...(cwd ? { cwd } : {}),
     snapshot,
   };
 }

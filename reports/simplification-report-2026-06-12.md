@@ -10,11 +10,27 @@ Oracle: existing MCP lifecycle tests cover `run_subagent`, `schedule_run`, `star
 
 Decision: patch minimally. If any test fails, revert this loop and do not retry it.
 
+Patch: computed `cwdFromRunStartedEvent(events)` once in `resolveRunOperationContext` and reused the local value in the returned context object.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/failure-log.test.ts tests/run-subagent.test.ts` passed; targeted tests passed 54/54.
+
+Full oracle result: `npm test` passed 125/125.
+
 Patch: added `handleTaskHeartbeat` and replaced the three repeated heartbeat callbacks with calls to that helper. The helper preserves the prior order: phase update, progress update, snapshot write, then optional heartbeat notification forwarding.
 
 Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts` passed; targeted lifecycle tests passed 41/41.
 
 Full oracle result: `npm test` passed 125/125.
+
+## Loop 3 - Single Cwd Recovery Scan
+
+Finding: `resolveRunOperationContext` calls `cwdFromRunStartedEvent(events)` twice when resolving context from a persisted snapshot. This repeats the same event scan inside failure logging context recovery and makes the object construction less direct.
+
+Behavior check: storing the recovered cwd in a local variable should not change observable behavior. It preserves the same event source, the same inclusion condition, and the same returned `cwd` value.
+
+Oracle: existing failure-log tests cover run-scoped failure context and persisted run lookup behavior. No new pinning test is needed for this expression-level simplification.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
 
 Patch: added `createRunTaskState` and replaced the three repeated `RunTaskState` initialization blocks with calls to that helper. No public schema, event text, status value, persisted path, timeout behavior, or child invocation option was intentionally changed.
 
