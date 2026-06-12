@@ -11,9 +11,7 @@ Subagent007 Pi is a private MCP server that delegates work to a separate Pi-back
 | Durable continuity by semantic key | `start_session_run` plus `get_run`, or `run_subagent_session` for compatibility | Requires `session_key`; use when manifest/ledger continuity matters. Prefer the async task form for long, cancellable, or abandoned-client-safe work. |
 | Model-class/config health | `list_model_classes` | `list_allowed_models` is a compatibility alias. |
 
-Agent rule of thumb: if the task may need shell/write tools, skills, edits, caller input, or more than a short answer, use a durable task (`schedule_run`, `start_run`, or `start_session_run`) and poll `get_run`. Use `run_subagent` only when you can honestly treat the call as quick, bounded, and non-interactive.
-
-The default `tool_profile` is `inspect`; set `workspace_write` before expecting the child to edit files.
+Agent rule of thumb: if the task may need shell/write tools, skills, edits, caller input, cancellation, or more than a short answer, call `schedule_run`, `start_run`, or `start_session_run` directly and poll `get_run`. Use `run_subagent` only for genuinely quick, bounded, non-interactive work; skill-bound and write-heavy one-shot calls are compatibility cases that auto-promote. The child starts with `tool_profile:"inspect"`; set `shell` only for command execution and `workspace_write` only for intended edits.
 
 ## Requirements
 
@@ -118,7 +116,7 @@ Tool profiles:
 
 Use `workspace_write` only when the child is expected to modify files. Use `shell` only when command execution is necessary. The default `inspect` profile is intended for review, research, and report-only delegation.
 
-Bind skills with `skill_name`, not prompt syntax. It must be a bare name such as `pda-lite` or `google-drive:google-docs`, not `$skill`, `/skill:name`, markdown, prose, or a path. Child runs receive no ambient skill catalog; omission means no skills, and a provided name must resolve to exactly one skill before model invocation.
+Bind skills with `skill_name`, not prompt syntax. It must be a bare name such as `pda-lite` or `google-drive:google-docs`, not `$skill`, `/skill:name`, markdown, prose, or a path. Child runs receive no ambient skill catalog; omission means no skills. A provided name must resolve to exactly one skill from configured lookup paths (`SUBAGENT007_PI_SKILL_PATHS`, existing Codex skill/plugin cache paths, and Pi defaults) before model invocation.
 
 Result semantics:
 
@@ -253,15 +251,15 @@ When `--state-root` is omitted, the harness creates a temp campaign state root a
 
 Observed trial reports must record those summary fields for harness-launched probes. Calls made through an already-running installed MCP server are production-state observations unless that server process was itself launched under the campaign environment; do not label those records as campaign-scoped after the fact.
 
-Use the bundled MCP probe when a report needs bundled call-attempt evidence across schema, handler, child, and success paths:
+Use the bundled MCP probe when a report needs deterministic current-surface call-attempt evidence:
 
 ```sh
-npm run observed-campaign -- --campaign-id campaign.example-1 -- npm run observed-mcp-probe -- --server ./dist/server.js --cwd /absolute/project/path --profile protocol-core
+npm run observed-campaign -- --campaign-id campaign.example-1 -- npm run observed-mcp-probe -- --server ./dist/server.js --cwd /absolute/project/path --profile full-current
 ```
 
-Only probe calls recorded in `campaign_ledger_path` should claim MCP call-attempt coverage. Server-side `failures.jsonl` remains handler and child failure telemetry; SDK schema rejections happen before server handlers and are recorded by the probe ledger as `call_schema_error`; structured semantic preflight rejections are recorded as `call_preflight_rejected`. The bundled MCP probe defaults to the `protocol-core` profile, injects a deterministic fake child with `SUBAGENT007_PI_CHILD_PATH`, and labels raw ledger records and coverage summaries with `evidence_class: "protocol-deterministic"`.
+Only probe calls recorded in `campaign_ledger_path` should claim MCP call-attempt coverage. Server-side `failures.jsonl` remains handler and child failure telemetry; SDK schema rejections happen before server handlers and are recorded by the probe ledger as `call_schema_error`; structured semantic preflight rejections are recorded as `call_preflight_rejected`. The bundled MCP probe defaults to `protocol-core`, a historical subset; pass `--profile full-current` for current deterministic surface coverage. It injects a deterministic fake child with `SUBAGENT007_PI_CHILD_PATH` and labels raw ledger records and coverage summaries with `evidence_class: "protocol-deterministic"`.
 
-Coverage profiles are declared in `scripts/observed-coverage-manifest.json` and fail closed when required surfaces are unknown, have no selected scenario, or have no evidence-class-compatible selected scenario. `protocol-core` and `full-current` are deterministic profiles; `live-current` is the live evidence profile. `full-current` covers the deterministic current surface set, while `live-current` covers live-only installed Pi integration through a fresh campaign-scoped server process. Profile and scenario alias `all` maps to `full-current`; `live-smoke` and `stateful-live` map to `live-current`. `all-bundled` is retired and rejects with guidance to use `--profile protocol-core` for the historical bundled protocol-core subset. Aliases are not product-complete E2E claims by name alone. The probe prints `scenario_set`, `profile`, `mode`, `required_surfaces`, `covered_surfaces`, `covered_surfaces_by_evidence_class`, `missing_required_surfaces`, `skipped_surfaces`, and `out_of_scope_surfaces`. Use `--mode live-model` only for live provider smoke evidence; scenarios whose surfaces are not compatible with live-model evidence are rejected in live mode.
+Coverage profiles are declared in `scripts/observed-coverage-manifest.json` and fail closed when required surfaces are unknown, have no selected scenario, or have no evidence-class-compatible selected scenario. `protocol-core` is the deterministic historical core subset; `full-current` is the deterministic current required protocol surface set and excludes live-only `installed-pi-integration`; `live-current` is live-model smoke coverage for installed Pi integration and live-compatible surfaces. Profile and scenario alias `all` maps to `full-current`; `live-smoke` and `stateful-live` map to `live-current`. `all-bundled` is retired and rejects with guidance to use `--profile protocol-core`. Aliases are not product-complete E2E claims by name alone. The probe prints `scenario_set`, `profile`, `mode`, `required_surfaces`, `covered_surfaces`, `covered_surfaces_by_evidence_class`, `missing_required_surfaces`, `skipped_surfaces`, and `out_of_scope_surfaces`. Use `--mode live-model` only for live provider smoke evidence; scenarios whose surfaces are not compatible with live-model evidence are rejected in live mode.
 
 ## Development
 
@@ -274,4 +272,4 @@ npm run models:reconcile
 
 Run `npm run build` after changing `src/`; the registered MCP command and package tarball use `dist/server.js`.
 
-Tests use `SUBAGENT007_PI_CHILD_PATH` to replace the real Pi child with a fake child process. Do not set it for normal MCP use.
+Tests use `SUBAGENT007_PI_CHILD_PATH` to replace the real Pi child with a fake child process. Do not set it for normal MCP use. `npm test` injects a private failure ledger unless `SUBAGENT007_FAILURE_LOG_PATH` is already set; explicit paths are preserved and fingerprinted.

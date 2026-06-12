@@ -5,10 +5,17 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
-function defaultFailureLogPath() {
-  return process.env.SUBAGENT007_FAILURE_LOG_PATH
-    ? path.resolve(process.env.SUBAGENT007_FAILURE_LOG_PATH)
-    : path.join(os.homedir(), ".codex", "subagent007-pi", "failures.jsonl");
+function inheritedFailureLogPath() {
+  const configured = process.env.SUBAGENT007_FAILURE_LOG_PATH;
+  return configured && configured.trim() !== "" ? path.resolve(configured) : null;
+}
+
+function privateFailureLogFixture() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "subagent007-pi-test-ledger-"));
+  return {
+    dir,
+    logPath: path.join(dir, "failures.jsonl"),
+  };
 }
 
 function fingerprint(filePath) {
@@ -33,12 +40,15 @@ if (testFiles.length === 0) {
   process.exit(2);
 }
 
-const logPath = defaultFailureLogPath();
+const inheritedLogPath = inheritedFailureLogPath();
+const privateFixture = inheritedLogPath ? null : privateFailureLogFixture();
+const logPath = inheritedLogPath ?? privateFixture.logPath;
 const before = fingerprint(logPath);
 const child = spawn(process.execPath, ["--test", "--import", "tsx", ...testFiles], {
   stdio: "inherit",
   env: {
     ...process.env,
+    SUBAGENT007_FAILURE_LOG_PATH: logPath,
     SUBAGENT007_RECORD_SOURCE: "test",
   },
 });
@@ -51,10 +61,13 @@ child.on("exit", (code, signal) => {
     before.sha256 !== after.sha256
   ) {
     console.error(
-      `Default Subagent007 failure ledger changed during tests: ${logPath}. ` +
-        "Tests must use a private SUBAGENT007_FAILURE_LOG_PATH or disable failure logging.",
+      `Subagent007 failure ledger changed during tests: ${logPath}. ` +
+        "Tests must use a per-test SUBAGENT007_FAILURE_LOG_PATH or disable failure logging.",
     );
     process.exit(1);
+  }
+  if (privateFixture) {
+    fs.rmSync(privateFixture.dir, { recursive: true, force: true });
   }
   if (signal) {
     process.kill(process.pid, signal);
