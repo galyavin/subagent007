@@ -81,6 +81,7 @@ export function runChildProcess(options: ProcessRunOptions): Promise<ProcessRunR
     let heartbeatBeat = 0;
     let heartbeatInFlight = false;
     let abortListener: (() => void) | undefined;
+    const forceFinishDelayMs = options.timeoutBudget.killGraceMs + options.timeoutBudget.forceGraceMs;
 
     const clearTimers = () => {
       for (const timer of [timeout, killTimeout, forceTimeout, heartbeatInterval]) {
@@ -177,7 +178,7 @@ export function runChildProcess(options: ProcessRunOptions): Promise<ProcessRunR
           if (!closed) {
             finish(null);
           }
-        }, options.timeoutBudget.killGraceMs + options.timeoutBudget.forceGraceMs);
+        }, forceFinishDelayMs);
       }, options.timeoutBudget.effectiveTimeoutMs);
     }
 
@@ -201,7 +202,7 @@ export function runChildProcess(options: ProcessRunOptions): Promise<ProcessRunR
         if (!closed) {
           finish(null);
         }
-      }, options.timeoutBudget.killGraceMs + options.timeoutBudget.forceGraceMs);
+      }, forceFinishDelayMs);
     };
     if (options.abortSignal?.aborted) {
       abortListener();
