@@ -257,10 +257,6 @@ async function handleTaskHeartbeat(
   await notify?.(beat, message);
 }
 
-function taskHeartbeatHandler(state: RunTaskState, notify?: HeartbeatNotify): HeartbeatNotify {
-  return (beat, message) => handleTaskHeartbeat(state, beat, message, notify);
-}
-
 async function appendRunStartedEvent(
   state: RunTaskState,
   request: RunSubagentRequest | RunSubagentSessionRequest,
@@ -539,7 +535,7 @@ function taskChildRuntimeOptions(
   onOutputLine: (line: string) => Promise<void>;
 } {
   return {
-    heartbeat: taskHeartbeatHandler(state, options.heartbeat),
+    heartbeat: (beat, message) => handleTaskHeartbeat(state, beat, message, options.heartbeat),
     heartbeatIntervalMs: options.heartbeatIntervalMs,
     abortSignal: state.abortController.signal,
     onOutputLine: taskOutputObserver(state),
