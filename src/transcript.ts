@@ -16,13 +16,13 @@ function textPartsFromContent(content: unknown): string[] {
     return [];
   }
   return content
-    .filter((part): part is { type?: string; text?: string } =>
+    .filter((part): part is { type: "text"; text: string } =>
       typeof part === "object" &&
       part !== null &&
       (part as { type?: unknown }).type === "text" &&
       typeof (part as { text?: unknown }).text === "string"
     )
-    .map((part) => part.text ?? "")
+    .map((part) => part.text)
     .filter((text) => text.trim() !== "");
 }
 

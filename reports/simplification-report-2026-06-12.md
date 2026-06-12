@@ -634,6 +634,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 41 - Exact Transcript Text Part Narrowing
+
+Finding: `textPartsFromContent` in `src/transcript.ts` filters content parts by proving each retained part has `type === "text"` and a string `text`, but the TypeScript predicate still returns a weaker optional shape and the following `map` keeps a dead `?? ""` fallback.
+
+Behavior check: tightening the predicate to `{ type: "text"; text: string }` and mapping `part.text` directly should not change observable behavior because the runtime filter condition is unchanged.
+
+Oracle: existing run-subagent transcript tests cover assistant text extraction, redaction, warning/error flags, timeout/cancellation markers, and public transcript availability. No new pinning test is needed for this type-narrowing cleanup.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: tightened the `textPartsFromContent` type predicate to the exact retained text-part shape and removed the unreachable `?? ""` fallback.
+
+Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run build && node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts tests/observed-campaign.test.ts` passed; targeted tests passed 55/55.
+
+Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
