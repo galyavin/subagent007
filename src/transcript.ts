@@ -1,14 +1,10 @@
+import { safeIntegerFromEnv } from "./env.js";
 import type { PromptProvenance, RunPublicEventKind, RunPublicEventName } from "./types.js";
 
 const DEFAULT_MAX_TRANSCRIPT_BYTES = 256 * 1024;
 
 function maxTranscriptBytes(): number {
-  const raw = process.env.SUBAGENT007_MAX_TRANSCRIPT_BYTES;
-  if (!raw || raw.trim() === "") {
-    return DEFAULT_MAX_TRANSCRIPT_BYTES;
-  }
-  const parsed = Number(raw);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_TRANSCRIPT_BYTES;
+  return safeIntegerFromEnv("SUBAGENT007_MAX_TRANSCRIPT_BYTES", DEFAULT_MAX_TRANSCRIPT_BYTES, 1);
 }
 
 function textPartsFromContent(content: unknown): string[] {

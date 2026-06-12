@@ -405,6 +405,13 @@ test("public transcript flags describe persisted rendered content", async () => 
     assert.match(transcript.text, /\[subagent007 transcript truncated at 20 bytes\]/);
     assert.doesNotMatch(transcript.text, /PUBLIC ASSISTANT TEXT/);
   });
+
+  await withEnv({ SUBAGENT007_MAX_TRANSCRIPT_BYTES: "not-a-number" }, async () => {
+    const transcript = preparePublicTranscriptFromProcessOutput(assistantEvent);
+    assert.equal(transcript.hasAssistantText, true);
+    assert.doesNotMatch(transcript.text, /\[subagent007 transcript truncated/);
+    assert.match(transcript.text, /PUBLIC ASSISTANT TEXT/);
+  });
 });
 
 test("public transcript flags classify deterministic public content classes", async () => {
