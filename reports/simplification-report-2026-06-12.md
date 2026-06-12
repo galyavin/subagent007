@@ -1192,6 +1192,22 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 134/134.
 
+## Loop 76 - Remove Dead One-Shot Strict Rejection Helper
+
+Finding: after `run_subagent` auto-promotion, `src/validate.ts` still exported `assertRunSubagentOneShotCompatible()`, the old strict rejection helper for valid-but-one-shot-incompatible work. `rg` showed no callers. Keeping it preserved a dead alternate policy path contradicting the current scheduler-owned promotion rule.
+
+Behavior check: removing the helper and its private `ONE_SHOT_GUIDANCE` string should not change external MCP behavior because `runSubagentOneShotTask()` consumes `runSubagentOneShotIncompatibility()` directly, and hard invalid-input validation still lives in `validateAndResolveRequest()`. The public failure-log classifier for historical matching strings is left intact.
+
+Oracle: existing validation and `run_subagent` tests cover invalid inputs, schema-level `timeout_ms`, quick-compatible one-shot behavior, auto-promotion cases, model-health gating, and timeout recovery. No new pinning test was needed for a dead uncalled helper removal.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Patch: removed `assertRunSubagentOneShotCompatible()` and the now-unused private `ONE_SHOT_GUIDANCE` constant from `src/validate.ts`.
+
+Targeted oracle result: `npm run typecheck`, `npm run build`, `node scripts/run-tests-with-ledger-guard.mjs tests/validation.test.ts`, and `node scripts/run-tests-with-ledger-guard.mjs tests/run-subagent.test.ts` passed; targeted tests passed 66/66.
+
+Full oracle result: `npm test` passed 136/136.
+
 ## Current Constraints
 
-The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
+The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle has historically had an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run; the latest sequential `npm test` completed cleanly, but the constraint is still part of the oracle design.

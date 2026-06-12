@@ -52,9 +52,6 @@ const ONE_SHOT_WRITE_WORK_PATTERNS = [
   /\brefactor\b/i,
   /\bfix\b/i,
 ];
-const ONE_SHOT_GUIDANCE =
-  "This request is incompatible with run_subagent's quick_noninteractive contract; use schedule_run or start_run with explicit timeout_ms for broad, exploratory, skill-bound, cancellable, polling, or long-running work.";
-
 export interface RunSubagentOneShotIncompatibility {
   reason_code: RunSubagentPromotionReasonCode;
   message: string;
@@ -320,15 +317,4 @@ export function runSubagentOneShotIncompatibility(
     };
   }
   return null;
-}
-
-export function assertRunSubagentOneShotCompatible(
-  request: RunSubagentRequest,
-  resolved: ResolvedRunSubagentRequest,
-): void {
-  const incompatibility = runSubagentOneShotIncompatibility(request, resolved);
-  if (!incompatibility) {
-    return;
-  }
-  throw new ValidationError(`${ONE_SHOT_GUIDANCE} Reason: ${incompatibility.message}.`);
 }
