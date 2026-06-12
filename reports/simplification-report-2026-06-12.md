@@ -508,6 +508,20 @@ Targeted oracle result: `npm run typecheck`, `git diff --check`, and `npm run bu
 
 Full oracle result: `SUBAGENT007_FAILURE_LOG_PATH=$(mktemp -d ...)/failures.jsonl npm test` passed 125/125.
 
+## Loop 33 - Reuse Default Model Health Probe Command
+
+Finding: `listModelClassesResult` in `src/server.ts` calls `modelHealthForClass(defaultModelClass)` to build `defaultOneShotHealth`, whose public view already includes the probe command, then separately calls `modelHealthProbeCommand(defaultModelClass)` for `model_health_probe_command`. This recomputes the same command string in one response projection.
+
+Behavior check: reusing `defaultOneShotHealth.health_action` should not change observable behavior because `modelHealthForClass` constructs that field from `modelHealthProbeCommand(defaultModelClass)` before reading cached health state.
+
+Oracle: existing `list_model_classes` tests assert model health actions, default health status/basis, and the top-level probe command. No new pinning test is needed for this projection-only reuse.
+
+Decision: patch minimally. If any test fails, revert this loop and do not retry it.
+
+Targeted oracle result: failed at `npm run typecheck`; replacing the top-level probe command with `defaultOneShotHealth.health_action` left the `modelHealthProbeCommand` import unused in `src/server.ts`.
+
+Reversion: reverted the server change. Do not retry this default model-health command reuse in this campaign.
+
 ## Current Constraints
 
 The goal is not complete. I have not yet proven that the entire codebase has no material simplifications left. A broader lifecycle-shell extraction in `src/runTask.ts` remains plausible but is higher risk than the completed helper extractions and needs its own loop with direct oracle coverage. The current test oracle still has an incoherent constraint: with no explicit `SUBAGENT007_FAILURE_LOG_PATH`, full-suite success can depend on the ambient user-level failure ledger not changing during the run.
