@@ -12,6 +12,7 @@ import { readJsonl } from "./helpers/testUtils.js";
 
 type FailureRecord = {
   schema_version: 2;
+  event_id: string;
   timestamp: string;
   server_version: string;
   record_source: "production" | "test" | "unknown";
@@ -36,6 +37,8 @@ type FailureRecord = {
   thinking_level?: string;
   output_mode?: string;
 };
+
+const TIMESTAMPED_EVENT_ID_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{9}Z-[0-9a-f]{12}$/;
 
 test("failure reason mapping classifies tool profile validation precisely", () => {
   assert.equal(
@@ -113,6 +116,7 @@ test("run_subagent appends one central record for a nonzero child failure", asyn
     assert.equal(failures.length, 1);
     assert.equal(failures[0].tool, "run_subagent");
     assert.equal(failures[0].schema_version, 2);
+    assert.match(failures[0].event_id, TIMESTAMPED_EVENT_ID_PATTERN);
     assert.equal(failures[0].server_version, "0.1.0");
     assert.equal(failures[0].calibration_era, "model_class_v1");
     assert.equal(failures[0].record_source, "test");

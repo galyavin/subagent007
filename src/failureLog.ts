@@ -1,7 +1,7 @@
-import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { timestampedRandomId } from "./output.js";
 import { SERVER_VERSION, serverBuildSha } from "./runtimeMetadata.js";
 import { ValidationError } from "./types.js";
 
@@ -123,7 +123,7 @@ function failureLoggingDisabled(): boolean {
 }
 
 function eventId(): string {
-  return `${new Date().toISOString().replace(/[:.]/g, "")}-${randomBytes(6).toString("hex")}`;
+  return timestampedRandomId();
 }
 
 function recordSourceFromEnv(): FailureRecordSource {
