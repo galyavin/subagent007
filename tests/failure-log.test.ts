@@ -129,7 +129,7 @@ test("run_subagent appends one central record for a nonzero child failure", asyn
     assert.equal(failures[0].partial_output_available, false);
     assert.equal(failures[0].resume_possible, false);
     assert.equal(failures[0].resolved_timeout_ms, 110000);
-    assert.equal(failures[0].model, "openrouter/deepseek/deepseek-v4-pro");
+    assert.equal(failures[0].model, "openai-codex/gpt-5.4-mini");
     assert.equal(failures[0].thinking_level, "high");
     assert.equal(failures[0].output_mode, "transcript");
     assert.equal(typeof failures[0].output_path, "string");

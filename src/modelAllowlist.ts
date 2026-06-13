@@ -9,7 +9,6 @@ const OPENAI_CODEX_MIN_GPT5_MINOR = 4;
 export const CURATED_EXACT_MODEL_REFS = [
   "ollama/qwen3.5:9b-mlx",
   "openrouter/deepseek/deepseek-v4-flash",
-  "openrouter/deepseek/deepseek-v4-pro",
 ] as const;
 
 function modelPatternChoices(): string[] {
@@ -38,9 +37,9 @@ export const MODEL_CLASS_CALIBRATIONS: Record<ModelClass, {
     description: "Simple coding, review, or search tasks with limited ambiguity.",
   },
   C: {
-    model: "openrouter/deepseek/deepseek-v4-pro",
+    model: "openai-codex/gpt-5.4-mini",
     thinkingLevel: "high",
-    description: "Default class for ordinary software engineering and technical reasoning.",
+    description: "Default class for bounded implementation, repo-grounded fixes, and ordinary technical reasoning.",
   },
   D: {
     model: "openai-codex/gpt-5.5",

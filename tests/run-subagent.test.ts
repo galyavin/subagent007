@@ -747,7 +747,7 @@ test("MCP list_model_classes exposes curated model classes", async () => {
     assert.equal(metadata.default_model_class_effective, "C");
     assert.equal(metadata.default_model_class_repaired, false);
     assert.equal(metadata.config_migration, null);
-    assert.equal(metadata.resolved_default_model, "openrouter/deepseek/deepseek-v4-pro");
+    assert.equal(metadata.resolved_default_model, "openai-codex/gpt-5.4-mini");
     assert.equal(metadata.resolved_default_thinking_level, "high");
     assert.equal(metadata.default_one_shot_health_status, "unknown");
     assert.equal(metadata.default_one_shot_health_basis, "never_probed");
@@ -789,7 +789,7 @@ test("MCP list_model_classes falls back to class C for unsupported legacy defaul
         to: "C",
         command: "npm run config:migrate",
       });
-      assert.equal(metadata.resolved_default_model, "openrouter/deepseek/deepseek-v4-pro");
+      assert.equal(metadata.resolved_default_model, "openai-codex/gpt-5.4-mini");
       assert.equal(metadata.resolved_default_thinking_level, "high");
     },
     {
@@ -864,7 +864,7 @@ test("MCP list_model_classes exposes cached healthy one-shot health basis", asyn
         {
           schema_version: 1,
           model_class: "C",
-          resolved_model: "openrouter/deepseek/deepseek-v4-pro",
+          resolved_model: "openai-codex/gpt-5.4-mini",
           surface: "run_subagent_one_shot",
           checked_at: "2026-06-11T00:00:00.000Z",
           usable_for_one_shot: true,
@@ -920,7 +920,7 @@ test("MCP run_subagent uses the configured fake Pi child", async () => {
     assert.equal(await fs.readFile(metadata.output_path, "utf8"), "FAST FINAL");
 
     const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
-    assert.equal(logs[0].request.model, "openrouter/deepseek/deepseek-v4-pro");
+    assert.equal(logs[0].request.model, "openai-codex/gpt-5.4-mini");
     assert.equal(logs[0].request.thinkingLevel, "high");
     assert.equal(logs[0].request.skill, undefined);
     assert.equal(logs[0].request.toolProfile, "inspect");

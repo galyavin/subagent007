@@ -60,7 +60,7 @@ test("model-health probe can record a healthy class without running a child", as
     };
   };
   assert.equal(parsed.record.model_class, "C");
-  assert.equal(parsed.record.resolved_model, "openrouter/deepseek/deepseek-v4-pro");
+  assert.equal(parsed.record.resolved_model, "openai-codex/gpt-5.4-mini");
   assert.equal(parsed.record.usable_for_one_shot, true);
   assert.equal(parsed.record.last_success_latency_ms, 123);
 
