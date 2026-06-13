@@ -16,9 +16,9 @@ export type FailureLogTool =
   | "get_run"
   | "cancel_run"
   | "answer_run_input";
-export type FailureRecordSource = "production" | "test" | "unknown";
-export type FailureCwdClass = "missing" | "relative" | "temp" | "absolute";
-export const CURRENT_CALIBRATION_ERA = "model_class_v1";
+type FailureRecordSource = "production" | "test" | "unknown";
+type FailureCwdClass = "missing" | "relative" | "temp" | "absolute";
+const CURRENT_CALIBRATION_ERA = "model_class_v1";
 
 export type FailureClass =
   | "validation_error"
@@ -121,7 +121,7 @@ function recordSourceFromEnv(): FailureRecordSource {
   return source === "production" || source === "test" || source === "unknown" ? source : "production";
 }
 
-export function campaignIdFromEnv(): string | undefined {
+function campaignIdFromEnv(): string | undefined {
   const value = process.env.SUBAGENT007_CAMPAIGN_ID?.trim();
   if (!value) {
     return undefined;

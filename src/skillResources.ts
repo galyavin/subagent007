@@ -23,7 +23,7 @@ export interface SkillResourceOptions {
   lookupPaths?: string[];
 }
 
-export function defaultSkillLookupPaths(home = os.homedir()): string[] {
+function defaultSkillLookupPaths(home = os.homedir()): string[] {
   const envPaths = process.env.SUBAGENT007_PI_SKILL_PATHS
     ?.split(path.delimiter)
     .map((entry) => entry.trim())

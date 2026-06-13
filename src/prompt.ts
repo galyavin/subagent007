@@ -14,11 +14,11 @@ export function composePrompt({
   return prompt;
 }
 
-export function compactSkillMarker(skill: string): string {
+function compactSkillMarker(skill: string): string {
   return `[server_contract] skill_name=${skill}`;
 }
 
-export function compactPacketMarker(packetPolicy: SessionPacketPolicy): string {
+function compactPacketMarker(packetPolicy: SessionPacketPolicy): string {
   return `[server_contract] packet_policy=${packetPolicy} contract_packet_v1 instruction applied`;
 }
 

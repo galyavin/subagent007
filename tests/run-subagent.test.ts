@@ -9,7 +9,7 @@ import { createInputRequest, listInputRequests } from "../src/inputMailbox.js";
 import {
   extractSubagentSessionId,
   partialOutputAvailableForRun,
-  runSubagent,
+  runSubagentCore as runSubagent,
   RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT,
 } from "../src/runSubagent.js";
 import { preparePublicTranscriptFromProcessOutput } from "../src/transcript.js";
@@ -192,6 +192,18 @@ async function waitForFileText(filePath: string, pattern: RegExp): Promise<strin
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error(`timed out waiting for ${filePath} to match ${pattern}: ${String(lastError)}`);
+}
+
+function assertCancellationInProgressOrSettled(metadata: RunSubagentMetadata): void {
+  if (metadata.active_phase === "cancelling") {
+    assert.equal(metadata.status, "working");
+    return;
+  }
+  if (metadata.active_phase === "cancelled") {
+    assert.equal(metadata.status, "cancelled");
+    return;
+  }
+  assert.fail(`expected cancellation phase, got status=${metadata.status} active_phase=${metadata.active_phase}`);
 }
 
 test("extracts only Subagent007 Pi session events from child output", () => {
@@ -1164,7 +1176,7 @@ test("MCP run_subagent auto-promotes broad analysis prompts to a cancellable dur
       arguments: { run_id: metadata.run_id },
     });
     assert.notEqual(cancelled.isError, true);
-    assert.equal((cancelled.structuredContent as RunSubagentMetadata).status, "cancelled");
+    assertCancellationInProgressOrSettled(cancelled.structuredContent as RunSubagentMetadata);
   });
 });
 
@@ -1364,8 +1376,7 @@ test("MCP schedule_run tasks can be cancelled", async () => {
     });
     assert.notEqual(cancelResponse.isError, true);
     const cancelled = cancelResponse.structuredContent as RunSubagentMetadata;
-    assert.equal(cancelled.status, "cancelled");
-    assert.equal(["cancelling", "cancelled"].includes(cancelled.active_phase ?? ""), true);
+    assertCancellationInProgressOrSettled(cancelled);
   });
 });
 
@@ -1901,8 +1912,7 @@ test("cancel_run closes pending input requests and rejects late answers", async 
       });
       assert.notEqual(cancelResponse.isError, true);
       const cancelled = cancelResponse.structuredContent as RunSubagentMetadata;
-      assert.equal(cancelled.status, "cancelled");
-      assert.equal(["cancelling", "cancelled"].includes(cancelled.active_phase ?? ""), true);
+      assertCancellationInProgressOrSettled(cancelled);
       assert.equal(cancelled.input_requests.some((input) => input.status === "pending"), false);
 
       const closed = await listInputRequests({ mailboxRoot, runId: started.run_id, status: "closed" });

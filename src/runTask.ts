@@ -46,14 +46,14 @@ import { defaultSubagentStatePath } from "./output.js";
 import { assertModelClassUsableForOneShot } from "./modelHealth.js";
 import { safeIntegerFromEnv } from "./env.js";
 
-export type RunTaskStatus =
+type RunTaskStatus =
   | "working"
   | "input_required"
   | "completed"
   | "failed"
   | "cancelled";
 
-export type RunTaskActivePhase =
+type RunTaskActivePhase =
   | "starting"
   | "awaiting_child_event"
   | "running_silent"
@@ -612,11 +612,9 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
     task_kind: state.taskKind,
     ...promotionView(state),
     ...(state.sessionKey ? { session_key: state.sessionKey } : {}),
-    status: state.cancelRequested
-      ? "cancelled"
-      : hasPendingInput
-        ? "input_required"
-        : "working",
+    status: hasPendingInput
+      ? "input_required"
+      : "working",
     started_at: state.startedAt,
     input_requests_dir: state.inputRequestsDir,
     input_requests: inputRequests,

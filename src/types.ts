@@ -7,7 +7,7 @@ export type OutputMode = (typeof OUTPUT_MODES)[number];
 export const TOOL_PROFILES = ["inspect", "web_search", "shell", "workspace_write"] as const;
 export type ToolProfile = (typeof TOOL_PROFILES)[number];
 export const RUN_KINDS = ["quick_noninteractive"] as const;
-export type RunKind = (typeof RUN_KINDS)[number];
+type RunKind = (typeof RUN_KINDS)[number];
 export const RUN_CONTINUITY_MODES = ["ephemeral", "fresh", "resume"] as const;
 export const SESSION_PACKET_POLICIES = ["none", "required", "best_effort"] as const;
 export type SessionPacketPolicy = (typeof SESSION_PACKET_POLICIES)[number];
@@ -18,7 +18,7 @@ export type PacketParseStatus = (typeof PACKET_PARSE_STATUSES)[number];
 export const RUN_STOP_REASONS = ["completed", "failed", "timeout", "cancelled", "spawn_error"] as const;
 export type RunStopReason = (typeof RUN_STOP_REASONS)[number];
 
-export interface SubagentRequestBase {
+interface SubagentRequestBase {
   prompt: string;
   cwd: string;
   model_class?: ModelClass;
@@ -65,7 +65,7 @@ export interface PromptProvenance {
   composed_child_prompt: string;
 }
 
-export interface SubagentRunResultBase {
+interface SubagentRunResultBase {
   output_path: string;
   success: boolean;
   exit_code: number | null;
@@ -255,14 +255,14 @@ export interface RunPublicEvent {
   metadata?: Record<string, unknown>;
 }
 
-export interface ContractPacketFinding {
+interface ContractPacketFinding {
   severity: "high" | "medium" | "low";
   claim: string;
   evidence: string;
   required_repair?: string;
 }
 
-export interface ContractPacketClosure {
+interface ContractPacketClosure {
   canonical_closure_source?: string;
   artifact_roles?: Array<{ path: string; role: string }>;
   validation?: string[];

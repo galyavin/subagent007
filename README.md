@@ -4,24 +4,22 @@ Subagent007 Pi is a private MCP server that delegates work to a separate Pi-back
 
 ## Agent Quickstart
 
-Use this server as a durable delegation boundary, not just as a synchronous helper call.
+Use this server as a durable delegation boundary. Treat `run_id` as the unit of progress.
 
 - Default to `schedule_run` for work that may be broad, slow, skill-bound, interactive, or worth cancelling.
 - Use `start_run` when you always want an immediate `run_id` without any initial wait.
 - Use `run_subagent` only when the task is genuinely quick, bounded, non-interactive, and deadline-compatible.
-- Poll `get_run` with the returned `run_id`; cancel active work with `cancel_run`; answer child questions with `answer_run_input`.
-- If a call returns `status:"working"` or `status:"input_required"`, continue that `run_id`; do not resubmit the same prompt to recover progress.
+- If a call returns `status:"working"` or `status:"input_required"`, continue that `run_id` with `get_run`; do not resubmit the same prompt.
 - Bind skills with the `skill_name` field. Do not put `/skill:...`, `$skill`, markdown links, paths, or prose skill references in the prompt.
 - Treat `preflight_rejected` plus `child_started:false` as a front-door validation failure. No child model work ran.
-
-Important lifecycle contract: `schedule_run` always creates the durable task before waiting. Long waits are capped by the server, so a caller should expect a pollable run view instead of assuming the MCP call will remain open until the child finishes.
+- Read `output_path` only after a terminal `status:"completed"`, `status:"failed"`, or `status:"cancelled"`.
 
 ## Tool Selection
 
 | Situation | Tool | Key constraints |
 | --- | --- | --- |
-| Quick, bounded, non-interactive one-shot work | `run_subagent` | Requires `run_kind: "quick_noninteractive"`; rejects caller `timeout_ms`; valid requests that are only one-shot-incompatible auto-promote to a durable run inspectable with `get_run`. |
-| Broad, long, cancellable, polling, or caller-interactive work | `schedule_run` or `start_run` plus `get_run` | Prefer `schedule_run` for uncertain work: it creates the durable task first and waits briefly for immediate completion. The initial wait is capped and reports `wait_truncated` when shortened. Use `start_run` when the caller always wants an immediate task handle. Pass `timeout_ms` when a hard deadline matters; answer pending input with `answer_run_input`; cancel with `cancel_run`. |
+| Quick, bounded, non-interactive one-shot work | `run_subagent` | Requires `run_kind: "quick_noninteractive"`; rejects caller `timeout_ms`; one-shot-incompatible valid requests auto-promote to a durable run. |
+| Broad, long, cancellable, polling, or caller-interactive work | `schedule_run` or `start_run` plus `get_run` | Prefer `schedule_run` for uncertain work. It creates the durable task before waiting, caps the initial wait, and reports `wait_truncated` when shortened. Use `start_run` when the caller always wants an immediate task handle. |
 | Durable continuity by semantic key | `start_session_run` plus `get_run`, or `run_subagent_session` for compatibility | Requires `session_key`; use when manifest/ledger continuity matters. Prefer the async task form for long, cancellable, or abandoned-client-safe work. |
 | Model-class/config health | `list_model_classes` | `list_allowed_models` is a compatibility alias. |
 
@@ -100,7 +98,7 @@ Child-invocation tools require:
 - `cwd`: absolute directory path
 - `prompt`: nonempty string
 
-Do not pass secrets unless local mailbox and transcript storage are acceptable. `prompt` is copied into run transcripts and public event ledgers. `answer_run_input.answer` is stored in the local mailbox settlement and omitted from input/public event fields, but child output is public transcript material and may contain answer-derived text if the child echoes or uses the answer.
+Do not pass secrets unless local mailbox and transcript storage are acceptable. `prompt` is copied into run transcripts and public event ledgers. `answer_run_input.answer` is stored in the local mailbox settlement and omitted from public event views, but child output is public transcript material and may contain answer-derived text if the child echoes or uses the answer.
 
 Optional common fields:
 
@@ -129,11 +127,11 @@ Tool profiles:
 - `shell`: `inspect` plus `bash`
 - `workspace_write`: `shell` plus `edit` and `write`
 
-Use `workspace_write` only when the child is expected to modify files. Use `shell` only when command execution is necessary. Use `web_search` only when the child needs current external information or to read a URL. The default `inspect` profile is intended for local review, research, and report-only delegation without network search.
+Use the smallest profile that gives the child the tools it needs. `inspect` is for local review/report-only delegation; `web_search`, `shell`, and `workspace_write` opt into network-search, command, and file-write capabilities respectively.
 
 The `web_search` profile expects the web search extension to be installed in the Pi agent environment, for example `pi install npm:pi-search-hub`. With no search config, `pi-search-hub` falls back to DuckDuckGo search and Jina Reader for URL reads. DuckDuckGo search requires the Python `ddgs` package on the PATH-visible Python (`pip3 install ddgs`), or you can configure another provider globally in `~/.pi/agent/extensions/search.json` or per project in `.pi/search.json`.
 
-Bind skills with `skill_name`, not prompt syntax. It must be a bare name such as `pda-lite` or `google-drive:google-docs`, not `$skill`, `/skill:name`, markdown, prose, or a path. Child runs receive no ambient skill catalog; omission means no skills. A provided name must resolve to exactly one skill from configured lookup paths (`SUBAGENT007_PI_SKILL_PATHS`, existing Codex skill/plugin cache paths, and Pi defaults) before model invocation. Unknown or ambiguous skills return `preflight_rejected` with `child_started:false`; successful skill-bound runs pass the exact resolved `SKILL.md` path to the child so parent and child do not re-resolve different skills. Terminal run metadata includes `resolved_skill_path` and `resolved_skill_sha256` so callers can audit the skill file used without repeating skill names or paths in the prompt.
+Bind skills with `skill_name`, not prompt syntax. It must be a bare name such as `pda-lite` or `google-drive:google-docs`, not `$skill`, `/skill:name`, markdown, prose, or a path. A provided name must resolve to exactly one skill before model invocation; unknown or ambiguous skills return `preflight_rejected` with `child_started:false`. Terminal metadata includes `resolved_skill_path` and `resolved_skill_sha256`.
 
 Result semantics:
 
@@ -142,7 +140,7 @@ Result semantics:
 - Skill-bound terminal results include `requested_skill`, `resolved_skill_path`, and `resolved_skill_sha256`; unbound runs use `null` for those skill audit fields.
 - Valid `run_subagent` requests that are incompatible only with one-shot execution auto-promote and include `auto_promoted_from`, `promotion_reason_code`, `promotion_reason`, `poll_with`, and `cancel_with`.
 - `run_subagent`, `schedule_run`, `start_run`, `start_session_run`, and `run_subagent_session` create durable run-task snapshots inspectable with `get_run` by `run_id`.
-- Active `get_run` views expose sanitized `recent_events` and `last_public_output_excerpt`; raw thinking, private tool payloads, full packet instructions, composed child prompts, and input answer values are not input/public event fields.
+- Active `get_run` views expose sanitized `recent_events` and `last_public_output_excerpt`; raw thinking, private tool payloads, full packet instructions, composed child prompts, and input answer values are not exposed in public event views.
 - On timeout, `partial_output_available` is true only when the artifact includes child assistant text, a warning/error, or a captured final message.
 
 ## One-Shot Runs
@@ -157,9 +155,9 @@ Ephemeral run:
 }
 ```
 
-`run_kind` is an explicit caller contract that the work is bounded, non-interactive, and compatible with the one-shot deadline. If a valid `run_subagent` request is incompatible only because it is skill-bound, over 6000 characters, broad/exploratory/synthesis-shaped, or a `workspace_write` edit prompt, the server auto-promotes it to a durable run, emits `[auto_promoted] run_subagent -> durable_run`, returns a pollable `run_id`, and preserves the requested `tool_profile`. Hard invalid inputs still reject before child execution, including bad `cwd`, invalid skill syntax, invalid model class, unreadable resume continuity, and caller-provided `timeout_ms`.
+`run_kind` is an explicit caller contract that the work is bounded, non-interactive, and compatible with the one-shot deadline. Valid requests that are skill-bound, over 6000 characters, broad/exploratory/synthesis-shaped, or `workspace_write` edit prompts auto-promote to a durable run and return a pollable `run_id`. Hard invalid inputs still reject before child execution, including bad `cwd`, invalid skill syntax, invalid model class, unreadable resume continuity, and caller-provided `timeout_ms`.
 
-Auto-promotion is a compatibility fallback, not the preferred API for deliberate broad work. Use `schedule_run` or `start_run` directly for longer, cancellable, polling, caller-input, exploratory, skill-bound, or write-heavy work, especially when a caller-defined `timeout_ms` matters. The one-shot model-health gate applies only when the request stays on synchronous one-shot execution.
+Auto-promotion is a compatibility fallback. For deliberate broad, cancellable, caller-input, exploratory, skill-bound, or write-heavy work, call `schedule_run` or `start_run` directly, especially when caller-defined `timeout_ms` matters. The one-shot model-health gate applies only when the request stays on synchronous one-shot execution.
 
 `run_subagent` rejects caller-provided `timeout_ms`. Its internal default deadline is 110 seconds and can be changed with `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`; auto-promoted runs keep that internal cap. If that deadline is hit, the structured result includes `timeout_recovery_hint` pointing the caller to `schedule_run` or `start_run` with an explicit `timeout_ms` and to the concrete `run_id` that `get_run` can inspect.
 
@@ -178,15 +176,13 @@ Use `schedule_run` for the default durable-first path:
 
 Use `start_run` instead when the caller always wants an immediate task handle; it accepts the same fields except `wait_ms`.
 
-`schedule_run` creates the durable task before waiting. If the child completes or requests caller input within the effective wait window, it returns that state; otherwise it returns the active run view with the same `run_id`, mailbox, progress fields, and cancellation behavior as `start_run`. Default `wait_ms` is 1000; set `wait_ms:0` to get immediate durable-task behavior without the one-shot preflight restrictions.
-
-The server caps the initial `schedule_run` wait at 30000 ms by default, even if the caller requests more. The returned view always includes:
+`schedule_run` creates the durable task before waiting. If the child completes or requests caller input within the effective wait window, it returns that state; otherwise it returns the active run view. Default `wait_ms` is 1000; set `wait_ms:0` to return the task handle immediately. The server caps the initial wait at 30000 ms by default and always includes:
 
 - `requested_wait_ms`: the caller's requested wait
 - `effective_wait_ms`: the wait the server actually used
 - `wait_truncated`: true when the server shortened the requested wait
 
-This cap prevents an MCP caller deadline from hiding the durable run id. If `wait_truncated:true`, continue with `get_run` instead of retrying the same request.
+If `wait_truncated:true`, continue with `get_run` instead of retrying the same request.
 
 Flow:
 
@@ -195,6 +191,9 @@ Flow:
 3. If status is `input_required`, read `input_requests`.
 4. Call `answer_run_input` with `run_id`, `request_id`, and `answer`.
 5. Keep polling until status is `completed`, `failed`, or `cancelled`, then read `output_path` when present.
+
+After `cancel_run`, an in-flight cancellation reports `status:"working"` with `active_phase:"cancelling"`.
+Continue polling until `status:"cancelled"` appears; that terminal view includes the settled cancellation metadata.
 
 `start_run` accepts the same `continuity` object as `run_subagent` when async raw Pi continuity is needed.
 
@@ -291,6 +290,7 @@ Only probe calls recorded in `campaign_ledger_path` should claim MCP call-attemp
 npm run build
 npm run typecheck
 npm test
+npx --yes knip@latest
 npm run models:reconcile
 ```
 

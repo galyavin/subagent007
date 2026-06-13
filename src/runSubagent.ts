@@ -419,5 +419,3 @@ export async function runSubagentCore(
     await childRequest?.cleanup();
   }
 }
-
-export const runSubagent = runSubagentCore;

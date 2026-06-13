@@ -214,10 +214,6 @@ export function preparePublicTranscriptFromProcessOutput(
   };
 }
 
-export function publicTranscriptFromProcessOutput(rawOutput: string): string {
-  return preparePublicTranscriptFromProcessOutput(rawOutput).text;
-}
-
 export function publicOutputLineFromProcessLine(line: string): PublicOutputLine | null {
   const parsedEvent = eventObjectFromJsonLine(line);
   return parsedEvent ? publicLineForEvent(parsedEvent) : null;

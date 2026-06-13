@@ -14,7 +14,7 @@ export function defaultSubagentStatePath(envKey: string, leaf: string): string {
     : path.join(os.homedir(), ".codex", "subagent007-pi", leaf);
 }
 
-export function defaultRunsDir(): string {
+function defaultRunsDir(): string {
   return defaultSubagentStatePath("SUBAGENT007_RUNS_DIR", "runs");
 }
 

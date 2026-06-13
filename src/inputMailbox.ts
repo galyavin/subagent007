@@ -4,9 +4,9 @@ import path from "node:path";
 import { defaultSubagentStatePath, timestampedRandomId } from "./output.js";
 import { ValidationError } from "./types.js";
 
-export const INPUT_REQUEST_STATUSES = ["pending", "answered", "timed_out", "closed"] as const;
+const INPUT_REQUEST_STATUSES = ["pending", "answered", "timed_out", "closed"] as const;
 export type InputRequestStatus = (typeof INPUT_REQUEST_STATUSES)[number];
-export type InputRequestSettlementOutcome = Exclude<InputRequestStatus, "pending">;
+type InputRequestSettlementOutcome = Exclude<InputRequestStatus, "pending">;
 
 export interface InputRequestRecord {
   schema_version: 1;
@@ -26,7 +26,7 @@ export interface InputAnswerRecord {
   answered_at: string;
 }
 
-export interface InputTimeoutRecord {
+interface InputTimeoutRecord {
   schema_version: 1;
   request_id: string;
   timed_out_at: string;

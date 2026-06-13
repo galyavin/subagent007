@@ -2,9 +2,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { RunPublicEvent } from "./types.js";
 
-export const MAX_RECENT_EVENTS = 25;
-export const MAX_PUBLIC_OUTPUT_EXCERPT_CHARS = 1000;
-export const MAX_PUBLIC_EVENT_TEXT_CHARS = 4000;
+const MAX_RECENT_EVENTS = 25;
+const MAX_PUBLIC_OUTPUT_EXCERPT_CHARS = 1000;
+const MAX_PUBLIC_EVENT_TEXT_CHARS = 4000;
 
 const REDACTED_PATTERNS = [
   /<subagent007_contract_packet>[\s\S]*?<\/subagent007_contract_packet>/gi,
@@ -13,11 +13,11 @@ const REDACTED_PATTERNS = [
   /\braw thinking\b[\s\S]{0,200}/gi,
 ];
 
-export function runEventFilePath(runTasksDir: string, runId: string): string {
+function runEventFilePath(runTasksDir: string, runId: string): string {
   return path.join(runTasksDir, `${runId}.events.jsonl`);
 }
 
-export function redactPublicEventText(text: string): string {
+function redactPublicEventText(text: string): string {
   let next = text;
   for (const pattern of REDACTED_PATTERNS) {
     next = next.replace(pattern, "[redacted]");
@@ -25,14 +25,14 @@ export function redactPublicEventText(text: string): string {
   return next;
 }
 
-export function truncatePublicEventText(text: string): string {
+function truncatePublicEventText(text: string): string {
   if (text.length <= MAX_PUBLIC_EVENT_TEXT_CHARS) {
     return text;
   }
   return `${text.slice(0, Math.max(0, MAX_PUBLIC_EVENT_TEXT_CHARS - 15))}[truncated]`;
 }
 
-export function sanitizePublicEvent(event: RunPublicEvent): RunPublicEvent {
+function sanitizePublicEvent(event: RunPublicEvent): RunPublicEvent {
   return {
     ...event,
     schema_version: 1,

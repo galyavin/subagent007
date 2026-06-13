@@ -1,10 +1,10 @@
 import { MODEL_CLASSES, ValidationError, type ModelClass, type ThinkingLevel } from "./types.js";
 
-export const KNOWN_MODEL_PROVIDERS = ["openai-codex", "ollama", "openrouter"] as const;
+const KNOWN_MODEL_PROVIDERS = ["openai-codex", "ollama", "openrouter"] as const;
 export type KnownModelProvider = (typeof KNOWN_MODEL_PROVIDERS)[number];
 
 export const OPENAI_CODEX_GPT54_PLUS_REF = "openai-codex/gpt-5.4+";
-export const OPENAI_CODEX_MIN_GPT5_MINOR = 4;
+const OPENAI_CODEX_MIN_GPT5_MINOR = 4;
 
 export const CURATED_EXACT_MODEL_REFS = [
   "ollama/qwen3.5:9b-mlx",
@@ -12,11 +12,11 @@ export const CURATED_EXACT_MODEL_REFS = [
   "openrouter/deepseek/deepseek-v4-pro",
 ] as const;
 
-export function modelPatternChoices(): string[] {
+function modelPatternChoices(): string[] {
   return [OPENAI_CODEX_GPT54_PLUS_REF];
 }
 
-export function exactModelChoices(): string[] {
+function exactModelChoices(): string[] {
   return [...CURATED_EXACT_MODEL_REFS];
 }
 
@@ -91,7 +91,7 @@ export function modelClassForResolvedPair(
   return null;
 }
 
-export function formatAllowedModelChoices(): string {
+function formatAllowedModelChoices(): string {
   return [
     `exact models: ${exactModelChoices().join(", ")}`,
     `patterns: ${modelPatternChoices().join(", ")} (pass a matching literal model, not the pattern)`,

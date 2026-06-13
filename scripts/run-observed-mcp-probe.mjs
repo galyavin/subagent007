@@ -217,6 +217,9 @@ function responseMatchesResultClass(response, resultClass) {
   if (resultClass === "success") {
     return response.is_error === false && response.success !== false;
   }
+  if (resultClass === "run_success") {
+    return response.is_error === false && response.success === true && response.status === "completed" && response.timed_out === false;
+  }
   if (resultClass === "schema_error") {
     return response.is_error === true;
   }
@@ -875,7 +878,7 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
     });
     const settled = await waitForRun(client, ledgerPath, evidenceClass, scenario, started.response.run_id, (response) =>
       response?.cancellation_settled === true,
-    { stopOnTerminal: false });
+    );
     return {
       ...settled,
       tool: "cancel_run",

@@ -7,11 +7,11 @@ import { MODEL_CLASSES, type ModelClass } from "./types.js";
 import { ValidationError } from "./types.js";
 
 export const MODEL_HEALTH_SURFACE_ONE_SHOT = "run_subagent_one_shot" as const;
-export const MODEL_HEALTH_STATUSES = ["healthy", "unhealthy", "unknown"] as const;
+const MODEL_HEALTH_STATUSES = ["healthy", "unhealthy", "unknown"] as const;
 export type ModelHealthSurface = typeof MODEL_HEALTH_SURFACE_ONE_SHOT;
-export type ModelHealthStatus = (typeof MODEL_HEALTH_STATUSES)[number];
-export type ModelHealthBasis = "never_probed" | "cached_probe";
-export const MODEL_HEALTH_GATE_BLOCKS_ONLY_KNOWN_UNHEALTHY = "blocks_only_known_unhealthy" as const;
+type ModelHealthStatus = (typeof MODEL_HEALTH_STATUSES)[number];
+type ModelHealthBasis = "never_probed" | "cached_probe";
+const MODEL_HEALTH_GATE_BLOCKS_ONLY_KNOWN_UNHEALTHY = "blocks_only_known_unhealthy" as const;
 
 export interface ModelHealthRecord {
   schema_version: 1;
@@ -38,7 +38,7 @@ export interface ModelHealthView {
   last_failure_at?: string;
 }
 
-export function defaultModelHealthPath(): string {
+function defaultModelHealthPath(): string {
   return defaultSubagentStatePath("SUBAGENT007_MODEL_HEALTH_PATH", "model-health.json");
 }
 

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ContractPacketV1, PacketParseStatus } from "./types.js";
 
-export const CONTRACT_PACKET_FENCE = "contract_packet_v1";
+const CONTRACT_PACKET_FENCE = "contract_packet_v1";
 
 const CONTRACT_PACKET_EXAMPLE = {
   verdict: "inconclusive",
