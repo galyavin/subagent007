@@ -20,6 +20,7 @@ import {
   validateRunSubagentSessionRequestPreflight,
 } from "./session.js";
 import { DEFAULT_HEARTBEAT_MESSAGE, type HeartbeatNotify } from "./progress.js";
+import { serverContractPacketMarker, serverContractSkillMarker } from "./prompt.js";
 import {
   appendRunPublicEvent,
   publicOutputExcerptProjection,
@@ -295,7 +296,7 @@ async function appendRunStartedEvent(
     await appendPublicEvent(state, {
       kind: "task",
       event: "message",
-      text: `[server_contract] skill_name=${skill}`,
+      text: serverContractSkillMarker(skill),
       occurred_at: state.startedAt,
     });
   }
@@ -303,7 +304,7 @@ async function appendRunStartedEvent(
     await appendPublicEvent(state, {
       kind: "packet",
       event: "message",
-      text: `[server_contract] packet_policy=${request.packet_policy} contract_packet_v1 instruction applied`,
+      text: serverContractPacketMarker(request.packet_policy),
       occurred_at: state.startedAt,
     });
   }

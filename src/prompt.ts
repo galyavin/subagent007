@@ -14,11 +14,11 @@ export function composePrompt({
   return prompt;
 }
 
-function compactSkillMarker(skill: string): string {
+export function serverContractSkillMarker(skill: string): string {
   return `[server_contract] skill_name=${skill}`;
 }
 
-function compactPacketMarker(packetPolicy: SessionPacketPolicy): string {
+export function serverContractPacketMarker(packetPolicy: SessionPacketPolicy): string {
   return `[server_contract] packet_policy=${packetPolicy} contract_packet_v1 instruction applied`;
 }
 
@@ -36,9 +36,9 @@ export function createPromptProvenance({
   const promptForChild = childPrompt ?? publicPrompt;
   return {
     public_prompt: publicPrompt,
-    ...(skill ? { skill_name: skill, skill_marker: compactSkillMarker(skill) } : {}),
+    ...(skill ? { skill_name: skill, skill_marker: serverContractSkillMarker(skill) } : {}),
     ...(packetPolicy && packetPolicy !== "none"
-      ? { packet_policy: packetPolicy, packet_marker: compactPacketMarker(packetPolicy) }
+      ? { packet_policy: packetPolicy, packet_marker: serverContractPacketMarker(packetPolicy) }
       : {}),
     composed_child_prompt: composePrompt({ prompt: promptForChild, skill }),
   };
