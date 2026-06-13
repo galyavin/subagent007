@@ -42,7 +42,7 @@ const TIMESTAMPED_EVENT_ID_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{9}Z-[0-9a-f]{12}$/;
 
 test("failure reason mapping classifies tool profile validation precisely", () => {
   assert.equal(
-    failureReasonCodeForError(new ValidationError("tool_profile must be one of: inspect, shell, workspace_write")),
+    failureReasonCodeForError(new ValidationError("tool_profile must be one of: inspect, web_search, shell, workspace_write")),
     "invalid_tool_profile",
   );
 });

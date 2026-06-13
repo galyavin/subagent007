@@ -392,7 +392,7 @@ test("defaults tool profile to inspect and validates explicit profiles", async (
   );
   assert.equal(defaulted.toolProfile, "inspect");
 
-  for (const toolProfile of ["inspect", "shell", "workspace_write"] as const) {
+  for (const toolProfile of ["inspect", "web_search", "shell", "workspace_write"] as const) {
     const resolved = await validateAndResolveRequest(
       {
         prompt: "x",
@@ -415,7 +415,7 @@ test("defaults tool profile to inspect and validates explicit profiles", async (
       },
       {},
     ),
-    /tool_profile must be one of: inspect, shell, workspace_write/,
+    /tool_profile must be one of: inspect, web_search, shell, workspace_write/,
   );
 });
 

@@ -1,6 +1,7 @@
 import type { ToolProfile } from "./types.js";
 
 const INSPECT_TOOLS = ["read", "grep", "find", "ls", "request_input"] as const;
+const WEB_SEARCH_TOOLS = [...INSPECT_TOOLS, "web_search", "web_read"] as const;
 const SHELL_TOOLS = [...INSPECT_TOOLS, "bash"] as const;
 const WORKSPACE_WRITE_TOOLS = [...SHELL_TOOLS, "edit", "write"] as const;
 
@@ -8,6 +9,8 @@ export function toolsForProfile(profile: ToolProfile): string[] {
   switch (profile) {
     case "inspect":
       return [...INSPECT_TOOLS];
+    case "web_search":
+      return [...WEB_SEARCH_TOOLS];
     case "shell":
       return [...SHELL_TOOLS];
     case "workspace_write":

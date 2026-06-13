@@ -25,7 +25,7 @@ Important lifecycle contract: `schedule_run` always creates the durable task bef
 | Durable continuity by semantic key | `start_session_run` plus `get_run`, or `run_subagent_session` for compatibility | Requires `session_key`; use when manifest/ledger continuity matters. Prefer the async task form for long, cancellable, or abandoned-client-safe work. |
 | Model-class/config health | `list_model_classes` | `list_allowed_models` is a compatibility alias. |
 
-Tool-profile rule of thumb: the child starts with `tool_profile:"inspect"`; set `shell` only for command execution and `workspace_write` only for intended edits.
+Tool-profile rule of thumb: the child starts with `tool_profile:"inspect"`; set `web_search` for external web research, `shell` only for command execution, and `workspace_write` only for intended edits.
 
 ## Requirements
 
@@ -125,10 +125,13 @@ For raw Pi `continuity`, use `mode: "ephemeral"`, `mode: "fresh"`, or `mode: "re
 Tool profiles:
 
 - `inspect`: workspace non-mutating Pi tools: `read`, `grep`, `find`, `ls`, and `request_input`
+- `web_search`: `inspect` plus globally installed Pi extension tools `web_search` and `web_read`
 - `shell`: `inspect` plus `bash`
 - `workspace_write`: `shell` plus `edit` and `write`
 
-Use `workspace_write` only when the child is expected to modify files. Use `shell` only when command execution is necessary. The default `inspect` profile is intended for review, research, and report-only delegation.
+Use `workspace_write` only when the child is expected to modify files. Use `shell` only when command execution is necessary. Use `web_search` only when the child needs current external information or to read a URL. The default `inspect` profile is intended for local review, research, and report-only delegation without network search.
+
+The `web_search` profile expects the web search extension to be installed in the Pi agent environment, for example `pi install npm:pi-search-hub`. With no search config, `pi-search-hub` falls back to DuckDuckGo search and Jina Reader for URL reads. DuckDuckGo search requires the Python `ddgs` package on the PATH-visible Python (`pip3 install ddgs`), or you can configure another provider globally in `~/.pi/agent/extensions/search.json` or per project in `.pi/search.json`.
 
 Bind skills with `skill_name`, not prompt syntax. It must be a bare name such as `pda-lite` or `google-drive:google-docs`, not `$skill`, `/skill:name`, markdown, prose, or a path. Child runs receive no ambient skill catalog; omission means no skills. A provided name must resolve to exactly one skill from configured lookup paths (`SUBAGENT007_PI_SKILL_PATHS`, existing Codex skill/plugin cache paths, and Pi defaults) before model invocation. Unknown or ambiguous skills return `preflight_rejected` with `child_started:false`; successful skill-bound runs pass the exact resolved `SKILL.md` path to the child so parent and child do not re-resolve different skills. Terminal run metadata includes `resolved_skill_path` and `resolved_skill_sha256` so callers can audit the skill file used without repeating skill names or paths in the prompt.
 
@@ -277,6 +280,8 @@ Use the bundled MCP probe when a report needs deterministic current-surface call
 ```sh
 npm run observed-campaign -- --campaign-id campaign.example-1 -- npm run observed-mcp-probe -- --server ./dist/server.js --cwd /absolute/project/path --profile full-current
 ```
+
+Run the probe through `observed-campaign` for isolated temp state. Direct `observed-mcp-probe` execution writes its campaign ledger to `SUBAGENT007_CAMPAIGN_LEDGER_PATH` when set, or to `campaign-ledger.jsonl` in the current working directory.
 
 Only probe calls recorded in `campaign_ledger_path` should claim MCP call-attempt coverage. Server-side `failures.jsonl` remains handler and child failure telemetry; SDK schema rejections are recorded by the probe ledger as `call_schema_error`, while structured semantic preflight rejections are recorded as `call_preflight_rejected`. The bundled MCP probe defaults to `protocol-core`; use `--profile full-current` for current deterministic surface coverage. Profiles live in `scripts/observed-coverage-manifest.json` and fail closed when required surfaces are unknown, unselected, or covered only by an incompatible evidence class. Use `--mode live-model` only for live provider smoke evidence.
 
