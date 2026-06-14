@@ -66,6 +66,7 @@ test("observed campaign harness supplies isolated state paths by default", async
     "const out = process.argv[1];",
     "const env = {",
     "  campaign_id: process.env.SUBAGENT007_CAMPAIGN_ID,",
+    "  record_source: process.env.SUBAGENT007_RECORD_SOURCE,",
     "  failure_log_path: process.env.SUBAGENT007_FAILURE_LOG_PATH,",
     "  campaign_ledger_path: process.env.SUBAGENT007_CAMPAIGN_LEDGER_PATH,",
     "  runs_dir: process.env.SUBAGENT007_RUNS_DIR,",
@@ -91,6 +92,7 @@ test("observed campaign harness supplies isolated state paths by default", async
   assert.equal(summary.evidence_class, "campaign-scoped");
   const childEnv = JSON.parse(await fs.readFile(envPath, "utf8")) as Record<string, string>;
   assert.equal(childEnv.campaign_id, "campaign.test-1");
+  assert.equal(childEnv.record_source, "test");
   assert.equal(childEnv.failure_log_path, summary.failure_log_path);
   assert.notEqual(childEnv.failure_log_path, productionLogPath);
   assert.equal(await fs.readFile(productionLogPath, "utf8"), "production stays here\n");
@@ -311,6 +313,46 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
   assert.equal(
     summary.coverage_summary.scenarios.every((scenario) => scenario.evidence_class === "protocol-deterministic"),
     true,
+  );
+});
+
+test("protocol-deterministic observed MCP probe refuses unscoped failure telemetry", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-unscoped-probe-"));
+  const projectDir = path.join(tmp, "project");
+  await fs.mkdir(projectDir, { recursive: true });
+  const env = { ...process.env };
+  delete env.SUBAGENT007_FAILURE_LOG_PATH;
+  delete env.SUBAGENT007_CAMPAIGN_LEDGER_PATH;
+  delete env.SUBAGENT007_CAMPAIGN_ID;
+  delete env.SUBAGENT007_RECORD_SOURCE;
+
+  await assert.rejects(
+    execFileAsync(
+      process.execPath,
+      [
+        probePath,
+        "--server",
+        path.resolve("dist/server.js"),
+        "--cwd",
+        projectDir,
+        "--scenario",
+        "success",
+      ],
+      {
+        cwd: path.resolve("."),
+        env,
+        maxBuffer: 8 * 1024 * 1024,
+      },
+    ),
+    (error: unknown) => {
+      const failed = error as Error & { code?: number; stderr?: string };
+      assert.equal(failed.code, 2);
+      assert.match(
+        failed.stderr ?? "",
+        /protocol-deterministic observed probes require SUBAGENT007_FAILURE_LOG_PATH/,
+      );
+      return true;
+    },
   );
 });
 

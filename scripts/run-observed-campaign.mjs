@@ -180,6 +180,7 @@ const statePaths = {
 const campaignEnv = {
   ...process.env,
   SUBAGENT007_CAMPAIGN_ID: parsed.options.campaignId,
+  SUBAGENT007_RECORD_SOURCE: process.env.SUBAGENT007_RECORD_SOURCE ?? "test",
   SUBAGENT007_FAILURE_LOG_PATH: statePaths.failureLogPath,
   SUBAGENT007_CAMPAIGN_LEDGER_PATH: statePaths.campaignLedgerPath,
   SUBAGENT007_RUNS_DIR: statePaths.runsDir,

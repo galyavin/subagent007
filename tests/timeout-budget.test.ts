@@ -410,6 +410,7 @@ test("runChildProcess clears heartbeat interval after timeout", async () => {
   await new Promise((resolve) => setTimeout(resolve, 80));
 
   assert.equal(result.timedOut, true);
+  assert.ok(["SIGTERM", "SIGKILL"].includes(result.stopSignal ?? ""));
   assert.match(result.combinedOutput, /\[subagent007 timeout\]/);
   assert.equal(beatsAtFinish > 0, true);
   assert.equal(beats, beatsAtFinish);

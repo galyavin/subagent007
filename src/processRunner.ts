@@ -20,6 +20,7 @@ interface ProcessRunOptions {
 interface ProcessRunResult {
   combinedOutput: string;
   exitCode: number | null;
+  stopSignal: NodeJS.Signals | null;
   timedOut: boolean;
   cancelled: boolean;
   stopReason: RunStopReason;
@@ -117,7 +118,9 @@ export function runChildProcess(options: ProcessRunOptions): Promise<ProcessRunR
       }
     };
 
-    const finish = (exitCode: number | null) => {
+    let lastSignalSent: NodeJS.Signals | null = null;
+
+    const finish = (exitCode: number | null, stopSignal: NodeJS.Signals | null = lastSignalSent) => {
       if (settled) {
         return;
       }
@@ -135,6 +138,7 @@ export function runChildProcess(options: ProcessRunOptions): Promise<ProcessRunR
       resolve({
         combinedOutput: Buffer.concat(chunks).toString("utf8"),
         exitCode: spawnError ? null : exitCode,
+        stopSignal: spawnError ? null : stopSignal,
         timedOut,
         cancelled,
         stopReason,
@@ -143,6 +147,7 @@ export function runChildProcess(options: ProcessRunOptions): Promise<ProcessRunR
     };
 
     const signalChild = (signal: NodeJS.Signals) => {
+      lastSignalSent = signal;
       if (!child.pid) {
         return;
       }
@@ -218,12 +223,12 @@ export function runChildProcess(options: ProcessRunOptions): Promise<ProcessRunR
       spawnError = error;
       chunks.push(Buffer.from(`\n[spawn error] ${error.message}\n`));
     });
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
       closed = true;
       if (pendingLine.trim() !== "") {
         emitOutputLine(pendingLine);
       }
-      finish(code);
+      finish(code, signal);
     });
   });
 }

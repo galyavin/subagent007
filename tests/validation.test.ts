@@ -422,7 +422,7 @@ test("defaults tool profile to inspect and validates explicit profiles", async (
 test("resolves model classes to calibrated model and thinking level", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-model-"));
   for (const [modelClass, model, thinkingLevel] of [
-    ["A", "ollama/qwen3.5:9b-mlx", "high"],
+    ["A", "openrouter/qwen/qwen3.6-35b-a3b", "high"],
     ["B", "openrouter/deepseek/deepseek-v4-flash", "high"],
     ["C", "openai-codex/gpt-5.4-mini", "high"],
     ["D", "openai-codex/gpt-5.5", "high"],

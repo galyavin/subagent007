@@ -7,7 +7,7 @@ export const OPENAI_CODEX_GPT54_PLUS_REF = "openai-codex/gpt-5.4+";
 const OPENAI_CODEX_MIN_GPT5_MINOR = 4;
 
 export const CURATED_EXACT_MODEL_REFS = [
-  "ollama/qwen3.5:9b-mlx",
+  "openrouter/qwen/qwen3.6-35b-a3b",
   "openrouter/deepseek/deepseek-v4-flash",
 ] as const;
 
@@ -27,9 +27,9 @@ export const MODEL_CLASS_CALIBRATIONS: Record<ModelClass, {
   description: string;
 }> = {
   A: {
-    model: "ollama/qwen3.5:9b-mlx",
+    model: "openrouter/qwen/qwen3.6-35b-a3b",
     thinkingLevel: "high",
-    description: "Best local/offline class for narrow, low-risk tasks and concise first-pass judgment.",
+    description: "Lowest-complexity class for narrow read-only audits, low-risk probes, and concise first-pass judgment.",
   },
   B: {
     model: "openrouter/deepseek/deepseek-v4-flash",

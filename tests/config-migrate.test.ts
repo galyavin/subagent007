@@ -58,6 +58,22 @@ test("config:migrate does not rewrite unsupported legacy model pairs", async () 
   assert.equal(await fs.readFile(configPath, "utf8"), original);
 });
 
+test("config:migrate does not rewrite retired legacy class calibrations", async () => {
+  const { configPath } = await createConfigDir();
+  const original = `${JSON.stringify({
+    default_model: "ollama/qwen3.5:9b-mlx",
+    default_thinking_level: "high",
+  })}\n`;
+  await fs.writeFile(configPath, original, "utf8");
+
+  const result = await runMigrate(configPath);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 1);
+  assert.equal(result.json.status, "unrepairable_model_class");
+  assert.equal(await fs.readFile(configPath, "utf8"), original);
+});
+
 test("config:migrate migrates legacy model and thinking defaults to model class", async () => {
   const { configPath } = await createConfigDir();
   const original = `${JSON.stringify({

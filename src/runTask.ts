@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { logFailure, type FailureLogTool } from "./failureLog.js";
+import { failureClassForProcessResult, logFailure, type FailureLogTool } from "./failureLog.js";
 import {
   answerInputRequest,
   closePendingInputRequestsForRun,
@@ -111,6 +111,8 @@ interface RunTaskState {
   lastPublicOutputExcerpt?: string;
   promise: Promise<void>;
   terminalSnapshotStarted: boolean;
+  cwd?: string;
+  failureLogTool?: Extract<FailureLogTool, "run_subagent" | "schedule_run" | "start_run">;
   sessionKey?: string;
   promotion?: RunSubagentPromotion;
 }
@@ -330,6 +332,7 @@ async function registerRunTaskState(
   state: RunTaskState,
   request: RunSubagentRequest | RunSubagentSessionRequest,
 ): Promise<void> {
+  state.cwd = typeof request.cwd === "string" ? request.cwd : undefined;
   tasks.set(state.runId, state);
   await appendRunStartedEvent(state, request);
   await writeTaskSnapshot(await getRunTask(state.runId));
@@ -353,6 +356,67 @@ async function appendClosedInputEvents(
   }
 }
 
+async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
+  const result = state.result;
+  if (!result || state.taskKind !== "run" || result.stop_reason === "cancelled" || result.success) {
+    return;
+  }
+  const missingSessionId =
+    !result.timed_out &&
+    result.exit_code === 0 &&
+    result.stop_reason === "completed" &&
+    result.session_established === false;
+  const failureClass = result.timed_out
+    ? "timeout"
+    : missingSessionId
+      ? "missing_session_id"
+      : failureClassForProcessResult(result);
+  const reasonCode = failureClass === "timeout"
+    ? "timeout"
+    : failureClass === "missing_session_id"
+      ? "missing_session_id"
+      : failureClass === "nonzero_exit"
+        ? "nonzero_exit"
+        : "unknown_error";
+  await logFailure({
+    tool: state.failureLogTool ?? "run_subagent",
+    failure_class: failureClass,
+    reason_code: reasonCode,
+    cwd: state.cwd,
+    run_id: state.runId,
+    task_kind: state.taskKind,
+    output_path: result.output_path,
+    success: result.success,
+    exit_code: result.exit_code,
+    timed_out: result.timed_out,
+    partial_output_available: result.partial_output_available,
+    resume_possible: result.resume_possible,
+    duration_ms: result.duration_ms,
+    requested_timeout_ms: result.requested_timeout_ms,
+    resolved_timeout_ms: result.resolved_timeout_ms,
+    timeout_floor_ms: result.timeout_floor_ms,
+    effective_timeout_ms: result.effective_timeout_ms,
+    timeout_headroom_ms: result.timeout_headroom_ms,
+    kill_grace_ms: result.kill_grace_ms,
+    force_grace_ms: result.force_grace_ms,
+    stop_reason: result.stop_reason,
+    stop_signal: result.stop_signal,
+    ...(state.promotion
+      ? {
+          auto_promoted_from: state.promotion.auto_promoted_from,
+          promotion_reason_code: state.promotion.promotion_reason_code,
+          promotion_reason: state.promotion.promotion_reason,
+        }
+      : {}),
+    model_class: result.resolved_model_class,
+    model: result.resolved_model,
+    thinking_level: result.resolved_thinking_level,
+    skill: result.requested_skill,
+    output_mode: result.requested_output_mode,
+    tool_profile: result.resolved_tool_profile,
+  });
+}
+
 async function finalizeRunTask(state: RunTaskState, closeReason: string): Promise<void> {
   state.finishedAt = new Date().toISOString();
   const closed = await closePendingInputRequestsForRun({
@@ -362,6 +426,7 @@ async function finalizeRunTask(state: RunTaskState, closeReason: string): Promis
   });
   await appendClosedInputEvents(state, closed);
   await appendTerminalEvent(state);
+  await logTerminalRunTaskFailure(state);
   state.terminalSnapshotStarted = true;
   await writeTaskSnapshot(await getRunTask(state.runId));
 }
@@ -371,7 +436,7 @@ function durableTaskCloseReason(state: RunTaskState): string {
 }
 
 async function logBackgroundHandlerError(
-  tool: Extract<FailureLogTool, "run_subagent" | "start_run" | "start_session_run">,
+  tool: Extract<FailureLogTool, "run_subagent" | "schedule_run" | "start_run" | "start_session_run">,
   request: RunSubagentRequest | RunSubagentSessionRequest,
   error: unknown,
 ): Promise<void> {
@@ -629,13 +694,16 @@ export async function startRunTask(
     runsDir?: string;
     heartbeat?: HeartbeatNotify;
     heartbeatIntervalMs?: number;
+    failureLogTool?: Extract<FailureLogTool, "schedule_run" | "start_run">;
   } = {},
 ): Promise<RunTaskView> {
   const config = await loadConfig();
   const resolved = await validateAndResolveRequest(request, config);
   const skillFilePath = resolveSkillFilePathForRequest(resolved);
 
+  const failureLogTool = options.failureLogTool ?? "start_run";
   const state = createRunTaskState("run");
+  state.failureLogTool = failureLogTool;
   await registerRunTaskState(state, request);
 
   state.promise = (async () => {
@@ -645,14 +713,13 @@ export async function startRunTask(
         runId: state.runId,
         mailboxRoot: state.mailboxRoot,
         runsDir: options.runsDir,
-        failureLogTool: "start_run",
         allowTimeout: true,
         skillFilePath,
         ...taskChildRuntimeOptions(state, options),
       });
     } catch (error) {
       state.error = error as Error;
-      await logBackgroundHandlerError("start_run", request, error);
+      await logBackgroundHandlerError(failureLogTool, request, error);
     } finally {
       await finalizeRunTask(state, durableTaskCloseReason(state));
     }
@@ -737,7 +804,7 @@ export async function scheduleRunTask(
   const waitPolicy = scheduleWaitPolicy(waitMs);
   const runRequest = { ...request };
   delete runRequest.wait_ms;
-  const started = await startRunTask(runRequest, options);
+  const started = await startRunTask(runRequest, { ...options, failureLogTool: "schedule_run" });
   return withScheduleWaitMetadata(
     await waitForReturnableRun(started, waitPolicy.effectiveWaitMs),
     waitPolicy,
@@ -850,8 +917,7 @@ async function runSubagentPromotedTask(
         runId: state.runId,
         mailboxRoot: state.mailboxRoot,
         runsDir: options.runsDir,
-        failureLogTool: "run_subagent",
-        // Promoted run_subagent keeps the one-shot internal timeout cap.
+        allowTimeout: true,
         skillFilePath,
         ...taskChildRuntimeOptions(state, options),
       });
@@ -900,7 +966,6 @@ export async function runSubagentOneShotTask(
         runId: state.runId,
         mailboxRoot: state.mailboxRoot,
         runsDir: options.runsDir,
-        failureLogTool: "run_subagent",
         skillFilePath,
         ...taskChildRuntimeOptions(state, options),
       });

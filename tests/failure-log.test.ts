@@ -29,9 +29,17 @@ type FailureRecord = {
   session_dir?: string;
   success?: boolean;
   exit_code?: number | null;
+  timed_out?: boolean;
   partial_output_available?: boolean;
   resume_possible?: boolean;
+  requested_timeout_ms?: number | null;
   resolved_timeout_ms?: number | null;
+  effective_timeout_ms?: number | null;
+  stop_reason?: string;
+  stop_signal?: string | null;
+  auto_promoted_from?: "run_subagent";
+  promotion_reason_code?: string;
+  promotion_reason?: string;
   model?: string;
   calibration_era?: string;
   thinking_level?: string;
@@ -112,6 +120,7 @@ test("run_subagent appends one central record for a nonzero child failure", asyn
     });
 
     assert.notEqual(response.isError, true);
+    const metadata = response.structuredContent as { run_id: string; stop_signal: string | null };
     const failures = await readJsonl<FailureRecord>(failureLogPath);
     assert.equal(failures.length, 1);
     assert.equal(failures[0].tool, "run_subagent");
@@ -120,11 +129,15 @@ test("run_subagent appends one central record for a nonzero child failure", asyn
     assert.equal(failures[0].server_version, "0.1.0");
     assert.equal(failures[0].calibration_era, "model_class_v1");
     assert.equal(failures[0].record_source, "test");
+    assert.equal(failures[0].run_id, metadata.run_id);
+    assert.equal(failures[0].task_kind, "run");
     assert.equal(failures[0].failure_class, "nonzero_exit");
     assert.equal(failures[0].reason_code, "nonzero_exit");
     assert.equal(failures[0].cwd, projectDir);
     assert.equal(failures[0].cwd_class, "temp");
     assert.equal(failures[0].exit_code, 42);
+    assert.equal(failures[0].stop_reason, "failed");
+    assert.equal(failures[0].stop_signal, null);
     assert.equal(failures[0].success, false);
     assert.equal(failures[0].partial_output_available, false);
     assert.equal(failures[0].resume_possible, false);
@@ -134,6 +147,128 @@ test("run_subagent appends one central record for a nonzero child failure", asyn
     assert.equal(failures[0].output_mode, "transcript");
     assert.equal(typeof failures[0].output_path, "string");
     assert.doesNotMatch(JSON.stringify(failures[0]), /do not log this prompt/);
+  });
+});
+
+test("run_subagent timeout failure records include canonical run identity and stop signal", async () => {
+  await withFakeClient(
+    async (client, { projectDir, failureLogPath }) => {
+      const response = await client.callTool({
+        name: "run_subagent",
+        arguments: {
+          cwd: projectDir,
+          prompt: "TIMEOUT_RAW_TEXT",
+          run_kind: "quick_noninteractive",
+          output_mode: "transcript",
+        },
+      });
+
+      assert.notEqual(response.isError, true);
+      const metadata = response.structuredContent as { run_id: string; timed_out: boolean };
+      assert.equal(metadata.timed_out, true);
+      const failures = await readJsonl<FailureRecord>(failureLogPath);
+      assert.equal(failures.length, 1);
+      assert.equal(failures[0].tool, "run_subagent");
+      assert.equal(failures[0].run_id, metadata.run_id);
+      assert.equal(failures[0].task_kind, "run");
+      assert.equal(failures[0].failure_class, "timeout");
+      assert.equal(failures[0].reason_code, "timeout");
+      assert.equal(failures[0].timed_out, true);
+      assert.equal(failures[0].requested_timeout_ms, 180);
+      assert.equal(failures[0].effective_timeout_ms, 120);
+      assert.equal(failures[0].stop_reason, "timeout");
+      assert.equal(failures[0].stop_signal, "SIGTERM");
+    },
+    {
+      SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS: "180",
+      SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS: "0",
+      SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS: "20",
+      SUBAGENT007_TIMEOUT_KILL_GRACE_MS: "20",
+      SUBAGENT007_TIMEOUT_FORCE_GRACE_MS: "20",
+    },
+  );
+});
+
+test("auto-promoted run_subagent failures log promotion context without one-shot timeout", async () => {
+  await withFakeClient(async (client, { projectDir, failureLogPath }) => {
+    const response = await client.callTool({
+      name: "run_subagent",
+      arguments: {
+        cwd: projectDir,
+        prompt: "FAIL_EXIT Investigate the HORCs and SAFs.",
+        run_kind: "quick_noninteractive",
+      },
+    });
+
+    assert.notEqual(response.isError, true);
+    const metadata = response.structuredContent as { run_id: string; success: boolean; promotion_reason_code?: string };
+    assert.equal(metadata.success, false);
+    assert.equal(metadata.promotion_reason_code, "broad_work");
+    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].tool, "run_subagent");
+    assert.equal(failures[0].run_id, metadata.run_id);
+    assert.equal(failures[0].task_kind, "run");
+    assert.equal(failures[0].failure_class, "nonzero_exit");
+    assert.equal(failures[0].auto_promoted_from, "run_subagent");
+    assert.equal(failures[0].promotion_reason_code, "broad_work");
+    assert.match(failures[0].promotion_reason ?? "", /broad/);
+    assert.equal(failures[0].requested_timeout_ms, null);
+    assert.equal(failures[0].resolved_timeout_ms, null);
+    assert.equal(failures[0].effective_timeout_ms, null);
+    assert.equal(failures[0].stop_reason, "failed");
+    assert.equal(failures[0].stop_signal, null);
+  });
+});
+
+test("run_subagent raw Pi session establishment failures keep the missing-session reason", async () => {
+  await withFakeClient(async (client, { projectDir, failureLogPath }) => {
+    const response = await client.callTool({
+      name: "run_subagent",
+      arguments: {
+        cwd: projectDir,
+        prompt: "NO_SESSION",
+        run_kind: "quick_noninteractive",
+        continuity: { mode: "fresh" },
+      },
+    });
+
+    assert.notEqual(response.isError, true);
+    const metadata = response.structuredContent as { run_id: string; success: boolean; session_established: boolean };
+    assert.equal(metadata.success, false);
+    assert.equal(metadata.session_established, false);
+    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].tool, "run_subagent");
+    assert.equal(failures[0].run_id, metadata.run_id);
+    assert.equal(failures[0].task_kind, "run");
+    assert.equal(failures[0].failure_class, "missing_session_id");
+    assert.equal(failures[0].reason_code, "missing_session_id");
+    assert.equal(failures[0].exit_code, 0);
+    assert.equal(failures[0].stop_reason, "completed");
+  });
+});
+
+test("schedule_run terminal child failures keep the schedule_run tool identity", async () => {
+  await withFakeClient(async (client, { projectDir, failureLogPath }) => {
+    const response = await client.callTool({
+      name: "schedule_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "FAIL_EXIT",
+        wait_ms: 1000,
+      },
+    });
+
+    assert.notEqual(response.isError, true);
+    const metadata = response.structuredContent as { run_id: string; success: boolean };
+    assert.equal(metadata.success, false);
+    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].tool, "schedule_run");
+    assert.equal(failures[0].run_id, metadata.run_id);
+    assert.equal(failures[0].task_kind, "run");
+    assert.equal(failures[0].failure_class, "nonzero_exit");
   });
 });
 

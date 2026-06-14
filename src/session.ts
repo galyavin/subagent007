@@ -90,6 +90,7 @@ const sessionRunRecordSchema = z.object({
   written_output_mode: z.enum(OUTPUT_MODES),
   resolved_tool_profile: z.enum(TOOL_PROFILES).optional(),
   stop_reason: z.enum(RUN_STOP_REASONS).optional(),
+  stop_signal: z.string().nullable().optional(),
   error: z.string().optional(),
 });
 
@@ -600,7 +601,6 @@ export async function runSubagentSession(
       runId: childRunId,
       mailboxRoot: options.mailboxRoot,
       runsDir: path.join(sessionDir, "runs"),
-      suppressFailureLog: true,
       allowTimeout: true,
       piSessionDir: attemptSession.attemptPiSessionDir,
       heartbeat: options.heartbeat,
@@ -676,6 +676,7 @@ export async function runSubagentSession(
       written_output_mode: runResult.written_output_mode,
       resolved_tool_profile: runResult.resolved_tool_profile,
       stop_reason: runResult.stop_reason,
+      stop_signal: runResult.stop_signal,
       error: missingSessionIdError,
     };
     if (success && committedSubagentSessionId) {
@@ -726,6 +727,7 @@ export async function runSubagentSession(
       written_output_mode: runResult.written_output_mode,
       resolved_tool_profile: runResult.resolved_tool_profile,
       stop_reason: runResult.stop_reason,
+      stop_signal: runResult.stop_signal,
       session_key: sessionKey,
       session_dir: sessionDir,
       manifest_path: manifestPath,
@@ -775,6 +777,8 @@ export async function runSubagentSession(
         skill: result.requested_skill,
         output_mode: result.requested_output_mode,
         tool_profile: result.resolved_tool_profile,
+        stop_reason: result.stop_reason,
+        stop_signal: result.stop_signal,
       });
     }
     return result;

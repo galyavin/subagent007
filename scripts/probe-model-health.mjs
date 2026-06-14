@@ -161,7 +161,6 @@ if (!parsed.options.recordStatus) {
       output_mode: "final",
       tool_profile: "inspect",
     },
-    { suppressFailureLog: true },
   );
 }
 

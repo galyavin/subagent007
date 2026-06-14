@@ -104,6 +104,11 @@ export interface FailureLogRecord {
   force_grace_ms?: number;
   partial_output_available?: boolean;
   resume_possible?: boolean;
+  stop_reason?: string;
+  stop_signal?: string | null;
+  auto_promoted_from?: "run_subagent";
+  promotion_reason_code?: string;
+  promotion_reason?: string;
   model_class?: string;
   model?: string;
   thinking_level?: string;

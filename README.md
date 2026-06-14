@@ -7,7 +7,7 @@ Subagent007 Pi is a private MCP server that delegates work to a separate Pi-back
 Use this server as a durable delegation boundary. Treat `run_id` as the unit of progress.
 
 - Default to `schedule_run` for work that may be broad, slow, skill-bound, interactive, or worth cancelling.
-- Use `start_run` when you always want an immediate `run_id` without any initial wait.
+- Use `start_run` when you want only an immediate `run_id`; use `schedule_run` when a short wait may catch completion or input.
 - Use `run_subagent` only when the task is genuinely quick, bounded, non-interactive, and deadline-compatible.
 - If a call returns `status:"working"` or `status:"input_required"`, continue that `run_id` with `get_run`; do not resubmit the same prompt.
 - Bind skills with the `skill_name` field. Do not put `/skill:...`, `$skill`, markdown links, paths, or prose skill references in the prompt.
@@ -19,7 +19,7 @@ Use this server as a durable delegation boundary. Treat `run_id` as the unit of 
 | Situation | Tool | Key constraints |
 | --- | --- | --- |
 | Quick, bounded, non-interactive one-shot work | `run_subagent` | Requires `run_kind: "quick_noninteractive"`; rejects caller `timeout_ms`; one-shot-incompatible valid requests auto-promote to a durable run. |
-| Broad, long, cancellable, polling, or caller-interactive work | `schedule_run` or `start_run` plus `get_run` | Prefer `schedule_run` for uncertain work. It creates the durable task before waiting, caps the initial wait, and reports `wait_truncated` when shortened. Use `start_run` when the caller always wants an immediate task handle. |
+| Broad, long, cancellable, polling, or caller-interactive work | `schedule_run` or `start_run` plus `get_run` | Prefer `schedule_run` for uncertain work. It creates the durable task before waiting, caps the initial wait, and reports `wait_truncated` when shortened. Use `start_run` when the caller wants only an immediate task handle. |
 | Durable continuity by semantic key | `start_session_run` plus `get_run`, or `run_subagent_session` for compatibility | Requires `session_key`; use when manifest/ledger continuity matters. Prefer the async task form for long, cancellable, or abandoned-client-safe work. |
 | Model-class/config health | `list_model_classes` | `list_allowed_models` is a compatibility alias. |
 
@@ -59,7 +59,7 @@ Use model classes instead of concrete model IDs. The default class is `C`; calle
 
 | Class | Use when | Current calibration |
 | --- | --- | --- |
-| `A` | Best local/offline class for narrow, low-risk tasks and concise first-pass judgment. Prefer `B` or `C` when repo-grounded investigation, architectural judgment, or predictable tool use matters. | `ollama/qwen3.5:9b-mlx`, `high` |
+| `A` | Lowest-complexity class for narrow read-only audits, low-risk probes, and concise first-pass judgment. Prefer `B` or `C` when implementation, broad repo-grounded investigation, architectural judgment, or predictable tool use matters. | `openrouter/qwen/qwen3.6-35b-a3b`, `high` |
 | `B` | Fast bounded tasks: factual repo lookups, concise summaries, and no-tool first-pass judgment. Use strict prompts/timeouts for anything exploratory because tool loops can stall. | `openrouter/deepseek/deepseek-v4-flash`, `high` |
 | `C` | Default for bounded implementation, repo-grounded fixes, and ordinary technical reasoning. Prefer `D` or `E` for security-heavy audits, broad architectural synthesis, or work where hidden edge-case coverage matters. | `openai-codex/gpt-5.4-mini`, `high` |
 | `D` | Complex multi-file debugging, planning, synthesis, and high-abstraction work | `openai-codex/gpt-5.5`, `high` |
@@ -129,13 +129,13 @@ Tool profiles:
 
 Use the smallest profile that gives the child the tools it needs. `inspect` is for local review/report-only delegation; `web_search`, `shell`, and `workspace_write` opt into network-search, command, and file-write capabilities respectively.
 
-The `web_search` profile expects the web search extension to be installed in the Pi agent environment, for example `pi install npm:pi-search-hub`. With no search config, `pi-search-hub` falls back to DuckDuckGo search and Jina Reader for URL reads. DuckDuckGo search requires the Python `ddgs` package on the PATH-visible Python (`pip3 install ddgs`), or you can configure another provider globally in `~/.pi/agent/extensions/search.json` or per project in `.pi/search.json`.
+The `web_search` profile only exposes Pi tools named `web_search` and `web_read`; those tools must already be installed and configured in the Pi agent environment. MCP input can validate while the child still fails if that Pi extension is missing.
 
 Bind skills with `skill_name`, not prompt syntax. It must be a bare name such as `pda-lite` or `google-drive:google-docs`, not `$skill`, `/skill:name`, markdown, prose, or a path. A provided name must resolve to exactly one skill before model invocation; unknown or ambiguous skills return `preflight_rejected` with `child_started:false`. Terminal metadata includes `resolved_skill_path` and `resolved_skill_sha256`.
 
 Result semantics:
 
-- Runs that reach child execution return `output_path` on terminal completion; read that file for the full final answer or transcript. Schema and preflight rejections do not create output artifacts.
+- Runs that reach child execution return `output_path` on terminal completion; read that file for the full answer and check `written_output_mode`, because requested `final` output falls back to transcript when no final message is captured. Schema and preflight rejections do not create output artifacts.
 - Expected handler-level semantic rejections return structured content with `kind:"preflight_rejected"`, `success:false`, and `child_started:false`; SDK schema errors remain MCP input validation errors.
 - Skill-bound terminal results include `requested_skill`, `resolved_skill_path`, and `resolved_skill_sha256`; unbound runs use `null` for those skill audit fields.
 - Valid `run_subagent` requests that are incompatible only with one-shot execution auto-promote and include `auto_promoted_from`, `promotion_reason_code`, `promotion_reason`, `poll_with`, and `cancel_with`.
@@ -159,7 +159,7 @@ Ephemeral run:
 
 Auto-promotion is a compatibility fallback. For deliberate broad, cancellable, caller-input, exploratory, skill-bound, or write-heavy work, call `schedule_run` or `start_run` directly, especially when caller-defined `timeout_ms` matters. The one-shot model-health gate applies only when the request stays on synchronous one-shot execution.
 
-`run_subagent` rejects caller-provided `timeout_ms`. Its internal default deadline is 110 seconds and can be changed with `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`; auto-promoted runs keep that internal cap. If that deadline is hit, the structured result includes `timeout_recovery_hint` pointing the caller to `schedule_run` or `start_run` with an explicit `timeout_ms` and to the concrete `run_id` that `get_run` can inspect.
+`run_subagent` rejects caller-provided `timeout_ms`. Its internal default deadline is 110 seconds and can be changed with `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`; that deadline applies only when the request remains a synchronous one-shot. Auto-promoted runs use the durable-run timeout contract: no server hard cap is added unless the caller uses a timed durable tool such as `schedule_run` or `start_run`. If a true one-shot hits its deadline, the structured result includes `timeout_recovery_hint` pointing the caller to `schedule_run` or `start_run` with an explicit `timeout_ms` and to the concrete `run_id` that `get_run` can inspect.
 
 ## Async Runs And Caller Input
 
@@ -174,7 +174,7 @@ Use `schedule_run` for the default durable-first path:
 }
 ```
 
-Use `start_run` instead when the caller always wants an immediate task handle; it accepts the same fields except `wait_ms`.
+Use `start_run` instead when the caller wants only an immediate task handle; it accepts the same fields except `wait_ms`.
 
 `schedule_run` creates the durable task before waiting. If the child completes or requests caller input within the effective wait window, it returns that state; otherwise it returns the active run view. Default `wait_ms` is 1000; set `wait_ms:0` to return the task handle immediately. The server caps the initial wait at 30000 ms by default and always includes:
 
@@ -262,7 +262,7 @@ Environment overrides:
 
 `SUBAGENT007_SCHEDULE_RUN_MAX_WAIT_MS` caps how long `schedule_run` may keep the MCP call open before returning a pollable active run view; the default is 30000. `SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS`, `SUBAGENT007_TIMEOUT_KILL_GRACE_MS`, and `SUBAGENT007_TIMEOUT_FORCE_GRACE_MS` reserve time inside caller-provided `timeout_ms` so the MCP server can terminate the child process and return metadata before the caller deadline. `SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS` can raise the accepted floor for timed tools. `SUBAGENT007_HEARTBEAT_INTERVAL_MS` controls active-run snapshot cadence and MCP progress notification cadence when the client provides a progress token.
 
-`SUBAGENT007_BUILD_SHA` or `GIT_COMMIT` is copied into failure-log records when present. `SUBAGENT007_RECORD_SOURCE` may be `production`, `test`, or `unknown`; invalid values default to `production`. `SUBAGENT007_CAMPAIGN_ID` is copied into failure-log records when it is a short token containing only letters, digits, `_`, `-`, `.`, or `:`. New failure records include `calibration_era:"model_class_v1"`; archive summaries classify older records without this field as `legacy_unclassified`.
+`SUBAGENT007_BUILD_SHA` or `GIT_COMMIT` is copied into failure-log records when present. `SUBAGENT007_RECORD_SOURCE` may be `production`, `test`, or `unknown`; invalid values default to `production`. `SUBAGENT007_CAMPAIGN_ID` is copied into failure-log records when it is a short token containing only letters, digits, `_`, `-`, `.`, or `:`. New failure records include `calibration_era:"model_class_v1"`; archive summaries classify older records without this field as `legacy_unclassified`. Archive the current ledger with `npm run failure-log:archive`.
 
 ## Observed Trial Campaigns
 
@@ -272,7 +272,7 @@ Use the campaign harness for scripted real-use probes so trial activity does not
 npm run observed-campaign -- --campaign-id campaign.example-1 -- node ./your-probe.mjs
 ```
 
-When `--state-root` is omitted, the harness creates an isolated temp state root for failure logs, run artifacts, sessions, input requests, raw Pi sessions, model health, and the campaign ledger. Reports should cite the JSON summary fields, especially `campaign_id`, `state_root`, `failure_log_path`, `campaign_ledger_path`, and `evidence_class`. Calls made through an already-running installed MCP server are production-state observations unless that server process was launched under the campaign environment.
+When `--state-root` is omitted, the harness creates an isolated temp state root for failure logs, run artifacts, sessions, input requests, raw Pi sessions, model health, and the campaign ledger. It sets `SUBAGENT007_RECORD_SOURCE=test` unless the caller already provided a record source. Reports should cite the JSON summary fields, especially `campaign_id`, `state_root`, `failure_log_path`, `campaign_ledger_path`, and `evidence_class`. Calls made through an already-running installed MCP server are production-state observations unless that server process was launched under the campaign environment.
 
 Use the bundled MCP probe when a report needs deterministic current-surface call-attempt evidence:
 
@@ -280,7 +280,7 @@ Use the bundled MCP probe when a report needs deterministic current-surface call
 npm run observed-campaign -- --campaign-id campaign.example-1 -- npm run observed-mcp-probe -- --server ./dist/server.js --cwd /absolute/project/path --profile full-current
 ```
 
-Run the probe through `observed-campaign` for isolated temp state. Direct `observed-mcp-probe` execution writes its campaign ledger to `SUBAGENT007_CAMPAIGN_LEDGER_PATH` when set, or to `campaign-ledger.jsonl` in the current working directory.
+Run the probe through `observed-campaign` for isolated temp state. Direct protocol-deterministic `observed-mcp-probe` runs require `SUBAGENT007_FAILURE_LOG_PATH` and either `SUBAGENT007_RECORD_SOURCE=test` or `SUBAGENT007_CAMPAIGN_ID`; their ledger path is `SUBAGENT007_CAMPAIGN_LEDGER_PATH`, or `campaign-ledger.jsonl` beside the failure log or in the current working directory.
 
 Only probe calls recorded in `campaign_ledger_path` should claim MCP call-attempt coverage. Server-side `failures.jsonl` remains handler and child failure telemetry; SDK schema rejections are recorded by the probe ledger as `call_schema_error`, while structured semantic preflight rejections are recorded as `call_preflight_rejected`. The bundled MCP probe defaults to `protocol-core`; use `--profile full-current` for current deterministic surface coverage. Profiles live in `scripts/observed-coverage-manifest.json` and fail closed when required surfaces are unknown, unselected, or covered only by an incompatible evidence class. Use `--mode live-model` only for live provider smoke evidence.
 
@@ -290,7 +290,6 @@ Only probe calls recorded in `campaign_ledger_path` should claim MCP call-attemp
 npm run build
 npm run typecheck
 npm test
-npx --yes knip@latest
 npm run models:reconcile
 ```
 

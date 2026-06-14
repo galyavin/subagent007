@@ -408,6 +408,25 @@ function campaignLedgerPath() {
   return path.join(process.cwd(), "campaign-ledger.jsonl");
 }
 
+function requireScopedDeterministicProbe(mode) {
+  if (mode !== "protocol-deterministic") {
+    return;
+  }
+  const failureLogPath = process.env.SUBAGENT007_FAILURE_LOG_PATH?.trim();
+  const recordSource = process.env.SUBAGENT007_RECORD_SOURCE?.trim();
+  const campaignId = process.env.SUBAGENT007_CAMPAIGN_ID?.trim();
+  if (!failureLogPath) {
+    throw new Error(
+      "protocol-deterministic observed probes require SUBAGENT007_FAILURE_LOG_PATH so fake failures cannot write the default production ledger",
+    );
+  }
+  if (recordSource !== "test" && !campaignId) {
+    throw new Error(
+      "protocol-deterministic observed probes require SUBAGENT007_RECORD_SOURCE=test or SUBAGENT007_CAMPAIGN_ID so fake failures are not production-shaped",
+    );
+  }
+}
+
 function cwdClass(value) {
   if (typeof value !== "string") {
     return typeof value;
@@ -907,6 +926,13 @@ try {
 if (parsed.mode === "help") {
   console.log(usage());
   process.exit(0);
+}
+
+try {
+  requireScopedDeterministicProbe(parsed.options.mode);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(2);
 }
 
 const ledgerPath = campaignLedgerPath();

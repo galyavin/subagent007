@@ -91,6 +91,7 @@ interface SubagentRunResultBase {
   written_output_mode: OutputMode;
   resolved_tool_profile: ToolProfile;
   stop_reason: RunStopReason;
+  stop_signal: string | null;
 }
 
 export type RunSubagentPromotionReasonCode =
@@ -166,6 +167,7 @@ export interface SessionRunRecord {
   written_output_mode: OutputMode;
   resolved_tool_profile?: ToolProfile;
   stop_reason?: RunStopReason;
+  stop_signal?: string | null;
   error?: string;
 }
 

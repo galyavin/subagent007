@@ -4,7 +4,6 @@ import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.js";
-import { failureClassForProcessResult, logFailure, type FailureLogTool } from "./failureLog.js";
 import {
   defaultInputRequestsDir,
   listInputRequests,
@@ -227,8 +226,6 @@ export async function runSubagentCore(
     runId?: string;
     mailboxRoot?: string;
     runsDir?: string;
-    suppressFailureLog?: boolean;
-    failureLogTool?: FailureLogTool;
     allowTimeout?: boolean;
     piSessionDir?: string;
     heartbeat?: HeartbeatNotify;
@@ -366,53 +363,12 @@ export async function runSubagentCore(
       written_output_mode: writtenOutputMode,
       resolved_tool_profile: resolved.toolProfile,
       stop_reason: processResult.stopReason,
+      stop_signal: processResult.stopSignal,
       ...(timeoutRecoveryHint ? { timeout_recovery_hint: timeoutRecoveryHint } : {}),
       session_id: sessionId,
       session_established: sessionEstablished,
       input_requests_dir: inputRequestsDir,
     };
-    if (!result.success && !processResult.cancelled && !options.suppressFailureLog) {
-      const missingSessionId =
-        sessionMode.kind === "fresh" && !sessionEstablished && result.exit_code === 0;
-      const failureClass = result.timed_out
-        ? "timeout"
-        : missingSessionId
-          ? "missing_session_id"
-          : failureClassForProcessResult(result);
-      const reasonCode = failureClass === "timeout"
-        ? "timeout"
-        : failureClass === "missing_session_id"
-          ? "missing_session_id"
-          : failureClass === "nonzero_exit"
-            ? "nonzero_exit"
-            : "unknown_error";
-      await logFailure({
-        tool: options.failureLogTool ?? "run_subagent",
-        failure_class: failureClass,
-        reason_code: reasonCode,
-        cwd: resolved.cwd,
-        output_path: result.output_path,
-        success: result.success,
-        exit_code: result.exit_code,
-        timed_out: result.timed_out,
-        partial_output_available: result.partial_output_available,
-        resume_possible: result.resume_possible,
-        duration_ms: result.duration_ms,
-        requested_timeout_ms: result.requested_timeout_ms,
-        resolved_timeout_ms: result.resolved_timeout_ms,
-        timeout_floor_ms: result.timeout_floor_ms,
-        effective_timeout_ms: result.effective_timeout_ms,
-        timeout_headroom_ms: result.timeout_headroom_ms,
-        kill_grace_ms: result.kill_grace_ms,
-        force_grace_ms: result.force_grace_ms,
-        model_class: result.resolved_model_class,
-        model: result.resolved_model,
-        thinking_level: result.resolved_thinking_level,
-        skill: result.requested_skill,
-        output_mode: result.requested_output_mode,
-        tool_profile: result.resolved_tool_profile,
-      });
-    }
     return result;
   } finally {
     await finalMessageTarget.cleanup();

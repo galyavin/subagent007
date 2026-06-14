@@ -23,6 +23,10 @@ type RunSubagentMetadata = {
   success: boolean;
   exit_code: number | null;
   timed_out: boolean;
+  requested_timeout_ms: number | null;
+  resolved_timeout_ms: number | null;
+  effective_timeout_ms: number | null;
+  stop_signal: string | null;
   timeout_recovery_hint?: string;
   session_id: string | null;
   session_established: boolean;
@@ -940,7 +944,7 @@ test("MCP run_subagent auto-promotes skill-bound work without one-shot health ga
           {
             schema_version: 1,
             model_class: "A",
-            resolved_model: "ollama/qwen3.5:9b-mlx",
+            resolved_model: "openrouter/qwen/qwen3.6-35b-a3b",
             surface: "run_subagent_one_shot",
             checked_at: "2026-06-11T00:00:00.000Z",
             usable_for_one_shot: false,
@@ -969,6 +973,9 @@ test("MCP run_subagent auto-promotes skill-bound work without one-shot health ga
       assert.match(metadata.promotion_reason ?? "", /skill-bound work/);
       assert.equal(metadata.poll_with, "get_run");
       assert.equal(metadata.cancel_with, "cancel_run");
+      assert.equal(metadata.requested_timeout_ms, null);
+      assert.equal(metadata.resolved_timeout_ms, null);
+      assert.equal(metadata.effective_timeout_ms, null);
       assert.equal(metadata.requested_skill, skillName);
       assert.equal(metadata.resolved_skill_path, skillPath);
       assert.equal(metadata.resolved_skill_sha256, await sha256File(skillPath));
@@ -978,7 +985,7 @@ test("MCP run_subagent auto-promotes skill-bound work without one-shot health ga
       assert.equal(logs.length, 1);
       assert.equal(logs[0].request.skill, skillName);
       assert.equal(logs[0].request.skillFilePath, skillPath);
-      assert.equal(logs[0].request.model, "ollama/qwen3.5:9b-mlx");
+      assert.equal(logs[0].request.model, "openrouter/qwen/qwen3.6-35b-a3b");
 
       const rawEvents = await fs.readFile(path.join(runTasksDir, `${metadata.run_id}.events.jsonl`), "utf8");
       assert.match(rawEvents, /\[auto_promoted\] run_subagent -> durable_run/);
@@ -1096,7 +1103,7 @@ test("MCP run_subagent fails fast for known unhealthy one-shot model class", asy
         {
           schema_version: 1,
           model_class: "A",
-          resolved_model: "ollama/qwen3.5:9b-mlx",
+          resolved_model: "openrouter/qwen/qwen3.6-35b-a3b",
           surface: "run_subagent_one_shot",
           checked_at: "2026-06-11T00:00:00.000Z",
           usable_for_one_shot: false,
@@ -1195,6 +1202,9 @@ test("MCP run_subagent auto-promotes lexical broad-work false positives instead 
     assert.equal(metadata.status, "completed");
     assert.equal(metadata.success, true);
     assert.equal(metadata.promotion_reason_code, "broad_work");
+    assert.equal(metadata.requested_timeout_ms, null);
+    assert.equal(metadata.resolved_timeout_ms, null);
+    assert.equal(metadata.effective_timeout_ms, null);
     assert.equal(await fs.readFile(metadata.output_path, "utf8"), "FAST FINAL");
   });
 });
