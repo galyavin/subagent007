@@ -20,6 +20,10 @@ import { loadConfigRecord, normalizeConfigRecord } from "./config.js";
 import { heartbeatFromExtra, heartbeatIntervalMsFromEnv, type ServerExtra } from "./progress.js";
 import { durableRunContractView } from "./durableRunContract.js";
 import {
+  runtimeReadinessSnapshot,
+  SOURCE_STATE_POLICIES,
+} from "./runtimeReadiness.js";
+import {
   answerRunTaskInput,
   cancelRunTask,
   getRunTask,
@@ -371,6 +375,33 @@ server.registerTool(
     inputSchema: {},
   },
   async () => jsonObjectToolResult(durableRunContractView()),
+);
+
+server.registerTool(
+  "get_runtime_readiness",
+  {
+    title: "Get Runtime Readiness",
+    description:
+      "Return a Subagent007 runtime/build/source/capability readiness snapshot with typed actionable block classes.",
+    inputSchema: {
+      expected_contract_name: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Optional durable-run contract name the caller requires, such as subagent007.durable_run."),
+      expected_contract_version: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Optional durable-run contract version the caller requires."),
+      source_state_policy: z
+        .enum(SOURCE_STATE_POLICIES)
+        .optional()
+        .describe("How strictly to gate git source state. Defaults to require_clean."),
+    },
+  },
+  async (request) => jsonObjectToolResult(await runtimeReadinessSnapshot(request)),
 );
 
 server.registerTool(

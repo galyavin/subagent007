@@ -286,6 +286,7 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
   assert.equal(summary.scenario_set, "full-current");
   assert.equal(summary.mode, "protocol-deterministic");
   assert.ok(summary.scenarios.includes("run-contract"));
+  assert.ok(summary.scenarios.includes("runtime-readiness"));
   assert.ok(summary.scenarios.includes("model-listing-alias"));
   assert.ok(summary.scenarios.includes("auto-promotion"));
   assert.ok(summary.scenarios.includes("start-run-async-polling"));
@@ -301,6 +302,7 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
   assert.ok(summary.scenarios.includes("session-invalid-closure"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("run_subagent-success"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("tool-listing"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("runtime-readiness"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("durable-run-contract"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("model-class-listing"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("model-class-listing-alias"));
@@ -624,6 +626,7 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
   assert.equal(summary.mode, "protocol-deterministic");
   assert.deepEqual(summary.coverage_summary.missing_required_surfaces, []);
   for (const surface of [
+    "runtime-readiness",
     "durable-run-contract",
     "model-class-listing-alias",
     "run_subagent-auto-promotion",

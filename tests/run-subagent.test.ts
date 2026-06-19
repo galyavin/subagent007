@@ -583,6 +583,7 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.equal(names.includes("list_model_classes"), true);
     assert.equal(names.includes("list_allowed_models"), true);
     assert.equal(names.includes("get_run_contract"), true);
+    assert.equal(names.includes("get_runtime_readiness"), true);
     assert.equal(names.includes("run_codex"), false);
     assert.equal(names.includes("run_codex_session"), false);
     const listModelClassesTool = response.tools.find((tool) => tool.name === "list_model_classes");
@@ -629,6 +630,31 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.equal(contract.capabilities?.includes("file_backed_output_references"), true);
     assert.equal(contract.capabilities?.includes("restart_drift_fail_closed"), true);
     assert.equal(contract.input_mailbox?.waiting_status_terminal, false);
+    const readinessResponse = await client.callTool({
+      name: "get_runtime_readiness",
+      arguments: {
+        expected_contract_name: "subagent007.durable_run",
+        expected_contract_version: 1,
+        source_state_policy: "allow_unknown",
+      },
+    });
+    assert.notEqual(readinessResponse.isError, true);
+    const readiness = readinessResponse.structuredContent as {
+      schema_version?: number;
+      ready?: boolean;
+      status?: string;
+      contract?: { compatible?: boolean };
+      runtime?: { server_entrypoint?: string };
+      capabilities?: { public_tools?: string[] };
+      blocks?: Array<{ class?: string }>;
+    };
+    assert.equal(readiness.schema_version, 1);
+    assert.equal(readiness.ready, true);
+    assert.equal(readiness.status, "ready");
+    assert.equal(readiness.contract?.compatible, true);
+    assert.equal(readiness.runtime?.server_entrypoint?.endsWith("dist/server.js"), true);
+    assert.equal(readiness.capabilities?.public_tools?.includes("get_runtime_readiness"), true);
+    assert.deepEqual(readiness.blocks, []);
   });
 });
 

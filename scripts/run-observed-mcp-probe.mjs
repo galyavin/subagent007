@@ -279,6 +279,12 @@ function responseMatchesResultClass(response, resultClass) {
       response.error_class === "restart_drift" &&
       response.reason_code === "server_restarted_active_run";
   }
+  if (resultClass === "runtime_ready") {
+    return response.is_error === false &&
+      response.ready === true &&
+      response.status === "ready" &&
+      response.contract_name === "subagent007.runtime_readiness";
+  }
   return false;
 }
 
@@ -553,6 +559,8 @@ function responseSummary(response) {
     success: typeof structured.success === "boolean" ? structured.success : null,
     status: typeof structured.status === "string" ? structured.status : null,
     kind: typeof structured.kind === "string" ? structured.kind : null,
+    ready: typeof structured.ready === "boolean" ? structured.ready : undefined,
+    contract_name: typeof structured.contract_name === "string" ? structured.contract_name : undefined,
     error_class: typeof structured.error_class === "string" ? structured.error_class : undefined,
     reason_code: typeof structured.reason_code === "string" ? structured.reason_code : inferredReasonCode,
     run_id: typeof structured.run_id === "string" ? structured.run_id : undefined,
@@ -644,6 +652,16 @@ function scenarioCall(scenario, cwd) {
     return {
       tool: "get_run_contract",
       args: {},
+    };
+  }
+  if (scenario === "runtime-readiness") {
+    return {
+      tool: "get_runtime_readiness",
+      args: {
+        expected_contract_name: "subagent007.durable_run",
+        expected_contract_version: 1,
+        source_state_policy: "allow_unknown",
+      },
     };
   }
   if (scenario === "success") {

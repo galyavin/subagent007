@@ -23,6 +23,7 @@ Use this server as a durable delegation boundary. Treat `run_id` as the unit of 
 | Durable continuity by semantic key | `start_session_run` plus `get_run`, or `run_subagent_session` for compatibility | Requires `session_key`; use when manifest/ledger continuity matters. Prefer the async task form for long, cancellable, or abandoned-client-safe work. |
 | Model-class/config health | `list_model_classes` | `list_allowed_models` is a compatibility alias. |
 | Durable-run adapter compatibility | `get_run_contract` | Check `contract_name`, `contract_version`, terminal/non-terminal statuses, and capabilities before launching command-mode adapters; fail closed when incompatible. |
+| Runtime/build/source readiness | `get_runtime_readiness`; or `npm run runtime:readiness` before MCP launch | Use the script when a caller needs to prove the built server entrypoint can launch. It reports typed blocks such as `missing_build`, `stale_build`, `dirty_source`, `source_state_unknown`, `incompatible_contract`, and `runtime_launch_failure`. |
 
 Tool authority rule of thumb: the child starts with every registered Pi tool active. Tool profiles are legacy compatibility inputs only; skills are the remaining explicit restriction.
 
@@ -81,9 +82,12 @@ Register directly when Pi auth keys are available to ordinary child processes:
 ```sh
 npm run build
 SERVER_PATH="$(pwd)/dist/server.js"
+npm run runtime:readiness -- --source-state-policy allow_dirty --expected-contract-name subagent007.durable_run --expected-contract-version 1
 codex mcp add subagent007-pi -- node "$SERVER_PATH"
 codex mcp get subagent007-pi
 ```
+
+Use the default `require_clean` source policy for release or canary checks that must fail closed on dirty source.
 
 If Pi auth is loaded by shell startup files such as `~/.zshrc`, register through an interactive shell:
 
@@ -135,6 +139,8 @@ Bind skills with `skill_name`, not prompt syntax. It must be a bare name such as
 
 Result semantics:
 
+- `get_runtime_readiness` returns the concrete runtime snapshot from inside the running MCP server: resolved project root, server entrypoint, build/dist facts, git/source facts, durable-run contract compatibility, and public tool/capability surface. For pre-launch checks, use `npm run runtime:readiness`; it verifies `dist/server.js` exists before launching MCP, then calls `get_runtime_readiness`. A blocked result includes `status:"blocked"`, `ready:false`, and machine-readable `blocks[].class`.
+  The default source policy is `require_clean`, which blocks dirty or unknown git state; `allow_dirty` permits dirty checkouts while still blocking unknown source state, and `allow_unknown` permits both dirty and unknown source state for package-style or exploratory probes.
 - `get_run_contract` returns the durable-run lifecycle contract. Version `1` defines non-terminal statuses `working` and `input_required`, terminal statuses `completed`, `failed`, `cancelled`, and `timed_out`, file-backed output references, bounded public excerpts, mailbox addressing by `run_id/request_id`, and fail-closed restart drift behavior.
 - Terminal views after child execution include `output_references` plus legacy `output_path`; read the referenced file for the full answer and check `written_output_mode`, because requested `final` output falls back to transcript when no final message is captured. Schema and preflight rejections do not create output artifacts.
 - Failed, timed-out, and restart-drift terminal views include `error_class` and `reason_code` when the server can classify the failure; adapters should branch on those fields instead of parsing `error`.

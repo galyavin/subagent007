@@ -1,6 +1,7 @@
 {
   "saf_required_surfaces": [
     "tool-listing",
+    "runtime-readiness",
     "durable-run-contract",
     "model-class-listing",
     "model-class-listing-alias",
@@ -27,6 +28,7 @@
   ],
   "surfaces": {
     "tool-listing": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
+    "runtime-readiness": { "evidence_classes": ["protocol-deterministic"] },
     "durable-run-contract": { "evidence_classes": ["protocol-deterministic"] },
     "model-class-listing": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
     "model-class-listing-alias": { "evidence_classes": ["protocol-deterministic"] },
@@ -75,6 +77,12 @@
       "lifecycle_phases": ["contract-discovery"],
       "result_classes": ["success"],
       "surfaces": ["durable-run-contract"]
+    },
+    "runtime-readiness": {
+      "tool": "get_runtime_readiness",
+      "lifecycle_phases": ["runtime-readiness", "contract-discovery"],
+      "result_classes": ["runtime_ready"],
+      "surfaces": ["runtime-readiness"]
     },
     "success": {
       "tool": "run_subagent",
@@ -216,6 +224,7 @@
       "mode": "protocol-deterministic",
       "scenarios": [
         "tool-listing",
+        "runtime-readiness",
         "run-contract",
         "model-listing",
         "model-listing-alias",
@@ -241,6 +250,7 @@
       ],
       "required_surfaces": [
         "tool-listing",
+        "runtime-readiness",
         "durable-run-contract",
         "model-class-listing",
         "model-class-listing-alias",
