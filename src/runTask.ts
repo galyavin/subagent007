@@ -57,13 +57,7 @@ import { defaultSubagentStatePath } from "./output.js";
 import { assertModelClassUsableForOneShot } from "./modelHealth.js";
 import { safeIntegerFromEnv } from "./env.js";
 
-type RunTaskStatus =
-  | "working"
-  | "input_required"
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | "timed_out";
+type RunTaskStatus = DurableRunStatus;
 
 type RunTaskActivePhase =
   | "starting"
