@@ -8,7 +8,6 @@ import { modelHealthForClass } from "../src/modelHealth.js";
 import { stripAnsiAndControls, writeRunOutput } from "../src/output.js";
 import { resolvePiAgentDir } from "../src/piAgentDir.js";
 import { composePrompt } from "../src/prompt.js";
-import { computeTimeoutBudget } from "../src/timeoutBudget.js";
 import { ValidationError } from "../src/types.js";
 import { validateAndResolveRequest, validateSkillName } from "../src/validate.js";
 import { withEnv } from "./helpers/testUtils.js";
@@ -461,27 +460,6 @@ test("rejects invalid model class and old public model fields", async () => {
     ),
     /thinking_level is calibrated by model_class/,
   );
-});
-
-test("computes an effective child timeout within the requested hard cap", () => {
-  assert.deepEqual(
-    computeTimeoutBudget(120000, {
-      responseHeadroomMs: 5000,
-      killGraceMs: 1000,
-      forceGraceMs: 1000,
-    }),
-    {
-      requestedTimeoutMs: 120000,
-      resolvedTimeoutMs: 120000,
-      minRequestedTimeoutMs: 0,
-      effectiveTimeoutMs: 113000,
-      responseHeadroomMs: 5000,
-      killGraceMs: 1000,
-      forceGraceMs: 1000,
-    },
-  );
-  assert.equal(computeTimeoutBudget(undefined).effectiveTimeoutMs, null);
-  assert.equal(computeTimeoutBudget(undefined).resolvedTimeoutMs, null);
 });
 
 test("rejects invalid preflight input before any child spawn is possible", async () => {

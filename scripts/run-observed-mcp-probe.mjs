@@ -256,6 +256,29 @@ function responseMatchesResultClass(response, resultClass) {
   if (resultClass === "invalid_packet_closure") {
     return response.success === false && response.packet_parse_status === "invalid" && response.packet_closure_invalid === true;
   }
+  if (resultClass === "auto_promoted") {
+    return response.auto_promoted_from === "run_subagent" && completedAfterPolling;
+  }
+  if (resultClass === "session_async_polling") {
+    return completedAfterPolling &&
+      response.session_established === true &&
+      response.packet_parse_status === "valid" &&
+      response.packet_closure_valid === true;
+  }
+  if (resultClass === "run_not_found") {
+    return response.is_error === true && response.reason_code === "run_not_found";
+  }
+  if (resultClass === "input_wrong_rejected") {
+    return response.input_wrong_rejected === true;
+  }
+  if (resultClass === "terminal_cancel_idempotent") {
+    return response.terminal_cancel_idempotent === true;
+  }
+  if (resultClass === "restart_drift") {
+    return response.status === "failed" &&
+      response.error_class === "restart_drift" &&
+      response.reason_code === "server_restarted_active_run";
+  }
   return false;
 }
 
@@ -285,6 +308,7 @@ function coverageSummary(scenarios, mode, profileName, calls = []) {
       .filter((scenario) => scenario.evidence_satisfied)
       .flatMap((scenario) => scenario.surfaces),
   );
+  const selectedSurfaces = unique(metadata.flatMap((scenario) => scenario.surfaces));
   const coveredByEvidenceClass = metadata.reduce((groups, scenario) => {
     if (!scenario.evidence_satisfied) {
       return groups;
@@ -296,14 +320,15 @@ function coverageSummary(scenarios, mode, profileName, calls = []) {
     return groups;
   }, {});
   const optionalSurfaces = PRODUCT_SURFACES.filter((surface) => !profile.required_surfaces.includes(surface));
+  const outOfScopeSurfaces = PRODUCT_SURFACES.filter((surface) => !selectedSurfaces.includes(surface));
   const uncoveredSurfaces = PRODUCT_SURFACES.filter((surface) => !coveredSurfaces.includes(surface));
   return {
     profile: profileName,
     scenarios: metadata,
     required_surfaces: [...profile.required_surfaces].sort(),
     optional_surfaces: optionalSurfaces,
-    out_of_scope_surfaces: optionalSurfaces,
-    skipped_surfaces: uncoveredSurfaces,
+    out_of_scope_surfaces: outOfScopeSurfaces,
+    skipped_surfaces: outOfScopeSurfaces,
     covered_surfaces: coveredSurfaces,
     covered_surfaces_by_evidence_class: coveredByEvidenceClass,
     uncovered_surfaces: uncoveredSurfaces,
@@ -517,11 +542,19 @@ function responseSummary(response) {
   const structured = response.structuredContent && typeof response.structuredContent === "object"
     ? response.structuredContent
     : {};
+  const text = responseText(response);
+  const inferredReasonCode = /run not found/.test(text)
+    ? "run_not_found"
+    : /input request is not part of run/.test(text)
+      ? "input_request_not_part_of_run"
+      : undefined;
   return {
     is_error: response.isError === true,
     success: typeof structured.success === "boolean" ? structured.success : null,
     status: typeof structured.status === "string" ? structured.status : null,
     kind: typeof structured.kind === "string" ? structured.kind : null,
+    error_class: typeof structured.error_class === "string" ? structured.error_class : undefined,
+    reason_code: typeof structured.reason_code === "string" ? structured.reason_code : inferredReasonCode,
     run_id: typeof structured.run_id === "string" ? structured.run_id : undefined,
     child_started: typeof structured.child_started === "boolean" ? structured.child_started : undefined,
     exit_code: typeof structured.exit_code === "number" || structured.exit_code === null
@@ -547,6 +580,12 @@ function responseSummary(response) {
       : undefined,
     attempt_session_established: typeof structured.attempt_session_established === "boolean"
       ? structured.attempt_session_established
+      : undefined,
+    auto_promoted_from: structured.auto_promoted_from === "run_subagent"
+      ? structured.auto_promoted_from
+      : undefined,
+    promotion_reason_code: typeof structured.promotion_reason_code === "string"
+      ? structured.promotion_reason_code
       : undefined,
     output_path: typeof structured.output_path === "string" ? structured.output_path : undefined,
   };
@@ -595,8 +634,23 @@ function scenarioCall(scenario, cwd) {
       args: {},
     };
   }
+  if (scenario === "model-listing-alias") {
+    return {
+      tool: "list_allowed_models",
+      args: {},
+    };
+  }
+  if (scenario === "run-contract") {
+    return {
+      tool: "get_run_contract",
+      args: {},
+    };
+  }
   if (scenario === "success") {
     return runSubagentScenarioCall(cwd, "FAST");
+  }
+  if (scenario === "auto-promotion") {
+    return runSubagentScenarioCall(cwd, "Investigate coverage gaps");
   }
   if (scenario === "schema-error") {
     return {
@@ -779,6 +833,26 @@ async function waitForRun(client, ledgerPath, evidenceClass, scenario, runId, pr
 }
 
 async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
+  if (scenario === "auto-promotion") {
+    const started = await runCall(client, ledgerPath, evidenceClass, scenario, scenarioCall(scenario, cwd));
+    const terminal = started.response?.run_id
+      ? await waitForRun(client, ledgerPath, evidenceClass, scenario, started.response.run_id, (response) =>
+          response?.status === "completed",
+        )
+      : started;
+    return {
+      ...terminal,
+      tool: "run_subagent",
+      response: {
+        ...(terminal.response ?? {}),
+        auto_promoted_from: started.response?.auto_promoted_from,
+        promotion_reason_code: started.response?.promotion_reason_code,
+        polled: true,
+      },
+      failure_log_delta_count: started.failure_log_delta_count + (terminal.failure_log_delta_count ?? 0),
+    };
+  }
+
   if (scenario === "start-run-async-polling") {
     const started = await runCall(client, ledgerPath, evidenceClass, scenario, {
       tool: "start_run",
@@ -792,6 +866,33 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
     return {
       ...terminal,
       tool: "start_run",
+      response: {
+        ...(terminal.response ?? {}),
+        polled: true,
+      },
+      failure_log_delta_count: started.failure_log_delta_count + (terminal.failure_log_delta_count ?? 0),
+    };
+  }
+
+  if (scenario === "start-session-run-async-polling") {
+    const started = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "start_session_run",
+      args: {
+        cwd,
+        prompt: "PACKET_VALID_WITH_CLOSURE",
+        session_key: `campaign-probe-start-session:${Date.now()}:${randomUUID().slice(0, 8)}`,
+        resume_mode: "new",
+        packet_policy: "required",
+      },
+    });
+    const terminal = started.response?.run_id
+      ? await waitForRun(client, ledgerPath, evidenceClass, scenario, started.response.run_id, (response) =>
+          response?.status === "completed",
+        )
+      : started;
+    return {
+      ...terminal,
+      tool: "start_session_run",
       response: {
         ...(terminal.response ?? {}),
         polled: true,
@@ -857,6 +958,49 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
     };
   }
 
+  if (scenario === "caller-input-wrong-request") {
+    const started = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "start_run",
+      args: { cwd, prompt: "REQUEST_INPUT_WAIT" },
+    });
+    if (!started.response?.run_id) {
+      return started;
+    }
+    const pending = await waitForRun(client, ledgerPath, evidenceClass, scenario, started.response.run_id, (response) =>
+      (response?.pending_input_count ?? 0) > 0,
+    );
+    const answered = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "answer_run_input",
+      args: {
+        run_id: started.response.run_id,
+        request_id: `${started.response.run_id}-000000000000`,
+        answer: "wrong request id",
+      },
+    });
+    const cancelled = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "cancel_run",
+      args: { run_id: started.response.run_id },
+    });
+    const terminal = await waitForRun(client, ledgerPath, evidenceClass, scenario, started.response.run_id, (response) =>
+      response?.status === "cancelled",
+    );
+    return {
+      ...answered,
+      tool: "answer_run_input",
+      response: {
+        ...(answered.response ?? {}),
+        input_wrong_rejected: answered.response?.reason_code === "input_request_not_part_of_run",
+        cleanup_status: terminal.response?.status ?? cancelled.response?.status,
+      },
+      failure_log_delta_count:
+        started.failure_log_delta_count +
+        (pending.failure_log_delta_count ?? 0) +
+        (answered.failure_log_delta_count ?? 0) +
+        (cancelled.failure_log_delta_count ?? 0) +
+        (terminal.failure_log_delta_count ?? 0),
+    };
+  }
+
   if (scenario === "schedule-run-durable-first") {
     const started = await runCall(client, ledgerPath, evidenceClass, scenario, {
       tool: "schedule_run",
@@ -883,6 +1027,21 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
     };
   }
 
+  if (scenario === "get-run-missing") {
+    const missing = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "get_run",
+      args: { run_id: "missing-run" },
+    });
+    return {
+      ...missing,
+      tool: "get_run",
+      response: {
+        ...(missing.response ?? {}),
+        run_not_found_rejected: missing.response?.reason_code === "run_not_found",
+      },
+    };
+  }
+
   if (scenario === "cancellation") {
     const started = await runCall(client, ledgerPath, evidenceClass, scenario, {
       tool: "start_run",
@@ -906,6 +1065,37 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
         started.failure_log_delta_count +
         cancelled.failure_log_delta_count +
         (settled.failure_log_delta_count ?? 0),
+    };
+  }
+
+  if (scenario === "cancel-terminal-run") {
+    const started = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "start_run",
+      args: { cwd, prompt: "FAST" },
+    });
+    const terminal = started.response?.run_id
+      ? await waitForRun(client, ledgerPath, evidenceClass, scenario, started.response.run_id, (response) =>
+          response?.status === "completed",
+        )
+      : started;
+    const cancelled = started.response?.run_id
+      ? await runCall(client, ledgerPath, evidenceClass, scenario, {
+          tool: "cancel_run",
+          args: { run_id: started.response.run_id },
+        })
+      : terminal;
+    return {
+      ...cancelled,
+      tool: "cancel_run",
+      response: {
+        ...(cancelled.response ?? {}),
+        terminal_cancel_idempotent:
+          terminal.response?.status === "completed" && cancelled.response?.status === "completed",
+      },
+      failure_log_delta_count:
+        started.failure_log_delta_count +
+        (terminal.failure_log_delta_count ?? 0) +
+        (cancelled.failure_log_delta_count ?? 0),
     };
   }
 
@@ -954,17 +1144,62 @@ const serverEnv = {
       }
     : {}),
 };
-const transport = new StdioClientTransport({
-  command: process.execPath,
-  args: [parsed.options.server],
-  env: serverEnv,
-});
-const client = new Client({ name: "subagent007-observed-mcp-probe", version: "0.1.0" });
+
+function createTransport() {
+  return new StdioClientTransport({
+    command: process.execPath,
+    args: [parsed.options.server],
+    env: serverEnv,
+  });
+}
+
+async function connectClient() {
+  const client = new Client({ name: "subagent007-observed-mcp-probe", version: "0.1.0" });
+  await client.connect(createTransport());
+  return client;
+}
+
+async function runRestartDriftScenario(client) {
+  const scenario = "restart-drift";
+  const started = await runCall(client, ledgerPath, evidenceClass, scenario, {
+    tool: "start_run",
+    args: { cwd: parsed.options.cwd, prompt: "CANCEL_WAIT", timeout_ms: 6000 },
+  });
+  if (!started.response?.run_id) {
+    return { client, result: started };
+  }
+
+  await client.close();
+  const restartedClient = await connectClient();
+  const drift = await runCall(restartedClient, ledgerPath, evidenceClass, scenario, {
+    tool: "get_run",
+    args: { run_id: started.response.run_id },
+  });
+  return {
+    client: restartedClient,
+    result: {
+      ...drift,
+      tool: "get_run",
+      response: {
+        ...(drift.response ?? {}),
+        restart_run_id: started.response.run_id,
+      },
+      failure_log_delta_count: started.failure_log_delta_count + (drift.failure_log_delta_count ?? 0),
+    },
+  };
+}
+
+let client = await connectClient();
 const results = [];
 
 try {
-  await client.connect(transport);
   for (const scenario of parsed.options.scenarios) {
+    if (scenario === "restart-drift") {
+      const restartDrift = await runRestartDriftScenario(client);
+      client = restartDrift.client;
+      results.push(restartDrift.result);
+      continue;
+    }
     results.push(
       await runScenario(
         client,

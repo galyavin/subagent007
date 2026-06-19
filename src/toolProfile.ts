@@ -1,4 +1,4 @@
-export const REQUIRED_WEB_TOOLS = ["web_search", "web_read"] as const;
+const REQUIRED_WEB_TOOLS = ["web_search", "web_read"] as const;
 
 export interface SessionToolRegistry {
   getAllTools(): Array<{ name: string }>;

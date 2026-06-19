@@ -80,14 +80,16 @@ Register directly when Pi auth keys are available to ordinary child processes:
 
 ```sh
 npm run build
-codex mcp add subagent007-pi -- node /Users/rgalyavin/myApps/003-subagent007-pi/dist/server.js
+SERVER_PATH="$(pwd)/dist/server.js"
+codex mcp add subagent007-pi -- node "$SERVER_PATH"
 codex mcp get subagent007-pi
 ```
 
 If Pi auth is loaded by shell startup files such as `~/.zshrc`, register through an interactive shell:
 
 ```sh
-codex mcp add subagent007-pi -- zsh -ic 'exec node /Users/rgalyavin/myApps/003-subagent007-pi/dist/server.js'
+SERVER_PATH="$(pwd)/dist/server.js"
+codex mcp add subagent007-pi -- zsh -ic "exec node \"$SERVER_PATH\""
 ```
 
 After registration, start a new Codex session or reload MCP servers before expecting the tools to appear.
@@ -99,7 +101,7 @@ Child-invocation tools require:
 - `cwd`: absolute directory path
 - `prompt`: nonempty string
 
-Do not pass secrets unless local mailbox and transcript storage are acceptable. `prompt` is copied into run transcripts and public event ledgers. `answer_run_input.answer` is stored in the local mailbox settlement and omitted from public event views, but child output is public transcript material and may contain answer-derived text if the child echoes or uses the answer.
+Do not pass secrets unless local mailbox, public events, and output artifacts are acceptable. `prompt` is copied into public event history and transcript-rendered artifacts; final-message artifacts may omit it. `answer_run_input.answer` is stored in the local mailbox settlement and omitted from public event views, but child output may contain answer-derived text if the child echoes or uses the answer.
 
 Optional common fields:
 
@@ -155,7 +157,7 @@ One-shot request:
 }
 ```
 
-`run_kind` is an explicit caller contract that the work is bounded, non-interactive, and compatible with the one-shot deadline. Valid requests that are skill-bound, over 6000 characters, broad/exploratory/synthesis-shaped, or write-shaped auto-promote to a durable run and return a pollable `run_id`. Hard invalid inputs still reject before child execution, including bad `cwd`, invalid skill syntax, invalid model class, unreadable resume continuity, and caller-provided `timeout_ms`.
+`run_kind` is an explicit caller contract that the work is bounded, non-interactive, and compatible with the one-shot deadline. Valid requests auto-promote to a durable run when they are skill-bound, over 6000 characters, or match the built-in broad/workspace-write prompt heuristics; the result includes a pollable `run_id`. Hard invalid inputs still reject before child execution, including bad `cwd`, invalid skill syntax, invalid model class, unreadable resume continuity, and caller-provided `timeout_ms`.
 
 Auto-promotion is a compatibility fallback. For deliberate broad, cancellable, caller-input, exploratory, skill-bound, or write-heavy work, call `schedule_run` or `start_run` directly, especially when caller-defined `timeout_ms` matters. The one-shot model-health gate applies only when the request stays on synchronous one-shot execution.
 
@@ -194,8 +196,6 @@ Flow:
 
 After `cancel_run`, an in-flight cancellation reports `status:"working"` with `active_phase:"cancelling"`.
 Continue polling until `status:"cancelled"` appears; that terminal view includes the settled cancellation metadata.
-
-`start_run` accepts the same `continuity` object as `run_subagent` when async raw Pi continuity is needed.
 
 Input requests are stored under `~/.codex/subagent007-pi/input-requests` by default. Each request has one terminal settlement: `answered`, `timed_out`, or `closed`. Cancelling a run or reaching any terminal run state closes remaining pending requests, and late answers to closed or timed-out requests are rejected.
 
@@ -241,7 +241,7 @@ When packet policy or skill binding adds server-authored instructions, public ev
 
 Session results keep `subagent_session_id` and `session_established` as committed-state fields. They also expose `attempt_subagent_session_id` and `attempt_session_established` so packet-required failures can show that Pi created a candidate session even when promotion to the committed session was rejected.
 
-Named-session locks are task/lease-scoped. The lock records owner pid, hostname, optional task id, owner id, and `lease_expires_at`; active session tasks refresh the lease. A later run may recover a lock only when the local owner process is definitely gone or the lease has expired. Packet-policy semantics are unchanged by the async task wrapper.
+Named-session locks are task/lease-scoped and refreshed by active session tasks. A later run may recover a lock only when the local owner process is definitely gone or the lease has expired. Packet-policy semantics are unchanged by the async task wrapper.
 
 ## State And Environment
 

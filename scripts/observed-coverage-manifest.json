@@ -1,16 +1,24 @@
 {
   "saf_required_surfaces": [
     "tool-listing",
+    "durable-run-contract",
     "model-class-listing",
+    "model-class-listing-alias",
     "run_subagent-success",
+    "run_subagent-auto-promotion",
     "run_subagent-schema-error",
     "run_subagent-preflight-rejection",
     "run_subagent-child-failure",
     "run_subagent-timeout-recovery",
     "schedule_run-durable-first",
     "start_run-async-polling",
+    "start_session_run-async-polling",
+    "get_run-run-not-found",
     "answer_run_input-caller-input",
+    "answer_run_input-wrong-request-rejection",
     "cancel_run-cancellation-settlement",
+    "cancel_run-terminal-idempotency",
+    "get_run-restart-drift",
     "transcript-redaction",
     "run_subagent_session-packet-failure",
     "run_subagent_session-valid-packet-closure",
@@ -19,16 +27,24 @@
   ],
   "surfaces": {
     "tool-listing": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
+    "durable-run-contract": { "evidence_classes": ["protocol-deterministic"] },
     "model-class-listing": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
+    "model-class-listing-alias": { "evidence_classes": ["protocol-deterministic"] },
     "run_subagent-success": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
+    "run_subagent-auto-promotion": { "evidence_classes": ["protocol-deterministic"] },
     "run_subagent-schema-error": { "evidence_classes": ["protocol-deterministic"] },
     "run_subagent-preflight-rejection": { "evidence_classes": ["protocol-deterministic"] },
     "run_subagent-child-failure": { "evidence_classes": ["protocol-deterministic"] },
     "run_subagent-timeout-recovery": { "evidence_classes": ["protocol-deterministic"] },
     "schedule_run-durable-first": { "evidence_classes": ["protocol-deterministic"] },
     "start_run-async-polling": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
+    "start_session_run-async-polling": { "evidence_classes": ["protocol-deterministic"] },
+    "get_run-run-not-found": { "evidence_classes": ["protocol-deterministic"] },
     "answer_run_input-caller-input": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
+    "answer_run_input-wrong-request-rejection": { "evidence_classes": ["protocol-deterministic"] },
     "cancel_run-cancellation-settlement": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
+    "cancel_run-terminal-idempotency": { "evidence_classes": ["protocol-deterministic"] },
+    "get_run-restart-drift": { "evidence_classes": ["protocol-deterministic"] },
     "transcript-redaction": { "evidence_classes": ["protocol-deterministic"] },
     "run_subagent_session-packet-failure": { "evidence_classes": ["protocol-deterministic"] },
     "run_subagent_session-valid-packet-closure": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
@@ -48,11 +64,29 @@
       "result_classes": ["success"],
       "surfaces": ["model-class-listing"]
     },
+    "model-listing-alias": {
+      "tool": "list_allowed_models",
+      "lifecycle_phases": ["model-class-listing", "compatibility-alias"],
+      "result_classes": ["success"],
+      "surfaces": ["model-class-listing-alias"]
+    },
+    "run-contract": {
+      "tool": "get_run_contract",
+      "lifecycle_phases": ["contract-discovery"],
+      "result_classes": ["success"],
+      "surfaces": ["durable-run-contract"]
+    },
     "success": {
       "tool": "run_subagent",
       "lifecycle_phases": ["one-shot-success"],
       "result_classes": ["run_success"],
       "surfaces": ["run_subagent-success"]
+    },
+    "auto-promotion": {
+      "tool": "run_subagent",
+      "lifecycle_phases": ["one-shot-compatibility", "auto-promotion", "polling", "terminal-snapshot"],
+      "result_classes": ["auto_promoted"],
+      "surfaces": ["run_subagent-auto-promotion"]
     },
     "schema-error": {
       "tool": "run_subagent",
@@ -96,11 +130,23 @@
       "result_classes": ["async_polling"],
       "surfaces": ["start_run-async-polling"]
     },
+    "start-session-run-async-polling": {
+      "tool": "start_session_run",
+      "lifecycle_phases": ["async-start", "session-attempt", "packet-required-gate", "packet-closure", "polling", "terminal-snapshot"],
+      "result_classes": ["session_async_polling"],
+      "surfaces": ["start_session_run-async-polling", "run_subagent_session-valid-packet-closure"]
+    },
     "schedule-run-durable-first": {
       "tool": "schedule_run",
       "lifecycle_phases": ["scheduler-start", "async-start", "polling", "terminal-snapshot"],
       "result_classes": ["scheduled_durable"],
       "surfaces": ["schedule_run-durable-first"]
+    },
+    "get-run-missing": {
+      "tool": "get_run",
+      "lifecycle_phases": ["run-lookup", "handler-validation"],
+      "result_classes": ["run_not_found"],
+      "surfaces": ["get_run-run-not-found"]
     },
     "caller-input": {
       "tool": "answer_run_input",
@@ -108,11 +154,29 @@
       "result_classes": ["input_answered"],
       "surfaces": ["answer_run_input-caller-input"]
     },
+    "caller-input-wrong-request": {
+      "tool": "answer_run_input",
+      "lifecycle_phases": ["async-start", "caller-input", "handler-validation", "cancellation", "terminal-snapshot"],
+      "result_classes": ["input_wrong_rejected"],
+      "surfaces": ["answer_run_input-wrong-request-rejection"]
+    },
     "cancellation": {
       "tool": "cancel_run",
       "lifecycle_phases": ["async-start", "cancellation", "terminal-snapshot"],
       "result_classes": ["cancelled"],
       "surfaces": ["cancel_run-cancellation-settlement"]
+    },
+    "cancel-terminal-run": {
+      "tool": "cancel_run",
+      "lifecycle_phases": ["async-start", "terminal-snapshot", "cancellation-idempotency"],
+      "result_classes": ["terminal_cancel_idempotent"],
+      "surfaces": ["cancel_run-terminal-idempotency"]
+    },
+    "restart-drift": {
+      "tool": "get_run",
+      "lifecycle_phases": ["async-start", "server-restart", "restart-drift", "terminal-snapshot"],
+      "result_classes": ["restart_drift"],
+      "surfaces": ["get_run-restart-drift"]
     },
     "session-valid-closure": {
       "tool": "run_subagent_session",
@@ -152,16 +216,24 @@
       "mode": "protocol-deterministic",
       "scenarios": [
         "tool-listing",
+        "run-contract",
         "model-listing",
+        "model-listing-alias",
         "success",
+        "auto-promotion",
         "schema-error",
         "handler-validation",
         "child-failure",
         "timeout-recovery",
         "schedule-run-durable-first",
         "start-run-async-polling",
+        "start-session-run-async-polling",
+        "get-run-missing",
         "caller-input",
+        "caller-input-wrong-request",
         "cancellation",
+        "cancel-terminal-run",
+        "restart-drift",
         "packet-failure",
         "session-valid-closure",
         "session-invalid-closure",
@@ -169,16 +241,24 @@
       ],
       "required_surfaces": [
         "tool-listing",
+        "durable-run-contract",
         "model-class-listing",
+        "model-class-listing-alias",
         "run_subagent-success",
+        "run_subagent-auto-promotion",
         "run_subagent-schema-error",
         "run_subagent-preflight-rejection",
         "run_subagent-child-failure",
         "run_subagent-timeout-recovery",
         "schedule_run-durable-first",
         "start_run-async-polling",
+        "start_session_run-async-polling",
+        "get_run-run-not-found",
         "answer_run_input-caller-input",
+        "answer_run_input-wrong-request-rejection",
         "cancel_run-cancellation-settlement",
+        "cancel_run-terminal-idempotency",
+        "get_run-restart-drift",
         "transcript-redaction",
         "run_subagent_session-packet-failure",
         "run_subagent_session-valid-packet-closure",

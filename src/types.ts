@@ -7,10 +7,8 @@ export type OutputMode = (typeof OUTPUT_MODES)[number];
 export const TOOL_PROFILES = ["all", "inspect", "web_search", "shell", "workspace_write"] as const;
 export type ToolProfile = (typeof TOOL_PROFILES)[number];
 export const NON_TERMINAL_RUN_STATUSES = ["working", "input_required"] as const;
-export type NonTerminalRunStatus = (typeof NON_TERMINAL_RUN_STATUSES)[number];
 export const TERMINAL_RUN_STATUSES = ["completed", "failed", "cancelled", "timed_out"] as const;
-export type TerminalRunStatus = (typeof TERMINAL_RUN_STATUSES)[number];
-export const RUN_STATUSES = [...NON_TERMINAL_RUN_STATUSES, ...TERMINAL_RUN_STATUSES] as const;
+const RUN_STATUSES = [...NON_TERMINAL_RUN_STATUSES, ...TERMINAL_RUN_STATUSES] as const;
 export type RunStatus = (typeof RUN_STATUSES)[number];
 export const RUN_KINDS = ["quick_noninteractive"] as const;
 type RunKind = (typeof RUN_KINDS)[number];
@@ -103,7 +101,7 @@ interface SubagentRunResultBase {
   reason_code?: string;
 }
 
-export interface RunOutputReference {
+interface RunOutputReference {
   kind: "file";
   name: "primary";
   path: string;

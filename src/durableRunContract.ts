@@ -1,18 +1,14 @@
 import { SERVER_VERSION, serverBuildSha } from "./runtimeMetadata.js";
 import {
   NON_TERMINAL_RUN_STATUSES,
-  RUN_STATUSES,
   TERMINAL_RUN_STATUSES,
-  type NonTerminalRunStatus,
   type RunStatus,
-  type TerminalRunStatus,
 } from "./types.js";
 
 export const DURABLE_RUN_CONTRACT_NAME = "subagent007.durable_run";
 export const DURABLE_RUN_CONTRACT_VERSION = 1;
 
-export { NON_TERMINAL_RUN_STATUSES, RUN_STATUSES, TERMINAL_RUN_STATUSES };
-export type { NonTerminalRunStatus, TerminalRunStatus };
+export { NON_TERMINAL_RUN_STATUSES, TERMINAL_RUN_STATUSES };
 export type DurableRunStatus = RunStatus;
 
 export const DURABLE_RUN_CAPABILITIES = [

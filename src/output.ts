@@ -9,6 +9,16 @@ import {
   publicTranscriptContentFlags,
 } from "./transcript.js";
 
+type PublicTranscriptContentFlags = ReturnType<typeof publicTranscriptContentFlags>;
+
+interface StoredRunOutput {
+  outputPath: string;
+  sizeBytes: number;
+  hasPublicAssistantText: boolean;
+  hasPublicSubagentWarning: boolean;
+  hasPublicSubagentError: boolean;
+}
+
 export function defaultSubagentStatePath(envKey: string, leaf: string): string {
   return process.env[envKey]
     ? path.resolve(process.env[envKey])
@@ -66,53 +76,13 @@ export async function readFinalMessage(outputLastMessagePath?: string): Promise<
   }
 }
 
-export async function writeRunOutput(
-  rawOutput: string,
-  runsDir = defaultRunsDir(),
-  options: { processTranscript?: boolean; promptProvenance?: PromptProvenance } = {},
-): Promise<{
-  outputPath: string;
-  sizeBytes: number;
-  hasPublicAssistantText: boolean;
-  hasPublicSubagentWarning: boolean;
-  hasPublicSubagentError: boolean;
-}> {
+async function writePreparedRunOutput(
+  runsDir: string,
+  cleaned: string,
+  transcriptFlags: PublicTranscriptContentFlags,
+): Promise<StoredRunOutput> {
   await fs.mkdir(runsDir, { recursive: true });
   const outputPath = path.join(runsDir, `${timestampedRandomId()}.md`);
-  const transcript = options.processTranscript
-    ? preparePublicTranscriptFromProcessOutput(rawOutput, { promptProvenance: options.promptProvenance })
-    : null;
-  const prepared = transcript ? transcript.text : rawOutput;
-  const cleaned = stripAnsiAndControls(prepared);
-  const transcriptFlags = transcript ? publicTranscriptContentFlags(cleaned) : null;
-  await fs.writeFile(outputPath, cleaned, { encoding: "utf8", flag: "wx" });
-  return {
-    outputPath: path.resolve(outputPath),
-    sizeBytes: Buffer.byteLength(cleaned, "utf8"),
-    hasPublicAssistantText: transcriptFlags?.hasAssistantText ?? false,
-    hasPublicSubagentWarning: transcriptFlags?.hasSubagentWarning ?? false,
-    hasPublicSubagentError: transcriptFlags?.hasSubagentError ?? false,
-  };
-}
-
-export async function writeRunOutputFromProcessOutputFile(
-  rawOutputPath: string,
-  runsDir = defaultRunsDir(),
-  options: { promptProvenance?: PromptProvenance } = {},
-): Promise<{
-  outputPath: string;
-  sizeBytes: number;
-  hasPublicAssistantText: boolean;
-  hasPublicSubagentWarning: boolean;
-  hasPublicSubagentError: boolean;
-}> {
-  await fs.mkdir(runsDir, { recursive: true });
-  const outputPath = path.join(runsDir, `${timestampedRandomId()}.md`);
-  const transcript = await preparePublicTranscriptFromProcessOutputFile(rawOutputPath, {
-    promptProvenance: options.promptProvenance,
-  });
-  const cleaned = stripAnsiAndControls(transcript.text);
-  const transcriptFlags = publicTranscriptContentFlags(cleaned);
   await fs.writeFile(outputPath, cleaned, { encoding: "utf8", flag: "wx" });
   return {
     outputPath: path.resolve(outputPath),
@@ -121,6 +91,35 @@ export async function writeRunOutputFromProcessOutputFile(
     hasPublicSubagentWarning: transcriptFlags.hasSubagentWarning,
     hasPublicSubagentError: transcriptFlags.hasSubagentError,
   };
+}
+
+export async function writeRunOutput(
+  rawOutput: string,
+  runsDir = defaultRunsDir(),
+  options: { processTranscript?: boolean; promptProvenance?: PromptProvenance } = {},
+): Promise<StoredRunOutput> {
+  const transcript = options.processTranscript
+    ? preparePublicTranscriptFromProcessOutput(rawOutput, { promptProvenance: options.promptProvenance })
+    : null;
+  const prepared = transcript ? transcript.text : rawOutput;
+  const cleaned = stripAnsiAndControls(prepared);
+  const transcriptFlags = transcript
+    ? publicTranscriptContentFlags(cleaned)
+    : { hasAssistantText: false, hasSubagentWarning: false, hasSubagentError: false };
+  return writePreparedRunOutput(runsDir, cleaned, transcriptFlags);
+}
+
+export async function writeRunOutputFromProcessOutputFile(
+  rawOutputPath: string,
+  runsDir = defaultRunsDir(),
+  options: { promptProvenance?: PromptProvenance } = {},
+): Promise<StoredRunOutput> {
+  const transcript = await preparePublicTranscriptFromProcessOutputFile(rawOutputPath, {
+    promptProvenance: options.promptProvenance,
+  });
+  const cleaned = stripAnsiAndControls(transcript.text);
+  const transcriptFlags = publicTranscriptContentFlags(cleaned);
+  return writePreparedRunOutput(runsDir, cleaned, transcriptFlags);
 }
 
 export function runOutputReference(

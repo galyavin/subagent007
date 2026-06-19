@@ -119,6 +119,27 @@ async function createProcessScript(tmpPrefix = "subagent007-process-runner-"): P
   return scriptPath;
 }
 
+test("computes an effective child timeout within the requested hard cap", () => {
+  assert.deepEqual(
+    computeTimeoutBudget(120000, {
+      responseHeadroomMs: 5000,
+      killGraceMs: 1000,
+      forceGraceMs: 1000,
+    }),
+    {
+      requestedTimeoutMs: 120000,
+      resolvedTimeoutMs: 120000,
+      minRequestedTimeoutMs: 0,
+      effectiveTimeoutMs: 113000,
+      responseHeadroomMs: 5000,
+      killGraceMs: 1000,
+      forceGraceMs: 1000,
+    },
+  );
+  assert.equal(computeTimeoutBudget(undefined).effectiveTimeoutMs, null);
+  assert.equal(computeTimeoutBudget(undefined).resolvedTimeoutMs, null);
+});
+
 test("start_run returns timeout metadata and transcript before caller deadline", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-timeout-"));
   const projectDir = path.join(tmp, "project");

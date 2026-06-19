@@ -281,6 +281,28 @@ function activeProgressView(state: RunTaskState): RunTaskProgressView {
   return progressView(state, Math.max(0, Date.now() - Date.parse(state.startedAt)));
 }
 
+function activeRunTaskView(state: RunTaskState, inputRequests: InputRequestView[]): RunTaskView {
+  const hasPendingInput = inputRequests.some((request) => request.status === "pending");
+  if (hasPendingInput) {
+    setTaskPhase(state, "input_required");
+  }
+  return {
+    ...contractFields(),
+    run_id: state.runId,
+    task_id: state.runId,
+    task_kind: state.taskKind,
+    ...promotionView(state),
+    ...(state.sessionKey ? { session_key: state.sessionKey } : {}),
+    status: hasPendingInput
+      ? "input_required"
+      : "working",
+    started_at: state.startedAt,
+    input_requests_dir: state.inputRequestsDir,
+    input_requests: inputRequests,
+    ...activeProgressView(state),
+  };
+}
+
 function setTaskProgress(state: RunTaskState, message: string, heartbeatCount = state.heartbeatCount): void {
   if (state.terminalSnapshotStarted) {
     return;
@@ -481,8 +503,8 @@ async function finalizeRunTask(state: RunTaskState, closeReason: string): Promis
   });
   await appendClosedInputEvents(state, closed);
   await appendTerminalEvent(state);
-  await logTerminalRunTaskFailure(state);
   state.terminalSnapshotStarted = true;
+  await logTerminalRunTaskFailure(state);
   await writeTaskSnapshot(await getRunTask(state.runId));
 }
 
@@ -545,28 +567,37 @@ function terminalEventDetails(result: RunTaskTerminalResult): {
   };
 }
 
+function packetTerminalEvent(result: RunTaskTerminalResult, occurredAt: string): RunPublicEvent | null {
+  if (!("packet_parse_status" in result) || result.packet_parse_status === "not_run") {
+    return null;
+  }
+  const packetAccepted = result.success && result.packet_parse_status === "valid";
+  return {
+    kind: "packet",
+    event: packetAccepted ? "packet_accepted" : "packet_rejected",
+    text: packetAccepted
+      ? `[packet_accepted] packet_parse_status=${result.packet_parse_status}`
+      : `[packet_rejected] packet_parse_status=${result.packet_parse_status}`,
+    occurred_at: occurredAt,
+    metadata: {
+      packet_parse_status: result.packet_parse_status,
+      packet_error: result.packet_error,
+      committed: result.success,
+    },
+  };
+}
+
 async function appendTerminalEvent(state: RunTaskState): Promise<void> {
   const result = state.result;
   const occurredAt = state.finishedAt ?? new Date().toISOString();
   if (result) {
-    if ("packet_parse_status" in result && result.packet_parse_status !== "not_run") {
-      const packetAccepted = result.success && result.packet_parse_status === "valid";
+    const packetEvent = packetTerminalEvent(result, occurredAt);
+    if (packetEvent) {
       await appendStatusEvent(state, {
-        kind: "packet",
-        event: packetAccepted ? "packet_accepted" : "packet_rejected",
-        text: packetAccepted
-          ? `[packet_accepted] packet_parse_status=${result.packet_parse_status}`
-          : `[packet_rejected] packet_parse_status=${result.packet_parse_status}`,
-        occurred_at: occurredAt,
-        metadata: {
-          packet_parse_status: result.packet_parse_status,
-          packet_error: result.packet_error,
-          committed: result.success,
-        },
-      }, packetAccepted ? "packet accepted" : "packet rejected");
+        ...packetEvent,
+      }, packetEvent.event === "packet_accepted" ? "packet accepted" : "packet rejected");
     }
     const terminalEvent = terminalEventDetails(result);
-    setTaskPhase(state, terminalEvent.phase, occurredAt);
     await appendStatusEvent(state, {
       kind: "terminal",
       event: terminalEvent.event,
@@ -579,10 +610,10 @@ async function appendTerminalEvent(state: RunTaskState): Promise<void> {
         timed_out: result.timed_out,
       },
     }, terminalEvent.progressMessage);
+    setTaskPhase(state, terminalEvent.phase, occurredAt);
     return;
   }
   if (state.error) {
-    setTaskPhase(state, state.cancelRequested ? "cancelled" : "failed", occurredAt);
     await appendStatusEvent(state, {
       kind: "terminal",
       event: state.cancelRequested ? "cancellation_settled" : "failed",
@@ -593,6 +624,7 @@ async function appendTerminalEvent(state: RunTaskState): Promise<void> {
         error: state.error.message,
       },
     }, state.cancelRequested ? "run cancelled" : state.error.message);
+    setTaskPhase(state, state.cancelRequested ? "cancelled" : "failed", occurredAt);
   }
 }
 
@@ -724,6 +756,9 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
     return { ...contractFields(), ...snapshot, ...eventProjection, input_requests: inputRequests };
   }
   const inputRequests = await listInputRequests({ mailboxRoot: state.mailboxRoot, runId: state.runId });
+  if ((state.result || state.error) && !state.terminalSnapshotStarted) {
+    return activeRunTaskView(state, inputRequests);
+  }
   if (state.result) {
     return {
       ...contractFields(),
@@ -759,25 +794,7 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
       ...errorTaxonomyForError(state.error),
     };
   }
-  const hasPendingInput = inputRequests.some((request) => request.status === "pending");
-  if (hasPendingInput) {
-    setTaskPhase(state, "input_required");
-  }
-  return {
-    ...contractFields(),
-    run_id: state.runId,
-    task_id: state.runId,
-    task_kind: state.taskKind,
-    ...promotionView(state),
-    ...(state.sessionKey ? { session_key: state.sessionKey } : {}),
-    status: hasPendingInput
-      ? "input_required"
-      : "working",
-    started_at: state.startedAt,
-    input_requests_dir: state.inputRequestsDir,
-    input_requests: inputRequests,
-    ...activeProgressView(state),
-  };
+  return activeRunTaskView(state, inputRequests);
 }
 
 export async function startRunTask(

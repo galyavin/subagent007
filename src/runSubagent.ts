@@ -22,6 +22,7 @@ import { createPromptProvenance } from "./prompt.js";
 import { runChildProcess } from "./processRunner.js";
 import type { HeartbeatNotify } from "./progress.js";
 import { computeTimeoutBudget } from "./timeoutBudget.js";
+import { safeIntegerFromEnv } from "./env.js";
 import { resolvePiAgentDir } from "./piAgentDir.js";
 import { resolveRequestedSkill } from "./skillResources.js";
 import type { RunStopReason } from "./types.js";
@@ -66,25 +67,15 @@ interface PiChildRequestFile {
 }
 
 function defaultInputRequestTimeoutMs(): number {
-  const configured = process.env.SUBAGENT007_INPUT_REQUEST_TIMEOUT_MS;
-  if (configured) {
-    const parsed = Number.parseInt(configured, 10);
-    if (Number.isInteger(parsed) && parsed > 0) {
-      return parsed;
-    }
-  }
-  return 24 * 60 * 60 * 1000;
+  return safeIntegerFromEnv("SUBAGENT007_INPUT_REQUEST_TIMEOUT_MS", 24 * 60 * 60 * 1000, 1);
 }
 
 function defaultRunSubagentTimeoutMs(): number {
-  const configured = process.env.SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS;
-  if (configured) {
-    const parsed = Number.parseInt(configured, 10);
-    if (Number.isSafeInteger(parsed) && parsed > 0) {
-      return parsed;
-    }
-  }
-  return DEFAULT_RUN_SUBAGENT_TIMEOUT_MS;
+  return safeIntegerFromEnv(
+    "SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS",
+    DEFAULT_RUN_SUBAGENT_TIMEOUT_MS,
+    1,
+  );
 }
 
 function defaultRawPiSessionsDir(): string {

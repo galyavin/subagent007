@@ -285,21 +285,37 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
 
   assert.equal(summary.scenario_set, "full-current");
   assert.equal(summary.mode, "protocol-deterministic");
+  assert.ok(summary.scenarios.includes("run-contract"));
+  assert.ok(summary.scenarios.includes("model-listing-alias"));
+  assert.ok(summary.scenarios.includes("auto-promotion"));
   assert.ok(summary.scenarios.includes("start-run-async-polling"));
   assert.ok(summary.scenarios.includes("schedule-run-durable-first"));
+  assert.ok(summary.scenarios.includes("start-session-run-async-polling"));
+  assert.ok(summary.scenarios.includes("get-run-missing"));
   assert.ok(summary.scenarios.includes("caller-input"));
+  assert.ok(summary.scenarios.includes("caller-input-wrong-request"));
   assert.ok(summary.scenarios.includes("cancellation"));
+  assert.ok(summary.scenarios.includes("cancel-terminal-run"));
+  assert.ok(summary.scenarios.includes("restart-drift"));
   assert.ok(summary.scenarios.includes("session-valid-closure"));
   assert.ok(summary.scenarios.includes("session-invalid-closure"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("run_subagent-success"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("tool-listing"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("durable-run-contract"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("model-class-listing"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("model-class-listing-alias"));
   assert.ok(summary.coverage_summary.covered_surfaces_by_evidence_class["protocol-deterministic"].includes("run_subagent-success"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("run_subagent-auto-promotion"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("run_subagent_session-packet-failure"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("start_run-async-polling"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("schedule_run-durable-first"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("start_session_run-async-polling"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("get_run-run-not-found"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("answer_run_input-caller-input"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("answer_run_input-wrong-request-rejection"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("cancel_run-cancellation-settlement"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("cancel_run-terminal-idempotency"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("get_run-restart-drift"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("transcript-redaction"));
   assert.ok(summary.coverage_summary.uncovered_surfaces.includes("installed-pi-integration"));
   assert.deepEqual(summary.coverage_summary.missing_required_surfaces, []);
@@ -608,11 +624,19 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
   assert.equal(summary.mode, "protocol-deterministic");
   assert.deepEqual(summary.coverage_summary.missing_required_surfaces, []);
   for (const surface of [
+    "durable-run-contract",
+    "model-class-listing-alias",
+    "run_subagent-auto-promotion",
     "run_subagent-timeout-recovery",
     "schedule_run-durable-first",
     "start_run-async-polling",
+    "start_session_run-async-polling",
+    "get_run-run-not-found",
     "answer_run_input-caller-input",
+    "answer_run_input-wrong-request-rejection",
     "cancel_run-cancellation-settlement",
+    "cancel_run-terminal-idempotency",
+    "get_run-restart-drift",
     "run_subagent_session-valid-packet-closure",
     "run_subagent_session-invalid-packet-closure",
   ]) {
