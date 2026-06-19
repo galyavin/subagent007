@@ -1,15 +1,19 @@
 import { SERVER_VERSION, serverBuildSha } from "./runtimeMetadata.js";
+import {
+  NON_TERMINAL_RUN_STATUSES,
+  RUN_STATUSES,
+  TERMINAL_RUN_STATUSES,
+  type NonTerminalRunStatus,
+  type RunStatus,
+  type TerminalRunStatus,
+} from "./types.js";
 
 export const DURABLE_RUN_CONTRACT_NAME = "subagent007.durable_run";
 export const DURABLE_RUN_CONTRACT_VERSION = 1;
 
-export const NON_TERMINAL_RUN_STATUSES = ["working", "input_required"] as const;
-export const TERMINAL_RUN_STATUSES = ["completed", "failed", "cancelled", "timed_out"] as const;
-export const RUN_STATUSES = [...NON_TERMINAL_RUN_STATUSES, ...TERMINAL_RUN_STATUSES] as const;
-
-export type NonTerminalRunStatus = (typeof NON_TERMINAL_RUN_STATUSES)[number];
-export type TerminalRunStatus = (typeof TERMINAL_RUN_STATUSES)[number];
-export type DurableRunStatus = (typeof RUN_STATUSES)[number];
+export { NON_TERMINAL_RUN_STATUSES, RUN_STATUSES, TERMINAL_RUN_STATUSES };
+export type { NonTerminalRunStatus, TerminalRunStatus };
+export type DurableRunStatus = RunStatus;
 
 export const DURABLE_RUN_CAPABILITIES = [
   "run_id_authoritative",
