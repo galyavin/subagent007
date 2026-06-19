@@ -26,6 +26,7 @@ export type FailureClass =
   | "nonzero_exit"
   | "packet_failed"
   | "missing_session_id"
+  | "restart_drift"
   | "session_error"
   | "unknown_error";
 
@@ -68,6 +69,8 @@ export type FailureReasonCode =
   | "session_ledger_invalid"
   | "session_manifest_invalid"
   | "session_skill_mismatch"
+  | "server_restarted_active_run"
+  | "spawn_error"
   | "timeout"
   | "unknown_error"
   | "unknown_validation_error";
@@ -162,6 +165,8 @@ function defaultReasonCode(failureClass: FailureClass): FailureReasonCode {
       return "nonzero_exit";
     case "missing_session_id":
       return "missing_session_id";
+    case "restart_drift":
+      return "server_restarted_active_run";
     case "packet_failed":
       return "packet_required_invalid";
     case "validation_error":

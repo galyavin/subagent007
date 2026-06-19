@@ -630,6 +630,18 @@ export async function runSubagentSession(
       processSuccess &&
       attemptSessionEstablished &&
       packetIsSatisfied;
+    const sessionFailureInput = {
+      session_established: attemptSessionEstablished,
+      packet_parse_status: packet.packetParseStatus,
+      timed_out: runResult.timed_out,
+      exit_code: runResult.exit_code,
+    };
+    const errorTaxonomy = success
+      ? {}
+      : {
+          error_class: failureClassForSessionResult(sessionFailureInput, packetIsSatisfied),
+          reason_code: failureReasonCodeForSessionResult(sessionFailureInput, packetIsSatisfied),
+        };
     const committedSubagentSessionId = success && attemptSubagentSessionId
       ? await promoteAttemptSession({
           sessionDir,
@@ -703,6 +715,7 @@ export async function runSubagentSession(
 
     const result: RunSubagentSessionResult = {
       output_path: runResult.output_path,
+      output_references: runResult.output_references,
       success,
       exit_code: runResult.exit_code,
       timed_out: runResult.timed_out,
@@ -728,6 +741,7 @@ export async function runSubagentSession(
       resolved_tool_profile: runResult.resolved_tool_profile,
       stop_reason: runResult.stop_reason,
       stop_signal: runResult.stop_signal,
+      ...errorTaxonomy,
       session_key: sessionKey,
       session_dir: sessionDir,
       manifest_path: manifestPath,

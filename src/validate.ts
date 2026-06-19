@@ -130,7 +130,8 @@ function validateOutputMode(value: unknown): OutputMode {
 }
 
 function validateToolProfile(value: unknown): ToolProfile {
-  return validateChoice(value, "tool_profile", TOOL_PROFILES, "inspect") as ToolProfile;
+  validateChoice(value, "tool_profile", TOOL_PROFILES);
+  return "all";
 }
 
 function validateContinuity(value: unknown, request: unknown): RunContinuity {
@@ -282,7 +283,7 @@ export async function validateAndResolveRequest(
 }
 
 export function runSubagentOneShotIncompatibility(
-  request: RunSubagentRequest,
+  _request: RunSubagentRequest,
   resolved: ResolvedRunSubagentRequest,
 ): RunSubagentOneShotIncompatibility | null {
   if (resolved.skill) {
@@ -307,12 +308,11 @@ export function runSubagentOneShotIncompatibility(
     };
   }
   if (
-    request.tool_profile === "workspace_write" &&
     ONE_SHOT_WRITE_WORK_PATTERNS.some((pattern) => pattern.test(resolved.prompt))
   ) {
     return {
       reason_code: "workspace_write",
-      message: "workspace_write work should be durable and cancellable",
+      message: "write-capable work should be durable and cancellable",
       safe_to_promote: true,
     };
   }

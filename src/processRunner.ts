@@ -1,4 +1,8 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { DEFAULT_HEARTBEAT_INTERVAL_MS, type HeartbeatNotify } from "./progress.js";
 import type { TimeoutBudget } from "./timeoutBudget.js";
 import type { RunStopReason } from "./types.js";
@@ -18,7 +22,8 @@ interface ProcessRunOptions {
 }
 
 interface ProcessRunResult {
-  combinedOutput: string;
+  outputPath: string;
+  outputSizeBytes: number;
   exitCode: number | null;
   stopSignal: NodeJS.Signals | null;
   timedOut: boolean;
@@ -35,9 +40,13 @@ function timeoutMarker(budget: TimeoutBudget): string {
   ].join("\n");
 }
 
-export function runChildProcess(options: ProcessRunOptions): Promise<ProcessRunResult> {
+export async function runChildProcess(options: ProcessRunOptions): Promise<ProcessRunResult> {
   const startedAt = Date.now();
-  const chunks: Buffer[] = [];
+  const outputDir = await fsp.mkdtemp(path.join(os.tmpdir(), "subagent007-process-output-"));
+  const outputPath = path.join(outputDir, "combined-output.log");
+  const outputStream = fs.createWriteStream(outputPath, { flags: "wx" });
+  let outputSizeBytes = 0;
+  let outputEnded = false;
   let pendingLine = "";
 
   const emitOutputLine = (line: string) => {
@@ -53,8 +62,17 @@ export function runChildProcess(options: ProcessRunOptions): Promise<ProcessRunR
     }
   };
 
+  const writeOutput = (chunk: Buffer | string) => {
+    if (outputEnded) {
+      return;
+    }
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    outputSizeBytes += buffer.byteLength;
+    outputStream.write(buffer);
+  };
+
   const collectChunk = (chunk: Buffer) => {
-    chunks.push(chunk);
+    writeOutput(chunk);
     pendingLine += chunk.toString("utf8");
     const lines = pendingLine.split(/\r?\n/);
     pendingLine = lines.pop() ?? "";
@@ -135,14 +153,19 @@ export function runChildProcess(options: ProcessRunOptions): Promise<ProcessRunR
             : exitCode === 0
               ? "completed"
               : "failed";
-      resolve({
-        combinedOutput: Buffer.concat(chunks).toString("utf8"),
+      const result = {
+        outputPath,
+        outputSizeBytes,
         exitCode: spawnError ? null : exitCode,
         stopSignal: spawnError ? null : stopSignal,
         timedOut,
         cancelled,
         stopReason,
         durationMs: Date.now() - startedAt,
+      };
+      outputEnded = true;
+      outputStream.end(() => {
+        resolve(result);
       });
     };
 
@@ -166,7 +189,7 @@ export function runChildProcess(options: ProcessRunOptions): Promise<ProcessRunR
     };
 
     const appendControlMarker = (marker: string) => {
-      chunks.push(Buffer.from(marker));
+      writeOutput(marker);
       for (const line of marker.split(/\r?\n/)) {
         emitOutputLine(line);
       }
@@ -221,7 +244,7 @@ export function runChildProcess(options: ProcessRunOptions): Promise<ProcessRunR
     child.stderr.on("data", collectChunk);
     child.on("error", (error) => {
       spawnError = error;
-      chunks.push(Buffer.from(`\n[spawn error] ${error.message}\n`));
+      writeOutput(`\n[spawn error] ${error.message}\n`);
     });
     child.on("close", (code, signal) => {
       closed = true;

@@ -4,8 +4,12 @@ export const MODEL_CLASSES = ["A", "B", "C", "D", "E"] as const;
 export type ModelClass = (typeof MODEL_CLASSES)[number];
 export const OUTPUT_MODES = ["final", "transcript"] as const;
 export type OutputMode = (typeof OUTPUT_MODES)[number];
-export const TOOL_PROFILES = ["inspect", "web_search", "shell", "workspace_write"] as const;
+export const TOOL_PROFILES = ["all", "inspect", "web_search", "shell", "workspace_write"] as const;
 export type ToolProfile = (typeof TOOL_PROFILES)[number];
+export const RUN_STATUSES = ["working", "input_required", "completed", "failed", "cancelled", "timed_out"] as const;
+export type RunStatus = (typeof RUN_STATUSES)[number];
+export const TERMINAL_RUN_STATUSES = ["completed", "failed", "cancelled", "timed_out"] as const;
+export type TerminalRunStatus = (typeof TERMINAL_RUN_STATUSES)[number];
 export const RUN_KINDS = ["quick_noninteractive"] as const;
 type RunKind = (typeof RUN_KINDS)[number];
 export const RUN_CONTINUITY_MODES = ["ephemeral", "fresh", "resume"] as const;
@@ -67,6 +71,7 @@ export interface PromptProvenance {
 
 interface SubagentRunResultBase {
   output_path: string;
+  output_references: RunOutputReference[];
   success: boolean;
   exit_code: number | null;
   timed_out: boolean;
@@ -92,6 +97,18 @@ interface SubagentRunResultBase {
   resolved_tool_profile: ToolProfile;
   stop_reason: RunStopReason;
   stop_signal: string | null;
+  error_class?: string;
+  reason_code?: string;
+}
+
+export interface RunOutputReference {
+  kind: "file";
+  name: "primary";
+  path: string;
+  size_bytes: number;
+  content_type: "text/markdown";
+  encoding: "utf-8";
+  output_mode: OutputMode;
 }
 
 export type RunSubagentPromotionReasonCode =
@@ -111,7 +128,7 @@ export interface RunSubagentPromotion {
 export interface RunSubagentResult extends SubagentRunResultBase {
   run_id: string;
   task_id: string;
-  status: "completed" | "failed" | "cancelled" | "input_required" | "working";
+  status: RunStatus;
   timeout_recovery_hint?: string;
   session_id: string | null;
   session_established: boolean;

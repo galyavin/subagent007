@@ -1,3 +1,5 @@
+import { createReadStream } from "node:fs";
+import readline from "node:readline";
 import { safeIntegerFromEnv } from "./env.js";
 import type { PromptProvenance, RunPublicEventKind, RunPublicEventName } from "./types.js";
 
@@ -168,6 +170,51 @@ function provenancePublicLines(promptProvenance?: PromptProvenance): PublicOutpu
   ];
 }
 
+class BoundedTranscriptParts {
+  private readonly parts: string[] = [];
+  private bytes = 0;
+  private truncated = false;
+
+  constructor(private readonly maxBytes: number) {}
+
+  appendBlock(text: string): void {
+    if (text.trim() === "" || this.truncated) {
+      return;
+    }
+    const separator = this.parts.length > 0 ? "\n\n" : "";
+    const candidate = `${separator}${text}`;
+    const candidateBytes = Buffer.byteLength(candidate, "utf8");
+    if (this.bytes + candidateBytes <= this.maxBytes) {
+      this.parts.push(candidate);
+      this.bytes += candidateBytes;
+      return;
+    }
+
+    const marker = `\n\n[subagent007 transcript truncated at ${this.maxBytes} bytes]\n`;
+    const markerBytes = Buffer.byteLength(marker, "utf8");
+    const remaining = Math.max(0, this.maxBytes - this.bytes - markerBytes);
+    if (remaining > 0) {
+      this.parts.push(Buffer.from(candidate, "utf8").subarray(0, remaining).toString("utf8"));
+    }
+    this.parts.push(marker);
+    this.bytes = this.maxBytes;
+    this.truncated = true;
+  }
+
+  text(): string {
+    return this.parts.join("");
+  }
+}
+
+function appendInitialPublicLines(
+  accumulator: BoundedTranscriptParts,
+  promptProvenance?: PromptProvenance,
+): void {
+  for (const line of provenancePublicLines(promptProvenance)) {
+    accumulator.appendBlock(line.text);
+  }
+}
+
 export function preparePublicTranscriptFromProcessOutput(
   rawOutput: string,
   options: { promptProvenance?: PromptProvenance } = {},
@@ -208,6 +255,53 @@ export function preparePublicTranscriptFromProcessOutput(
     ? "[subagent007 transcript unavailable: no public events captured]"
     : text;
   const renderedText = truncateUtf8(fallback, maxTranscriptBytes());
+  return {
+    text: renderedText,
+    ...publicTranscriptContentFlags(renderedText),
+  };
+}
+
+export async function preparePublicTranscriptFromProcessOutputFile(
+  rawOutputPath: string,
+  options: { promptProvenance?: PromptProvenance } = {},
+): Promise<PublicTranscript> {
+  const maxBytes = maxTranscriptBytes();
+  const publicParts = new BoundedTranscriptParts(maxBytes);
+  const rawParts = new BoundedTranscriptParts(maxBytes);
+  appendInitialPublicLines(publicParts, options.promptProvenance);
+  appendInitialPublicLines(rawParts, options.promptProvenance);
+  let sawStructuredEvent = false;
+
+  const lines = readline.createInterface({
+    input: createReadStream(rawOutputPath, { encoding: "utf8" }),
+    crlfDelay: Infinity,
+  });
+  for await (const line of lines) {
+    const markerLine = publicMarkerLine(line);
+    if (markerLine) {
+      publicParts.appendBlock(markerLine.text);
+      rawParts.appendBlock(markerLine.text);
+      continue;
+    }
+    const parsedEvent = eventObjectFromJsonLine(line);
+    if (parsedEvent) {
+      sawStructuredEvent = true;
+      const publicLine = publicLineForEvent(parsedEvent);
+      if (publicLine && (!options.promptProvenance || publicLine.kind !== "user")) {
+        publicParts.appendBlock(publicLine.text);
+      }
+      continue;
+    }
+    if (line.trim() !== "") {
+      rawParts.appendBlock(line);
+    }
+  }
+
+  const selectedText = sawStructuredEvent ? publicParts.text() : rawParts.text();
+  const fallback = sawStructuredEvent && selectedText.trim() === ""
+    ? "[subagent007 transcript unavailable: no public events captured]"
+    : selectedText;
+  const renderedText = truncateUtf8(fallback, maxBytes);
   return {
     text: renderedText,
     ...publicTranscriptContentFlags(renderedText),

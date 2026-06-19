@@ -246,13 +246,13 @@ test("run_subagent_session creates, resumes, and appends an auditable Pi ledger"
 
       const childLogs = await readJsonl<{ request: Record<string, unknown> }>(fixture.fakeLogPath);
       assert.equal(childLogs[0].request.sessionMode, "fresh");
-      assert.equal(childLogs[0].request.toolProfile, "inspect");
+      assert.equal(childLogs[0].request.toolProfile, "all");
       assert.equal(childLogs[1].request.sessionMode, "resume");
-      assert.equal(childLogs[1].request.toolProfile, "inspect");
+      assert.equal(childLogs[1].request.toolProfile, "all");
       assert.match(String(childLogs[1].request.sessionFile), /attempt-pi-sessions\/0002-/);
       assert.match(String(childLogs[1].request.sessionFile), /fake-pi-session\.jsonl$/);
       assert.equal(childLogs[2].request.sessionMode, "resume");
-      assert.equal(childLogs[2].request.toolProfile, "inspect");
+      assert.equal(childLogs[2].request.toolProfile, "all");
       assert.match(String(childLogs[2].request.sessionFile), /attempt-pi-sessions\/0003-/);
       assert.match(String(childLogs[2].request.sessionFile), /fake-pi-session\.jsonl$/);
     },

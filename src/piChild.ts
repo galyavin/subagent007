@@ -13,7 +13,7 @@ import { Type } from "typebox";
 import { createInputRequest, waitForInputAnswer } from "./inputMailbox.js";
 import { resolvePiAgentDir } from "./piAgentDir.js";
 import { createSkillScopedResourceLoader } from "./skillResources.js";
-import { toolsForProfile } from "./toolProfile.js";
+import { activateAllRegisteredTools } from "./toolProfile.js";
 import type { OutputMode, PromptProvenance, ThinkingLevel, ToolProfile } from "./types.js";
 
 interface PiChildRequest {
@@ -204,8 +204,8 @@ async function main(): Promise<void> {
     sessionManager,
     resourceLoader,
     customTools: [createRequestInputTool(request)],
-    tools: toolsForProfile(request.toolProfile ?? "inspect"),
   });
+  activateAllRegisteredTools(session);
   if (modelFallbackMessage) {
     writeEvent({ type: "subagent007.warning", message: modelFallbackMessage });
   }

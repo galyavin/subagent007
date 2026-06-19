@@ -12,7 +12,7 @@ Use this server as a durable delegation boundary. Treat `run_id` as the unit of 
 - If a call returns `status:"working"` or `status:"input_required"`, continue that `run_id` with `get_run`; do not resubmit the same prompt.
 - Bind skills with the `skill_name` field. Do not put `/skill:...`, `$skill`, markdown links, paths, or prose skill references in the prompt.
 - Treat `preflight_rejected` plus `child_started:false` as a front-door validation failure. No child model work ran.
-- Read `output_path` only after a terminal `status:"completed"`, `status:"failed"`, or `status:"cancelled"`.
+- Read `output_path` only after a terminal `status:"completed"`, `status:"failed"`, `status:"cancelled"`, or `status:"timed_out"`.
 
 ## Tool Selection
 
@@ -22,8 +22,9 @@ Use this server as a durable delegation boundary. Treat `run_id` as the unit of 
 | Broad, long, cancellable, polling, or caller-interactive work | `schedule_run` or `start_run` plus `get_run` | Prefer `schedule_run` for uncertain work. It creates the durable task before waiting, caps the initial wait, and reports `wait_truncated` when shortened. Use `start_run` when the caller wants only an immediate task handle. |
 | Durable continuity by semantic key | `start_session_run` plus `get_run`, or `run_subagent_session` for compatibility | Requires `session_key`; use when manifest/ledger continuity matters. Prefer the async task form for long, cancellable, or abandoned-client-safe work. |
 | Model-class/config health | `list_model_classes` | `list_allowed_models` is a compatibility alias. |
+| Durable-run adapter compatibility | `get_run_contract` | Check `contract_name`, `contract_version`, terminal/non-terminal statuses, and capabilities before launching command-mode adapters. |
 
-Tool-profile rule of thumb: the child starts with `tool_profile:"inspect"`; set `web_search` for external web research, `shell` only for command execution, and `workspace_write` only for intended edits.
+Tool authority rule of thumb: the child starts with every registered Pi tool active. Tool profiles are legacy compatibility inputs only; skills are the remaining explicit restriction.
 
 ## Requirements
 
@@ -106,7 +107,7 @@ Optional common fields:
 - `skill_name`: bare skill name only, such as `pda-lite` or `google-drive:google-docs`; null or omission means no skill
 - `skill`: legacy alias for `skill_name`; if both are provided, they must match
 - `output_mode`: `final` or `transcript`; default is `final`; use `transcript` for debugging or audit trails
-- `tool_profile`: child tool capability profile; default is `inspect`
+- `tool_profile`: legacy compatibility field; accepted values resolve to `all` and do not restrict child tools
 
 Tool-specific input rules:
 
@@ -120,22 +121,21 @@ Tool-specific input rules:
 
 For raw Pi `continuity`, use `mode: "ephemeral"`, `mode: "fresh"`, or `mode: "resume"` with absolute `continuity.session_id`. Resume session ids must point to an existing, readable, nonempty session file. Prefer named sessions for durable project work; raw continuity is for callers that already manage Pi session files.
 
-Tool profiles:
+Tool authority:
 
-- `inspect`: workspace non-mutating Pi tools: `read`, `grep`, `find`, `ls`, and `request_input`
-- `web_search`: `inspect` plus globally installed Pi extension tools `web_search` and `web_read`
-- `shell`: `inspect` plus `bash`
-- `workspace_write`: `shell` plus `edit` and `write`
+- Every Subagent007 child activates all tools registered in the Pi session registry: Pi built-ins, SDK custom tools such as `request_input`, and installed Pi extension/MCP tools.
+- Required web tools: `web_search` and `web_read`. Child startup fails clearly if either tool is missing from the Pi environment.
+- Legacy profile inputs `inspect`, `web_search`, `shell`, and `workspace_write` are still accepted so older callers do not fail validation, but they resolve to `all`.
 
-Use the smallest profile that gives the child the tools it needs. `inspect` is for local review/report-only delegation; `web_search`, `shell`, and `workspace_write` opt into network-search, command, and file-write capabilities respectively.
-
-The `web_search` profile only exposes Pi tools named `web_search` and `web_read`; those tools must already be installed and configured in the Pi agent environment. MCP input can validate while the child still fails if that Pi extension is missing.
+This server does not enumerate Codex MCP servers directly. It exposes what the embedded Pi session registers as tools. To add a new capability, install or configure it in the Pi environment so it appears in `session.getAllTools()`.
 
 Bind skills with `skill_name`, not prompt syntax. It must be a bare name such as `pda-lite` or `google-drive:google-docs`, not `$skill`, `/skill:name`, markdown, prose, or a path. A provided name must resolve to exactly one skill before model invocation; unknown or ambiguous skills return `preflight_rejected` with `child_started:false`. Terminal metadata includes `resolved_skill_path` and `resolved_skill_sha256`.
 
 Result semantics:
 
-- Runs that reach child execution return `output_path` on terminal completion; read that file for the full answer and check `written_output_mode`, because requested `final` output falls back to transcript when no final message is captured. Schema and preflight rejections do not create output artifacts.
+- `get_run_contract` returns the durable-run lifecycle contract. Contract version `1` defines non-terminal statuses `working` and `input_required`, terminal statuses `completed`, `failed`, `cancelled`, and `timed_out`, file-backed output references, bounded public excerpts, mailbox addressing by `run_id/request_id`, and fail-closed restart drift behavior.
+- Runs that reach child execution return `output_path` and `output_references` on terminal completion; read the referenced file for the full answer and check `written_output_mode`, because requested `final` output falls back to transcript when no final message is captured. Schema and preflight rejections do not create output artifacts.
+- Failed, timed-out, and restart-drift terminal views include `error_class` and `reason_code` when the server can classify the failure.
 - Expected handler-level semantic rejections return structured content with `kind:"preflight_rejected"`, `success:false`, and `child_started:false`; SDK schema errors remain MCP input validation errors.
 - Skill-bound terminal results include `requested_skill`, `resolved_skill_path`, and `resolved_skill_sha256`; unbound runs use `null` for those skill audit fields.
 - Valid `run_subagent` requests that are incompatible only with one-shot execution auto-promote and include `auto_promoted_from`, `promotion_reason_code`, `promotion_reason`, `poll_with`, and `cancel_with`.
@@ -155,7 +155,7 @@ Ephemeral run:
 }
 ```
 
-`run_kind` is an explicit caller contract that the work is bounded, non-interactive, and compatible with the one-shot deadline. Valid requests that are skill-bound, over 6000 characters, broad/exploratory/synthesis-shaped, or `workspace_write` edit prompts auto-promote to a durable run and return a pollable `run_id`. Hard invalid inputs still reject before child execution, including bad `cwd`, invalid skill syntax, invalid model class, unreadable resume continuity, and caller-provided `timeout_ms`.
+`run_kind` is an explicit caller contract that the work is bounded, non-interactive, and compatible with the one-shot deadline. Valid requests that are skill-bound, over 6000 characters, broad/exploratory/synthesis-shaped, or write-shaped auto-promote to a durable run and return a pollable `run_id`. Hard invalid inputs still reject before child execution, including bad `cwd`, invalid skill syntax, invalid model class, unreadable resume continuity, and caller-provided `timeout_ms`.
 
 Auto-promotion is a compatibility fallback. For deliberate broad, cancellable, caller-input, exploratory, skill-bound, or write-heavy work, call `schedule_run` or `start_run` directly, especially when caller-defined `timeout_ms` matters. The one-shot model-health gate applies only when the request stays on synchronous one-shot execution.
 
@@ -190,7 +190,7 @@ Flow:
 2. Poll `get_run` with the returned `run_id`.
 3. If status is `input_required`, read `input_requests`.
 4. Call `answer_run_input` with `run_id`, `request_id`, and `answer`.
-5. Keep polling until status is `completed`, `failed`, or `cancelled`, then read `output_path` when present.
+5. Keep polling until status is `completed`, `failed`, `cancelled`, or `timed_out`, then read `output_references` or legacy `output_path` when present.
 
 After `cancel_run`, an in-flight cancellation reports `status:"working"` with `active_phase:"cancelling"`.
 Continue polling until `status:"cancelled"` appears; that terminal view includes the settled cancellation metadata.
@@ -201,7 +201,7 @@ Input requests are stored under `~/.codex/subagent007-pi/input-requests` by defa
 
 `timeout_ms` is optional for `schedule_run`, `start_run`, `start_session_run`, and `run_subagent_session`; omit it only for deliberately unbounded work. When provided, it is a hard response-budget cap: the child process is stopped before that budget is exhausted so the MCP tool can return timeout metadata and any public transcript. Values must leave at least one millisecond of effective child runtime after configured response headroom, kill grace, and force grace are reserved.
 
-Run task snapshots and public event ledgers are stored under `~/.codex/subagent007-pi/run-tasks` by default. Active runs expose progress fields, `active_phase`, `last_phase_at`, and bounded public events immediately after task creation; `running_silent` means the child process has spawned and the server is waiting for first child output or heartbeat. `status` reflects pending input immediately. Completed `run_subagent`, `schedule_run`, `start_run`, and session tasks can still be inspected by `get_run` after an MCP server restart. A run that was active during a restart is reported as failed with a clear restart-state error because the new server process cannot safely reattach to the old child process, while previously persisted public events are preserved.
+Run task snapshots and public event ledgers are stored under `~/.codex/subagent007-pi/run-tasks` by default. Active runs expose progress fields, `active_phase`, `last_phase_at`, and bounded public events immediately after task creation; `running_silent` means the child process has spawned and the server is waiting for first child output or heartbeat. `status` reflects pending input immediately. Completed `run_subagent`, `schedule_run`, `start_run`, and session tasks can still be inspected by `get_run` after an MCP server restart. A run that was active during a restart is persisted as terminal `status:"failed"` with `error_class:"restart_drift"` and `reason_code:"server_restarted_active_run"` because the new server process cannot safely reattach to the old child process, while previously persisted public events are preserved.
 
 ## Named Sessions
 

@@ -5,6 +5,7 @@ import path from "node:path";
 import type { OutputMode, PromptProvenance } from "./types.js";
 import {
   preparePublicTranscriptFromProcessOutput,
+  preparePublicTranscriptFromProcessOutputFile,
   publicTranscriptContentFlags,
 } from "./transcript.js";
 
@@ -91,5 +92,57 @@ export async function writeRunOutput(
     hasPublicAssistantText: transcriptFlags?.hasAssistantText ?? false,
     hasPublicSubagentWarning: transcriptFlags?.hasSubagentWarning ?? false,
     hasPublicSubagentError: transcriptFlags?.hasSubagentError ?? false,
+  };
+}
+
+export async function writeRunOutputFromProcessOutputFile(
+  rawOutputPath: string,
+  runsDir = defaultRunsDir(),
+  options: { promptProvenance?: PromptProvenance } = {},
+): Promise<{
+  outputPath: string;
+  sizeBytes: number;
+  hasPublicAssistantText: boolean;
+  hasPublicSubagentWarning: boolean;
+  hasPublicSubagentError: boolean;
+}> {
+  await fs.mkdir(runsDir, { recursive: true });
+  const outputPath = path.join(runsDir, `${timestampedRandomId()}.md`);
+  const transcript = await preparePublicTranscriptFromProcessOutputFile(rawOutputPath, {
+    promptProvenance: options.promptProvenance,
+  });
+  const cleaned = stripAnsiAndControls(transcript.text);
+  const transcriptFlags = publicTranscriptContentFlags(cleaned);
+  await fs.writeFile(outputPath, cleaned, { encoding: "utf8", flag: "wx" });
+  return {
+    outputPath: path.resolve(outputPath),
+    sizeBytes: Buffer.byteLength(cleaned, "utf8"),
+    hasPublicAssistantText: transcriptFlags.hasAssistantText,
+    hasPublicSubagentWarning: transcriptFlags.hasSubagentWarning,
+    hasPublicSubagentError: transcriptFlags.hasSubagentError,
+  };
+}
+
+export function runOutputReference(
+  outputPath: string,
+  sizeBytes: number,
+  outputMode: OutputMode,
+): {
+  kind: "file";
+  name: "primary";
+  path: string;
+  size_bytes: number;
+  content_type: "text/markdown";
+  encoding: "utf-8";
+  output_mode: OutputMode;
+} {
+  return {
+    kind: "file",
+    name: "primary",
+    path: path.resolve(outputPath),
+    size_bytes: sizeBytes,
+    content_type: "text/markdown",
+    encoding: "utf-8",
+    output_mode: outputMode,
   };
 }

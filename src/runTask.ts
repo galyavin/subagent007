@@ -1,7 +1,17 @@
 import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { failureClassForProcessResult, logFailure, type FailureLogTool } from "./failureLog.js";
+import {
+  failureClassForProcessResult,
+  failureReasonCodeForError,
+  logFailure,
+  type FailureLogTool,
+} from "./failureLog.js";
+import {
+  DURABLE_RUN_CONTRACT_NAME,
+  DURABLE_RUN_CONTRACT_VERSION,
+  type DurableRunStatus,
+} from "./durableRunContract.js";
 import {
   answerInputRequest,
   closePendingInputRequestsForRun,
@@ -52,7 +62,8 @@ type RunTaskStatus =
   | "input_required"
   | "completed"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "timed_out";
 
 type RunTaskActivePhase =
   | "starting"
@@ -71,8 +82,10 @@ type RunTaskTerminalResult = RunSubagentResult | RunSubagentSessionResult;
 export interface RunTaskView extends Partial<RunSubagentResult>, Partial<RunSubagentSessionResult> {
   run_id: string;
   task_id: string;
+  contract_name: typeof DURABLE_RUN_CONTRACT_NAME;
+  contract_version: typeof DURABLE_RUN_CONTRACT_VERSION;
   task_kind?: "run" | "session";
-  status: RunTaskStatus;
+  status: DurableRunStatus;
   started_at: string;
   finished_at?: string;
   input_requests_dir: string;
@@ -89,6 +102,8 @@ export interface RunTaskView extends Partial<RunSubagentResult>, Partial<RunSuba
   effective_wait_ms?: number;
   wait_truncated?: boolean;
   error?: string;
+  error_class?: string;
+  reason_code?: string;
 }
 
 interface RunTaskState {
@@ -199,10 +214,27 @@ function setTaskPhase(state: RunTaskState, phase: RunTaskActivePhase, occurredAt
 }
 
 function terminalStatus(result: RunTaskTerminalResult): RunTaskStatus {
-  if ("status" in result && result.status === "cancelled") {
+  if (result.stop_reason === "cancelled" || ("status" in result && result.status === "cancelled")) {
     return "cancelled";
   }
+  if (result.timed_out || result.stop_reason === "timeout" || ("status" in result && result.status === "timed_out")) {
+    return "timed_out";
+  }
   return result.success ? "completed" : "failed";
+}
+
+function contractFields(): Pick<RunTaskView, "contract_name" | "contract_version"> {
+  return {
+    contract_name: DURABLE_RUN_CONTRACT_NAME,
+    contract_version: DURABLE_RUN_CONTRACT_VERSION,
+  };
+}
+
+function errorTaxonomyForError(error: Error): { error_class: string; reason_code: string } {
+  return {
+    error_class: error instanceof ValidationError ? "validation_error" : "unknown_error",
+    reason_code: failureReasonCodeForError(error),
+  };
 }
 
 function progressView(state: RunTaskState, elapsedMs: number): RunTaskProgressView {
@@ -215,6 +247,33 @@ function progressView(state: RunTaskState, elapsedMs: number): RunTaskProgressVi
     last_phase_at: state.lastPhaseAt,
     recent_events: state.recentEvents,
     ...(state.lastPublicOutputExcerpt ? { last_public_output_excerpt: state.lastPublicOutputExcerpt } : {}),
+  };
+}
+
+function terminalProgressView(state: RunTaskState, result: RunTaskTerminalResult): RunTaskProgressView {
+  const terminalEvent = terminalEventDetails(result);
+  const recentEvents = state.recentEvents.some((event) => event.kind === "terminal" && event.event === terminalEvent.event)
+    ? state.recentEvents
+    : recentEventsProjection([
+        ...state.recentEvents,
+        {
+          kind: "terminal",
+          event: terminalEvent.event,
+          text: terminalEvent.text,
+          occurred_at: state.finishedAt ?? new Date().toISOString(),
+          metadata: {
+            success: result.success,
+            stop_reason: result.stop_reason,
+            exit_code: result.exit_code,
+            timed_out: result.timed_out,
+          },
+        },
+      ]);
+  return {
+    ...progressView(state, result.duration_ms),
+    active_phase: terminalEvent.phase,
+    last_phase_at: state.finishedAt ?? state.lastPhaseAt,
+    recent_events: recentEvents,
   };
 }
 
@@ -610,6 +669,49 @@ async function loadSnapshotEvents(
   };
 }
 
+async function persistRestartDriftSnapshot(
+  snapshot: RunTaskView,
+  eventProjection: Pick<RunTaskView, "recent_events" | "last_public_output_excerpt">,
+): Promise<RunTaskView> {
+  const finishedAt = new Date().toISOString();
+  const mailboxRoot = path.dirname(snapshot.input_requests_dir);
+  await closePendingInputRequestsForRun({
+    mailboxRoot,
+    runId: snapshot.run_id,
+    reason: "MCP server restarted while run was active",
+  });
+  await appendRunPublicEvent(defaultRunTasksDir(), snapshot.run_id, {
+    kind: "terminal",
+    event: "failed",
+    text: "[failed] run is not active after MCP server restart",
+    occurred_at: finishedAt,
+    metadata: {
+      success: false,
+      error_class: "restart_drift",
+      reason_code: "server_restarted_active_run",
+    },
+  });
+  const inputRequests = await listInputRequests({ mailboxRoot, runId: snapshot.run_id });
+  const events = await loadSnapshotEvents(snapshot);
+  const staleView: RunTaskView = {
+    ...contractFields(),
+    ...snapshot,
+    ...eventProjection,
+    ...events,
+    status: "failed",
+    finished_at: snapshot.finished_at ?? finishedAt,
+    active_phase: "failed",
+    last_phase_at: finishedAt,
+    input_requests: inputRequests,
+    success: false,
+    error: "run is not active in this MCP server process; the server may have restarted",
+    error_class: "restart_drift",
+    reason_code: "server_restarted_active_run",
+  };
+  await writeTaskSnapshot(staleView);
+  return staleView;
+}
+
 export async function getRunTask(runId: string): Promise<RunTaskView> {
   const state = tasks.get(runId);
   if (!state) {
@@ -621,23 +723,14 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
     const inputRequests = await listInputRequests({ mailboxRoot, runId });
     const eventProjection = await loadSnapshotEvents(snapshot);
     if (snapshot.status === "working" || snapshot.status === "input_required") {
-      return {
-        ...snapshot,
-        ...eventProjection,
-        status: "failed",
-        finished_at: snapshot.finished_at ?? new Date().toISOString(),
-        active_phase: "failed",
-        last_phase_at: snapshot.last_phase_at ?? snapshot.finished_at ?? new Date().toISOString(),
-        input_requests: inputRequests,
-        success: false,
-        error: "run is not active in this MCP server process; the server may have restarted",
-      };
+      return persistRestartDriftSnapshot({ ...contractFields(), ...snapshot, input_requests: inputRequests }, eventProjection);
     }
-    return { ...snapshot, ...eventProjection, input_requests: inputRequests };
+    return { ...contractFields(), ...snapshot, ...eventProjection, input_requests: inputRequests };
   }
   const inputRequests = await listInputRequests({ mailboxRoot: state.mailboxRoot, runId: state.runId });
-  if (state.result && state.terminalSnapshotStarted) {
+  if (state.result) {
     return {
+      ...contractFields(),
       ...state.result,
       ...promotionView(state),
       run_id: state.runId,
@@ -648,11 +741,12 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
       finished_at: state.finishedAt,
       input_requests_dir: state.inputRequestsDir,
       input_requests: inputRequests,
-      ...progressView(state, state.result.duration_ms),
+      ...terminalProgressView(state, state.result),
     };
   }
   if (state.error) {
     return {
+      ...contractFields(),
       run_id: state.runId,
       task_id: state.runId,
       task_kind: state.taskKind,
@@ -666,6 +760,7 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
       success: false,
       ...activeProgressView(state),
       error: state.error.message,
+      ...errorTaxonomyForError(state.error),
     };
   }
   const hasPendingInput = inputRequests.some((request) => request.status === "pending");
@@ -673,6 +768,7 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
     setTaskPhase(state, "input_required");
   }
   return {
+    ...contractFields(),
     run_id: state.runId,
     task_id: state.runId,
     task_kind: state.taskKind,
@@ -773,18 +869,33 @@ function withScheduleWaitMetadata(
 }
 
 function isScheduleReturnableStatus(status: RunTaskStatus): boolean {
-  return status === "completed" || status === "failed" || status === "cancelled" || status === "input_required";
+  return status === "completed" || status === "failed" || status === "cancelled" || status === "timed_out" || status === "input_required";
+}
+
+function isTerminalRunStatus(status: RunTaskStatus): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled" || status === "timed_out";
+}
+
+function isReturnableRunView(view: RunTaskView): boolean {
+  if (!isScheduleReturnableStatus(view.status)) {
+    return false;
+  }
+  const state = tasks.get(view.run_id);
+  if (state && isTerminalRunStatus(view.status) && !state.terminalSnapshotStarted) {
+    return false;
+  }
+  return true;
 }
 
 async function waitForReturnableRun(started: RunTaskView, waitMs: number): Promise<RunTaskView> {
-  if (isScheduleReturnableStatus(started.status) || waitMs === 0) {
+  if (isReturnableRunView(started) || waitMs === 0) {
     return started;
   }
   const deadline = Date.now() + waitMs;
   let latest = started;
   while (Date.now() < deadline) {
     latest = await getRunTask(started.run_id);
-    if (isScheduleReturnableStatus(latest.status)) {
+    if (isReturnableRunView(latest)) {
       return latest;
     }
     await new Promise((resolve) => setTimeout(resolve, Math.min(25, Math.max(1, deadline - Date.now()))));

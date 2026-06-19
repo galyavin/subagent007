@@ -18,8 +18,15 @@ import { readJsonl, sha256File, withEnv } from "./helpers/testUtils.js";
 
 type RunSubagentMetadata = {
   run_id: string;
-  status: "working" | "input_required" | "completed" | "failed" | "cancelled";
+  status: "working" | "input_required" | "completed" | "failed" | "cancelled" | "timed_out";
   output_path: string;
+  output_references?: Array<{
+    kind: "file";
+    name: "primary";
+    path: string;
+    size_bytes: number;
+    output_mode: "final" | "transcript";
+  }>;
   success: boolean;
   exit_code: number | null;
   timed_out: boolean;
@@ -39,6 +46,7 @@ type RunSubagentMetadata = {
   heartbeat_count?: number;
   active_phase?: string;
   last_phase_at?: string;
+  finished_at?: string;
   recent_events?: Array<{ kind: string; event?: string; text: string; occurred_at: string }>;
   last_public_output_excerpt?: string;
   requested_wait_ms?: number;
@@ -52,6 +60,10 @@ type RunSubagentMetadata = {
   promotion_reason?: string;
   poll_with?: "get_run";
   cancel_with?: "cancel_run";
+  contract_name?: string;
+  contract_version?: number;
+  error_class?: string;
+  reason_code?: string;
 };
 
 async function connectFakeClient<T>(
@@ -133,7 +145,7 @@ async function waitForTerminalRun(client: Client, runId: string): Promise<RunSub
     });
     assert.notEqual(response.isError, true);
     const metadata = response.structuredContent as RunSubagentMetadata;
-    if (metadata.status === "completed" || metadata.status === "failed" || metadata.status === "cancelled") {
+    if (metadata.status === "completed" || metadata.status === "failed" || metadata.status === "cancelled" || metadata.status === "timed_out") {
       return metadata;
     }
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -153,7 +165,7 @@ async function waitForActiveHeartbeat(client: Client, runId: string): Promise<Ru
     if ((metadata.heartbeat_count ?? 0) > 0) {
       return metadata;
     }
-    if (metadata.status === "completed" || metadata.status === "failed" || metadata.status === "cancelled") {
+    if (metadata.status === "completed" || metadata.status === "failed" || metadata.status === "cancelled" || metadata.status === "timed_out") {
       throw new Error(`run reached terminal state before heartbeat metadata appeared: ${metadata.status}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -173,7 +185,7 @@ async function waitForInputRequired(client: Client, runId: string): Promise<RunS
     if (metadata.status === "input_required") {
       return metadata;
     }
-    if (metadata.status === "completed" || metadata.status === "failed" || metadata.status === "cancelled") {
+    if (metadata.status === "completed" || metadata.status === "failed" || metadata.status === "cancelled" || metadata.status === "timed_out") {
       throw new Error(`run reached terminal state before input_required: ${metadata.status}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -272,7 +284,7 @@ test("runSubagent is ephemeral by default and invokes the Pi child request-file 
       assert.equal(logs[0].request.skill, skillName);
       assert.equal(logs[0].request.skillFilePath, skillPath);
       assert.equal(logs[0].request.cwd, projectDir);
-      assert.equal(logs[0].request.toolProfile, "inspect");
+      assert.equal(logs[0].request.toolProfile, "all");
     },
   );
 });
@@ -318,7 +330,7 @@ test("runSubagent accepts skill_name and passes a normalized skill to the Pi chi
   );
 });
 
-test("runSubagent passes explicit workspace write profile to the Pi child", async () => {
+test("runSubagent accepts legacy explicit tool profile but resolves all tools", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-tool-profile-"));
   const projectDir = path.join(tmp, "project");
   const runsDir = path.join(tmp, "runs");
@@ -343,11 +355,11 @@ test("runSubagent passes explicit workspace write profile to the Pi child", asyn
       );
 
       assert.equal(result.success, true);
-      assert.equal(result.resolved_tool_profile, "workspace_write");
+      assert.equal(result.resolved_tool_profile, "all");
 
       const logs = await readJsonl<{ request: Record<string, unknown> }>(fake.logPath);
       assert.equal(logs.length, 1);
-      assert.equal(logs[0].request.toolProfile, "workspace_write");
+      assert.equal(logs[0].request.toolProfile, "all");
     },
   );
 });
@@ -570,6 +582,7 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     );
     assert.equal(names.includes("list_model_classes"), true);
     assert.equal(names.includes("list_allowed_models"), true);
+    assert.equal(names.includes("get_run_contract"), true);
     assert.equal(names.includes("run_codex"), false);
     assert.equal(names.includes("run_codex_session"), false);
     const listModelClassesTool = response.tools.find((tool) => tool.name === "list_model_classes");
@@ -597,6 +610,25 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       Object.hasOwn(runSubagentSessionTool.inputSchema.properties ?? {}, "continuity"),
       false,
     );
+    const contractResponse = await client.callTool({
+      name: "get_run_contract",
+      arguments: {},
+    });
+    assert.notEqual(contractResponse.isError, true);
+    const contract = contractResponse.structuredContent as {
+      contract_name?: string;
+      contract_version?: number;
+      statuses?: { non_terminal?: string[]; terminal?: string[] };
+      capabilities?: string[];
+      input_mailbox?: { waiting_status_terminal?: boolean };
+    };
+    assert.equal(contract.contract_name, "subagent007.durable_run");
+    assert.equal(contract.contract_version, 1);
+    assert.deepEqual(contract.statuses?.terminal, ["completed", "failed", "cancelled", "timed_out"]);
+    assert.deepEqual(contract.statuses?.non_terminal, ["working", "input_required"]);
+    assert.equal(contract.capabilities?.includes("file_backed_output_references"), true);
+    assert.equal(contract.capabilities?.includes("restart_drift_fail_closed"), true);
+    assert.equal(contract.input_mailbox?.waiting_status_terminal, false);
   });
 });
 
@@ -927,7 +959,7 @@ test("MCP run_subagent uses the configured fake Pi child", async () => {
     assert.equal(logs[0].request.model, "openai-codex/gpt-5.4-mini");
     assert.equal(logs[0].request.thinkingLevel, "high");
     assert.equal(logs[0].request.skill, undefined);
-    assert.equal(logs[0].request.toolProfile, "inspect");
+    assert.equal(logs[0].request.toolProfile, "all");
   });
 });
 
@@ -1022,8 +1054,11 @@ test("MCP run_subagent timeout returns async recovery guidance", async () => {
       });
       assert.notEqual(response.isError, true);
       const metadata = response.structuredContent as RunSubagentMetadata;
+      assert.equal(metadata.status, "timed_out");
       assert.equal(metadata.success, false);
       assert.equal(metadata.timed_out, true);
+      assert.equal(metadata.error_class, "timeout");
+      assert.equal(metadata.reason_code, "timeout");
       assert.match(metadata.timeout_recovery_hint ?? "", new RegExp(RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT));
       assert.match(metadata.timeout_recovery_hint ?? "", new RegExp(metadata.run_id));
       const runView = await client.callTool({
@@ -1209,7 +1244,7 @@ test("MCP run_subagent auto-promotes lexical broad-work false positives instead 
   });
 });
 
-test("MCP run_subagent auto-promotes workspace_write edit prompts without changing the tool profile", async () => {
+test("MCP run_subagent auto-promotes edit prompts because write tools are available", async () => {
   await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
     const response = await client.callTool({
       name: "run_subagent",
@@ -1217,7 +1252,6 @@ test("MCP run_subagent auto-promotes workspace_write edit prompts without changi
         cwd: projectDir,
         prompt: "FAST implement a tiny fixture change.",
         run_kind: "quick_noninteractive",
-        tool_profile: "workspace_write",
       },
     });
     assert.notEqual(response.isError, true);
@@ -1228,7 +1262,7 @@ test("MCP run_subagent auto-promotes workspace_write edit prompts without changi
 
     const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
     assert.equal(logs.length, 1);
-    assert.equal(logs[0].request.toolProfile, "workspace_write");
+    assert.equal(logs[0].request.toolProfile, "all");
   });
 });
 
@@ -1410,6 +1444,13 @@ test("MCP start_run/get_run completes asynchronously with the same child contrac
     assert.equal(terminal.active_phase, "completed");
     assert.equal(terminal.success, true);
     assert.equal(await fs.readFile(terminal.output_path, "utf8"), "FAST FINAL");
+    assert.equal(terminal.contract_name, "subagent007.durable_run");
+    assert.equal(terminal.contract_version, 1);
+    assert.equal(terminal.output_references?.length, 1);
+    assert.equal(terminal.output_references?.[0].kind, "file");
+    assert.equal(terminal.output_references?.[0].path, terminal.output_path);
+    assert.equal(terminal.output_references?.[0].output_mode, terminal.written_output_mode);
+    assert.equal(terminal.output_references?.[0].size_bytes, Buffer.byteLength("FAST FINAL", "utf8"));
   });
 });
 
@@ -1536,7 +1577,7 @@ test("MCP start_run/get_run exposes active liveness and pending-input progress",
           pendingView = metadata;
           break;
         }
-        if (metadata.status === "completed" || metadata.status === "failed" || metadata.status === "cancelled") {
+        if (metadata.status === "completed" || metadata.status === "failed" || metadata.status === "cancelled" || metadata.status === "timed_out") {
           break;
         }
         await new Promise((resolve) => setTimeout(resolve, 20));
@@ -1847,6 +1888,86 @@ test("get_run can read a completed run snapshot after MCP server restart", async
     assert.equal(metadata.status, "completed");
     assert.equal(metadata.success, true);
     assert.equal(await fs.readFile(metadata.output_path, "utf8"), "FAST FINAL");
+  } finally {
+    await client.close();
+  }
+});
+
+test("get_run persists stale active restart drift as terminal failed snapshot", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-stale-run-"));
+  const stateDir = path.join(tmp, "state");
+  const runTasksDir = path.join(stateDir, "run-tasks");
+  const inputRequestsDir = path.join(stateDir, "input-requests");
+  const configPath = path.join(stateDir, "config.json");
+  const runId = "2026-06-19T000000000Z-stale";
+  const inputRequestsRunDir = path.join(inputRequestsDir, runId);
+  await fs.mkdir(runTasksDir, { recursive: true });
+  await fs.mkdir(inputRequestsRunDir, { recursive: true });
+  await fs.writeFile(configPath, JSON.stringify({ default_model_class: "C" }));
+  await fs.writeFile(
+    path.join(runTasksDir, `${runId}.json`),
+    `${JSON.stringify({
+      run_id: runId,
+      task_id: runId,
+      task_kind: "run",
+      status: "input_required",
+      started_at: "2026-06-19T00:00:00.000Z",
+      input_requests_dir: inputRequestsRunDir,
+      input_requests: [],
+      active_phase: "input_required",
+      last_phase_at: "2026-06-19T00:00:01.000Z",
+    }, null, 2)}\n`,
+  );
+  const request = await createInputRequest({
+    mailboxRoot: inputRequestsDir,
+    runId,
+    question: "This stale request should close",
+  });
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [path.resolve("dist/server.js")],
+    env: {
+      ...process.env,
+      SUBAGENT007_CONFIG_PATH: configPath,
+      SUBAGENT007_RUN_TASKS_DIR: runTasksDir,
+      SUBAGENT007_INPUT_REQUESTS_DIR: inputRequestsDir,
+      SUBAGENT007_FAILURE_LOG: "off",
+    },
+  });
+  const client = new Client({ name: "subagent007-pi-stale-run-test", version: "0.1.0" });
+  try {
+    await client.connect(transport);
+    const response = await client.callTool({
+      name: "get_run",
+      arguments: { run_id: runId },
+    });
+    assert.notEqual(response.isError, true);
+    const metadata = response.structuredContent as RunSubagentMetadata;
+    assert.equal(metadata.status, "failed");
+    assert.equal(metadata.success, false);
+    assert.equal(metadata.error_class, "restart_drift");
+    assert.equal(metadata.reason_code, "server_restarted_active_run");
+    assert.equal(metadata.contract_name, "subagent007.durable_run");
+    assert.equal(metadata.input_requests.some((entry) => entry.status === "pending"), false);
+    assert.ok(metadata.input_requests.some((entry) =>
+      entry.request_id === request.request_id && entry.status === "closed"
+    ));
+    assert.ok(metadata.recent_events?.some((event) => event.event === "failed"));
+
+    const persisted = JSON.parse(await fs.readFile(path.join(runTasksDir, `${runId}.json`), "utf8")) as RunSubagentMetadata;
+    assert.equal(persisted.status, "failed");
+    assert.equal(persisted.error_class, "restart_drift");
+    assert.equal(persisted.reason_code, "server_restarted_active_run");
+
+    const secondResponse = await client.callTool({
+      name: "get_run",
+      arguments: { run_id: runId },
+    });
+    assert.notEqual(secondResponse.isError, true);
+    const second = secondResponse.structuredContent as RunSubagentMetadata;
+    assert.equal(second.status, "failed");
+    assert.equal(second.finished_at, metadata.finished_at);
   } finally {
     await client.close();
   }

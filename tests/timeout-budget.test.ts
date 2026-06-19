@@ -16,7 +16,7 @@ import { createFakePiChild } from "./helpers/fakePiChild.js";
 
 type RunSubagentMetadata = {
   run_id: string;
-  status: "working" | "input_required" | "completed" | "failed" | "cancelled";
+  status: "working" | "input_required" | "completed" | "failed" | "cancelled" | "timed_out";
   output_path: string;
   success: boolean;
   exit_code: number | null;
@@ -35,6 +35,8 @@ type RunSubagentMetadata = {
   written_output_mode: "final" | "transcript";
   active_phase?: string;
   last_phase_at?: string;
+  error_class?: string;
+  reason_code?: string;
   recent_events?: Array<{ kind: string; event?: string; text: string; occurred_at: string }>;
 };
 
@@ -80,7 +82,7 @@ async function waitForTerminalRun(client: Client, runId: string, timeoutMs: numb
     });
     assert.notEqual(response.isError, true);
     const metadata = response.structuredContent as RunSubagentMetadata;
-    if (metadata.status === "completed" || metadata.status === "failed" || metadata.status === "cancelled") {
+    if (metadata.status === "completed" || metadata.status === "failed" || metadata.status === "cancelled" || metadata.status === "timed_out") {
       return metadata;
     }
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -172,7 +174,10 @@ test("start_run returns timeout metadata and transcript before caller deadline",
     const elapsedMs = Date.now() - startedAt;
 
     assert.equal(metadata.success, false);
+    assert.equal(metadata.status, "timed_out");
     assert.equal(metadata.timed_out, true);
+    assert.equal(metadata.error_class, "timeout");
+    assert.equal(metadata.reason_code, "timeout");
     assert.equal(metadata.active_phase, "timed_out");
     assert.equal(typeof metadata.last_phase_at, "string");
     assert.equal(metadata.timeout_recovery_hint, undefined);
@@ -304,7 +309,7 @@ test("runChildProcess emits optional heartbeats without changing process output"
 
   assert.equal(result.exitCode, 0);
   assert.equal(result.timedOut, false);
-  assert.equal(result.combinedOutput, "HEARTBEAT DONE");
+  assert.equal(await fs.readFile(result.outputPath, "utf8"), "HEARTBEAT DONE");
   assert.equal(beats.length > 0, true);
   assert.deepEqual(beats, Array.from({ length: beats.length }, (_, index) => index + 1));
 });
@@ -378,7 +383,7 @@ test("runChildProcess swallows heartbeat failures", async () => {
 
   assert.equal(result.exitCode, 0);
   assert.equal(result.timedOut, false);
-  assert.equal(result.combinedOutput, "HEARTBEAT DONE");
+  assert.equal(await fs.readFile(result.outputPath, "utf8"), "HEARTBEAT DONE");
   assert.equal(attempts > 0, true);
 });
 
@@ -411,7 +416,7 @@ test("runChildProcess clears heartbeat interval after timeout", async () => {
 
   assert.equal(result.timedOut, true);
   assert.ok(["SIGTERM", "SIGKILL"].includes(result.stopSignal ?? ""));
-  assert.match(result.combinedOutput, /\[subagent007 timeout\]/);
+  assert.match(await fs.readFile(result.outputPath, "utf8"), /\[subagent007 timeout\]/);
   assert.equal(beatsAtFinish > 0, true);
   assert.equal(beats, beatsAtFinish);
 });

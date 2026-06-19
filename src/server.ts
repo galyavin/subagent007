@@ -18,6 +18,7 @@ import {
 import { modelHealthForClass, modelHealthProbeCommand } from "./modelHealth.js";
 import { loadConfigRecord, normalizeConfigRecord } from "./config.js";
 import { heartbeatFromExtra, heartbeatIntervalMsFromEnv, type ServerExtra } from "./progress.js";
+import { durableRunContractView } from "./durableRunContract.js";
 import {
   answerRunTaskInput,
   cancelRunTask,
@@ -213,7 +214,10 @@ const baseRunInputSchema = {
   skill_name: skillInputSchema,
   skill: skillInputSchema,
   output_mode: z.enum(OUTPUT_MODES).optional(),
-  tool_profile: z.enum(TOOL_PROFILES).optional(),
+  tool_profile: z
+    .enum(TOOL_PROFILES)
+    .optional()
+    .describe("Legacy compatibility field; all registered child tools are active regardless of this value."),
 };
 
 const runInputSchema = z.strictObject({
@@ -358,6 +362,16 @@ registerModelClassListTool(
   "List the Subagent007 capability classes accepted by this MCP server.",
 );
 registerModelClassListTool("list_allowed_models", "Compatibility alias for list_model_classes.");
+
+server.registerTool(
+  "get_run_contract",
+  {
+    title: "Get Run Contract",
+    description: "Return the versioned durable run lifecycle contract and capabilities supported by this server.",
+    inputSchema: {},
+  },
+  async () => jsonObjectToolResult(durableRunContractView()),
+);
 
 server.registerTool(
   "schedule_run",

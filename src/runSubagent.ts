@@ -13,8 +13,10 @@ import {
 import {
   createFinalMessageTarget,
   defaultSubagentStatePath,
+  runOutputReference,
   readFinalMessage,
   writeRunOutput,
+  writeRunOutputFromProcessOutputFile,
 } from "./output.js";
 import { createPromptProvenance } from "./prompt.js";
 import { runChildProcess } from "./processRunner.js";
@@ -22,6 +24,7 @@ import type { HeartbeatNotify } from "./progress.js";
 import { computeTimeoutBudget } from "./timeoutBudget.js";
 import { resolvePiAgentDir } from "./piAgentDir.js";
 import { resolveRequestedSkill } from "./skillResources.js";
+import type { RunStopReason } from "./types.js";
 import type {
   OutputMode,
   PromptProvenance,
@@ -187,6 +190,37 @@ export function partialOutputAvailableForRun(input: {
   );
 }
 
+function runErrorTaxonomy(input: {
+  success: boolean;
+  cancelled: boolean;
+  timedOut: boolean;
+  stopReason: RunStopReason;
+  exitCode: number | null;
+  sessionMode: RunSubagentSessionMode;
+  sessionEstablished: boolean;
+}): { error_class?: string; reason_code?: string } {
+  if (input.success || input.cancelled) {
+    return {};
+  }
+  if (input.timedOut || input.stopReason === "timeout") {
+    return { error_class: "timeout", reason_code: "timeout" };
+  }
+  if (input.stopReason === "spawn_error") {
+    return { error_class: "unknown_error", reason_code: "spawn_error" };
+  }
+  if (
+    input.sessionMode.kind === "fresh" &&
+    !input.sessionEstablished &&
+    input.exitCode === 0
+  ) {
+    return { error_class: "missing_session_id", reason_code: "missing_session_id" };
+  }
+  if (input.exitCode !== null && input.exitCode !== 0) {
+    return { error_class: "nonzero_exit", reason_code: "nonzero_exit" };
+  }
+  return { error_class: "unknown_error", reason_code: "unknown_error" };
+}
+
 export function resolveSkillFilePathForRequest(
   resolved: Pick<ResolvedRunSubagentRequest, "cwd" | "skill">,
 ): string | undefined {
@@ -250,6 +284,7 @@ export async function runSubagentCore(
   const finalMessageTarget = await createFinalMessageTarget(resolved.outputMode, "subagent007-pi-final-");
 
   let childRequest: { requestPath: string; cleanup: () => Promise<void> } | undefined;
+  let processOutputPath: string | undefined;
   try {
     const timeoutBudget = computeTimeoutBudget(
       resolved.timeoutMs ?? (options.allowTimeout ? undefined : defaultRunSubagentTimeoutMs()),
@@ -283,6 +318,7 @@ export async function runSubagentCore(
           : undefined,
     };
     childRequest = await writeChildRequestFile(childPayload);
+    let parsedSessionId: string | null = null;
     const processResult = await runChildProcess({
       command: process.execPath,
       args: [piChildPath(), childRequest.requestPath],
@@ -296,17 +332,21 @@ export async function runSubagentCore(
           }
         : undefined,
       abortSignal: options.abortSignal,
-      onOutputLine: options.onOutputLine,
+      onOutputLine: async (line) => {
+        parsedSessionId ??= extractSubagentSessionId(line);
+        await options.onOutputLine?.(line);
+      },
     });
+    processOutputPath = processResult.outputPath;
     const finalMessage = await readFinalMessage(finalMessageTarget.outputLastMessagePath);
     const writtenOutputMode: OutputMode = finalMessage ? "final" : "transcript";
-    const output = await writeRunOutput(finalMessage ?? processResult.combinedOutput, options.runsDir, {
-      processTranscript: !finalMessage,
-      promptProvenance,
-    });
+    const output = finalMessage
+      ? await writeRunOutput(finalMessage, options.runsDir)
+      : await writeRunOutputFromProcessOutputFile(processResult.outputPath, options.runsDir, {
+          promptProvenance,
+        });
     const processSuccess =
       processResult.exitCode === 0 && !processResult.timedOut && !processResult.cancelled;
-    const parsedSessionId = extractSubagentSessionId(processResult.combinedOutput);
     const sessionId = sessionMode.kind === "fresh"
       ? parsedSessionId
       : sessionMode.kind === "resume"
@@ -337,8 +377,15 @@ export async function runSubagentCore(
     const result: RunSubagentResult = {
       run_id: runId,
       task_id: runId,
-      status: processResult.cancelled ? "cancelled" : success ? "completed" : "failed",
+      status: processResult.cancelled
+        ? "cancelled"
+        : processResult.timedOut
+          ? "timed_out"
+          : success
+            ? "completed"
+            : "failed",
       output_path: output.outputPath,
+      output_references: [runOutputReference(output.outputPath, output.sizeBytes, writtenOutputMode)],
       success,
       exit_code: processResult.exitCode,
       timed_out: processResult.timedOut,
@@ -364,6 +411,15 @@ export async function runSubagentCore(
       resolved_tool_profile: resolved.toolProfile,
       stop_reason: processResult.stopReason,
       stop_signal: processResult.stopSignal,
+      ...runErrorTaxonomy({
+        success,
+        cancelled: processResult.cancelled,
+        timedOut: processResult.timedOut,
+        stopReason: processResult.stopReason,
+        exitCode: processResult.exitCode,
+        sessionMode,
+        sessionEstablished,
+      }),
       ...(timeoutRecoveryHint ? { timeout_recovery_hint: timeoutRecoveryHint } : {}),
       session_id: sessionId,
       session_established: sessionEstablished,
@@ -373,5 +429,8 @@ export async function runSubagentCore(
   } finally {
     await finalMessageTarget.cleanup();
     await childRequest?.cleanup();
+    if (processOutputPath) {
+      await fs.rm(path.dirname(processOutputPath), { recursive: true, force: true });
+    }
   }
 }
