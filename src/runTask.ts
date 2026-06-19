@@ -10,6 +10,7 @@ import {
 import {
   DURABLE_RUN_CONTRACT_NAME,
   DURABLE_RUN_CONTRACT_VERSION,
+  TERMINAL_RUN_STATUSES,
   type DurableRunStatus,
 } from "./durableRunContract.js";
 import {
@@ -58,6 +59,7 @@ import { assertModelClassUsableForOneShot } from "./modelHealth.js";
 import { safeIntegerFromEnv } from "./env.js";
 
 type RunTaskStatus = DurableRunStatus;
+const TERMINAL_RUN_STATUS_SET = new Set<RunTaskStatus>(TERMINAL_RUN_STATUSES);
 
 type RunTaskActivePhase =
   | "starting"
@@ -863,11 +865,11 @@ function withScheduleWaitMetadata(
 }
 
 function isScheduleReturnableStatus(status: RunTaskStatus): boolean {
-  return status === "completed" || status === "failed" || status === "cancelled" || status === "timed_out" || status === "input_required";
+  return isTerminalRunStatus(status) || status === "input_required";
 }
 
 function isTerminalRunStatus(status: RunTaskStatus): boolean {
-  return status === "completed" || status === "failed" || status === "cancelled" || status === "timed_out";
+  return TERMINAL_RUN_STATUS_SET.has(status);
 }
 
 function isReturnableRunView(view: RunTaskView): boolean {
