@@ -37,7 +37,7 @@ Quick checks:
 ```sh
 node --version
 pi --list-models | sed -n '1,20p'
-npm install
+npm ci
 npm run build
 ```
 
@@ -61,14 +61,14 @@ Use model classes instead of concrete model IDs. The default class is `C`; calle
 | Class | Use when | Current calibration |
 | --- | --- | --- |
 | `A` | Lowest-complexity class for narrow read-only audits, low-risk probes, and concise first-pass judgment. Prefer `B` or `C` when implementation, broad repo-grounded investigation, architectural judgment, or predictable tool use matters. | `openrouter/qwen/qwen3.6-35b-a3b`, `high` |
-| `B` | Fast bounded tasks: factual repo lookups, concise summaries, and no-tool first-pass judgment. Use strict prompts/timeouts for anything exploratory because tool loops can stall. | `openrouter/deepseek/deepseek-v4-flash`, `high` |
+| `B` | Simple coding, review, or search tasks with limited ambiguity. Use strict prompts/timeouts for anything exploratory because tool loops can stall. | `openrouter/deepseek/deepseek-v4-flash`, `high` |
 | `C` | Default for bounded implementation, repo-grounded fixes, and ordinary technical reasoning. Prefer `D` or `E` for security-heavy audits, broad architectural synthesis, or work where hidden edge-case coverage matters. | `openai-codex/gpt-5.4-mini`, `high` |
 | `D` | Complex multi-file debugging, planning, synthesis, and high-abstraction work | `openai-codex/gpt-5.5`, `high` |
 | `E` | Highest-abstraction, highest-difficulty work requiring deepest technical judgment | `openai-codex/gpt-5.5`, `xhigh` |
 
 Run `npm run models:reconcile` to compare calibrated concrete models with fresh source data from `pi --list-models`, OpenRouter `GET /api/v1/models`, and local Ollama `GET /api/tags`. The command exits nonzero when a calibrated model is missing or has drifted from a source; unavailable sources are reported as unverified instead of drift. Inventory reconciliation is separate from one-shot health.
 
-Run `npm run model-health:probe -- --model-class A --cwd /absolute/project/path` to record whether a class is usable for the `run_subagent` one-shot surface. The health file defaults to `~/.codex/subagent007-pi/model-health.json` and can be overridden with `SUBAGENT007_MODEL_HEALTH_PATH`. Unknown health is reported with `health_basis:"never_probed"` and does not block execution; cached probe results use `health_basis:"cached_probe"`. The health gate is `blocks_only_known_unhealthy`: only known unhealthy one-shot health fails `run_subagent` before the child process starts. Each health view includes `health_action` with the exact probe command to refresh that model class.
+Run `npm run model-health:probe -- --model-class A --cwd /absolute/project/path` to record whether a class is usable for the `run_subagent` one-shot surface. The health file defaults to `~/.codex/subagent007-pi/model-health.json` and can be overridden with `SUBAGENT007_MODEL_HEALTH_PATH`; an unhealthy probe exits nonzero after writing its record. Unknown health is reported with `health_basis:"never_probed"` and does not block execution; cached probe results use `health_basis:"cached_probe"`. The health gate is `blocks_only_known_unhealthy`: only known unhealthy one-shot health fails `run_subagent` before the child process starts. Each health view includes `health_action` with the exact probe command to refresh that model class.
 
 Run `npm run config:migrate` to canonicalize `default_model_class` or migrate a legacy `default_model` plus `default_thinking_level` pair when it exactly matches a known class calibration. The command honors `SUBAGENT007_CONFIG_PATH`, writes atomically, preserves unknown fields, and is not run automatically by server startup or model-class listing.
 
@@ -145,7 +145,7 @@ Result semantics:
 
 ## One-Shot Runs
 
-Ephemeral run:
+One-shot request:
 
 ```json
 {
