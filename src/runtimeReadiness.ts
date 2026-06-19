@@ -270,16 +270,6 @@ async function gitFacts(projectRoot: string): Promise<GitFacts> {
   }
 }
 
-function contractCompatible(
-  contract: ReturnType<typeof durableRunContractView>,
-  request: RuntimeReadinessRequest,
-): boolean {
-  return (
-    (request.expected_contract_name === undefined || request.expected_contract_name === contract.contract_name) &&
-    (request.expected_contract_version === undefined || request.expected_contract_version === contract.contract_version)
-  );
-}
-
 function appendContractBlock(
   blocks: RuntimeReadinessBlock[],
   contract: ReturnType<typeof durableRunContractView>,
@@ -351,7 +341,6 @@ export async function runtimeReadinessSnapshot(
     gitFacts(projectRoot),
   ]);
   const contract = durableRunContractView();
-  const compatible = contractCompatible(contract, options);
   const blocks: RuntimeReadinessBlock[] = [];
 
   if (!entrypointFact.exists) {
@@ -379,7 +368,9 @@ export async function runtimeReadinessSnapshot(
       },
     });
   }
+  const contractBlockStart = blocks.length;
   appendContractBlock(blocks, contract, options);
+  const compatible = blocks.length === contractBlockStart;
   appendSourceBlocks(blocks, gitState, policy);
 
   return {
