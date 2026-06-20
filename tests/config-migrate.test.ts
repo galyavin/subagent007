@@ -77,7 +77,7 @@ test("config:migrate does not rewrite retired legacy class calibrations", async 
 test("config:migrate migrates legacy model and thinking defaults to model class", async () => {
   const { configPath } = await createConfigDir();
   const original = `${JSON.stringify({
-    default_model: "openai-codex/gpt-5.4-mini",
+    default_model: "openrouter/z-ai/glm-5.2",
     default_thinking_level: "high",
     extra: "preserved",
   }, null, 2)}\n`;
@@ -88,7 +88,7 @@ test("config:migrate migrates legacy model and thinking defaults to model class"
   assert.equal(result.ok, true);
   assert.equal(result.json.status, "migrated");
   assert.deepEqual(result.json.from, {
-    default_model: "openai-codex/gpt-5.4-mini",
+    default_model: "openrouter/z-ai/glm-5.2",
     default_thinking_level: "high",
   });
   assert.equal(result.json.to, "C");

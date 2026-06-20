@@ -168,6 +168,7 @@ async function readRequest(): Promise<PiChildRequest> {
 
 async function main(): Promise<void> {
   const request = await readRequest();
+  writeEvent({ type: "subagent007.lifecycle", event: "child_bridge_started" });
   const agentDir = resolvePiAgentDir();
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const resourceLoader = createSkillScopedResourceLoader({
@@ -220,6 +221,7 @@ async function main(): Promise<void> {
 
   const unsubscribe = session.subscribe((event) => writeEvent(event));
   try {
+    writeEvent({ type: "subagent007.lifecycle", event: "child_prompt_submitted" });
     await session.prompt(request.prompt);
     const finalText = textFromLastAssistantMessage(session.messages);
     if (request.outputLastMessagePath && request.outputMode === "final") {

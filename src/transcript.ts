@@ -145,6 +145,10 @@ function eventObjectFromJsonLine(line: string): Record<string, unknown> | null {
   }
 }
 
+function eventControlsTranscriptMode(event: Record<string, unknown>): boolean {
+  return event.type !== "subagent007.lifecycle" && event.type !== "subagent007.session";
+}
+
 function truncateUtf8(value: string, maxBytes: number): string {
   const buffer = Buffer.from(value, "utf8");
   if (buffer.byteLength <= maxBytes) {
@@ -233,7 +237,9 @@ export function preparePublicTranscriptFromProcessOutput(
     }
     const parsedEvent = eventObjectFromJsonLine(line);
     if (parsedEvent) {
-      sawStructuredEvent = true;
+      if (eventControlsTranscriptMode(parsedEvent)) {
+        sawStructuredEvent = true;
+      }
       const publicLine = publicLineForEvent(parsedEvent);
       if (publicLine) {
         if (options.promptProvenance && publicLine.kind === "user") {
@@ -285,7 +291,9 @@ export async function preparePublicTranscriptFromProcessOutputFile(
     }
     const parsedEvent = eventObjectFromJsonLine(line);
     if (parsedEvent) {
-      sawStructuredEvent = true;
+      if (eventControlsTranscriptMode(parsedEvent)) {
+        sawStructuredEvent = true;
+      }
       const publicLine = publicLineForEvent(parsedEvent);
       if (publicLine && (!options.promptProvenance || publicLine.kind !== "user")) {
         publicParts.appendBlock(publicLine.text);

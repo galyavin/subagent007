@@ -23,6 +23,7 @@ const CURRENT_CALIBRATION_ERA = "model_class_v1";
 export type FailureClass =
   | "validation_error"
   | "timeout"
+  | "cancelled"
   | "nonzero_exit"
   | "packet_failed"
   | "missing_session_id"
@@ -32,6 +33,7 @@ export type FailureClass =
 
 export type FailureReasonCode =
   | "config_missing_default_model_class"
+  | "cancelled_before_first_output"
   | "cwd_inaccessible"
   | "cwd_not_absolute"
   | "cwd_not_directory"
@@ -162,6 +164,8 @@ function defaultReasonCode(failureClass: FailureClass): FailureReasonCode {
   switch (failureClass) {
     case "timeout":
       return "timeout";
+    case "cancelled":
+      return "cancelled_before_first_output";
     case "nonzero_exit":
       return "nonzero_exit";
     case "missing_session_id":

@@ -128,6 +128,7 @@ export interface RuntimeReadinessSnapshot {
   build: {
     dist_dir: string;
     server_entrypoint: FileFact;
+    child_entrypoint: FileFact;
     newest_build_input?: BuildInputFact;
     stale: boolean;
   };
@@ -155,6 +156,10 @@ function defaultServerEntrypoint(projectRoot: string, processArgv: string[]): st
   return invoked && invoked.trim() !== ""
     ? path.resolve(invoked)
     : path.join(projectRoot, "dist", "server.js");
+}
+
+function childEntrypointPath(serverEntrypoint: string): string {
+  return path.join(path.dirname(serverEntrypoint), "piChild.js");
 }
 
 async function fileFact(filePath: string): Promise<FileFact> {
@@ -333,9 +338,11 @@ export async function runtimeReadinessSnapshot(
   const processArgv = options.processArgv ?? process.argv;
   const projectRoot = path.resolve(options.projectRoot ?? defaultProjectRoot());
   const serverEntrypoint = path.resolve(options.serverEntrypoint ?? defaultServerEntrypoint(projectRoot, processArgv));
+  const childEntrypoint = childEntrypointPath(serverEntrypoint);
   const policy = sourceStatePolicyFromInput(options.source_state_policy);
-  const [entrypointFact, entrypointRealpath, newestInput, gitState] = await Promise.all([
+  const [entrypointFact, childEntrypointFact, entrypointRealpath, newestInput, gitState] = await Promise.all([
     fileFact(serverEntrypoint),
+    fileFact(childEntrypoint),
     realpathIfExists(serverEntrypoint),
     newestBuildInput(projectRoot),
     gitFacts(projectRoot),
@@ -353,6 +360,16 @@ export async function runtimeReadinessSnapshot(
       },
     });
   }
+  if (!childEntrypointFact.exists) {
+    blocks.push({
+      class: "missing_build",
+      reason_code: "child_entrypoint_missing",
+      message: "Subagent007 child entrypoint is missing",
+      evidence: {
+        child_entrypoint: childEntrypoint,
+      },
+    });
+  }
   const stale =
     entrypointFact.exists &&
     newestInput !== undefined &&
@@ -364,6 +381,21 @@ export async function runtimeReadinessSnapshot(
       message: "Subagent007 build output is older than source or build inputs",
       evidence: {
         server_entrypoint_mtime_ms: entrypointFact.mtime_ms,
+        newest_build_input: newestInput,
+      },
+    });
+  }
+  const childStale =
+    childEntrypointFact.exists &&
+    newestInput !== undefined &&
+    newestInput.mtime_ms > (childEntrypointFact.mtime_ms ?? 0) + 1000;
+  if (childStale) {
+    blocks.push({
+      class: "stale_build",
+      reason_code: "build_input_newer_than_child_entrypoint",
+      message: "Subagent007 child entrypoint is older than source or build inputs",
+      evidence: {
+        child_entrypoint_mtime_ms: childEntrypointFact.mtime_ms,
         newest_build_input: newestInput,
       },
     });
@@ -409,8 +441,9 @@ export async function runtimeReadinessSnapshot(
     build: {
       dist_dir: path.join(projectRoot, "dist"),
       server_entrypoint: entrypointFact,
+      child_entrypoint: childEntrypointFact,
       ...(newestInput ? { newest_build_input: newestInput } : {}),
-      stale,
+      stale: stale || childStale,
     },
     git: gitState,
     capabilities: {

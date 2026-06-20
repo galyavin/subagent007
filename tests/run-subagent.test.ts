@@ -46,6 +46,10 @@ type RunSubagentMetadata = {
   heartbeat_count?: number;
   active_phase?: string;
   last_phase_at?: string;
+  last_child_lifecycle_event?: string;
+  last_child_lifecycle_at?: string;
+  first_public_output_at?: string;
+  no_public_output_elapsed_ms?: number;
   finished_at?: string;
   recent_events?: Array<{ kind: string; event?: string; text: string; occurred_at: string }>;
   last_public_output_excerpt?: string;
@@ -809,7 +813,7 @@ test("MCP list_model_classes exposes curated model classes", async () => {
     assert.equal(metadata.default_model_class_effective, "C");
     assert.equal(metadata.default_model_class_repaired, false);
     assert.equal(metadata.config_migration, null);
-    assert.equal(metadata.resolved_default_model, "openai-codex/gpt-5.4-mini");
+    assert.equal(metadata.resolved_default_model, "openrouter/z-ai/glm-5.2");
     assert.equal(metadata.resolved_default_thinking_level, "high");
     assert.equal(metadata.default_one_shot_health_status, "unknown");
     assert.equal(metadata.default_one_shot_health_basis, "never_probed");
@@ -851,7 +855,7 @@ test("MCP list_model_classes falls back to class C for unsupported legacy defaul
         to: "C",
         command: "npm run config:migrate",
       });
-      assert.equal(metadata.resolved_default_model, "openai-codex/gpt-5.4-mini");
+      assert.equal(metadata.resolved_default_model, "openrouter/z-ai/glm-5.2");
       assert.equal(metadata.resolved_default_thinking_level, "high");
     },
     {
@@ -926,7 +930,7 @@ test("MCP list_model_classes exposes cached healthy one-shot health basis", asyn
         {
           schema_version: 1,
           model_class: "C",
-          resolved_model: "openai-codex/gpt-5.4-mini",
+          resolved_model: "openrouter/z-ai/glm-5.2",
           surface: "run_subagent_one_shot",
           checked_at: "2026-06-11T00:00:00.000Z",
           usable_for_one_shot: true,
@@ -982,7 +986,7 @@ test("MCP run_subagent uses the configured fake Pi child", async () => {
     assert.equal(await fs.readFile(metadata.output_path, "utf8"), "FAST FINAL");
 
     const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
-    assert.equal(logs[0].request.model, "openai-codex/gpt-5.4-mini");
+    assert.equal(logs[0].request.model, "openrouter/z-ai/glm-5.2");
     assert.equal(logs[0].request.thinkingLevel, "high");
     assert.equal(logs[0].request.skill, undefined);
     assert.equal(logs[0].request.toolProfile, "all");
@@ -1430,7 +1434,7 @@ test("MCP schedule_run starts broad work durably without run_subagent preflight 
     const metadata = response.structuredContent as RunSubagentMetadata;
     assert.equal(metadata.status, "working");
     assert.equal(metadata.active_phase, "running_silent");
-    assert.equal(metadata.last_progress_message, "child process running; waiting for output");
+    assert.match(metadata.last_progress_message ?? "", /waiting for first public output/);
     await waitForFileText(fakeLogPath, /Investigate HORCs and SAFs/);
     const terminal = await waitForTerminalRun(client, metadata.run_id);
     assert.equal(terminal.status, "completed");
@@ -1679,15 +1683,25 @@ test("MCP start_run/get_run exposes active liveness and pending-input progress",
       assert.equal(silentView.active_phase, "running_silent");
       assert.equal(typeof silentView.elapsed_ms, "number");
       assert.equal(typeof silentView.last_progress_at, "string");
-      assert.equal(silentView.last_progress_message, "child process running; waiting for output");
+      assert.match(silentView.last_progress_message ?? "", /waiting for first public output/);
+      assert.equal(typeof silentView.no_public_output_elapsed_ms, "number");
+      assert.equal(typeof silentView.last_child_lifecycle_at, "string");
+      assert.equal(
+        ["child_spawned", "child_bridge_started", "child_session_established", "child_prompt_submitted"].includes(
+          silentView.last_child_lifecycle_event ?? "",
+        ),
+        true,
+      );
 
       const heartbeat = await waitForActiveHeartbeat(client, started.run_id);
       assert.equal(heartbeat.status, "working");
-      assert.equal(heartbeat.active_phase, "running");
+      assert.equal(heartbeat.active_phase, "running_silent");
       assert.equal((heartbeat.heartbeat_count ?? 0) > 0, true);
       assert.equal(typeof heartbeat.elapsed_ms, "number");
       assert.equal(typeof heartbeat.last_progress_at, "string");
-      assert.equal(heartbeat.last_progress_message, "running");
+      assert.equal(heartbeat.last_progress_message, "child alive; waiting for first public output");
+      assert.equal(typeof heartbeat.no_public_output_elapsed_ms, "number");
+      assert.equal(heartbeat.first_public_output_at, undefined);
 
       const mailboxRoot = path.dirname(started.input_requests_dir);
       const request = await createInputRequest({
@@ -1801,7 +1815,7 @@ test("MCP start_session_run exposes running_silent before first child output", a
       assert.equal(started.session_key, "mcp-session:silent");
       assert.equal(started.status, "working");
       assert.equal(started.active_phase, "running_silent");
-      assert.equal(started.last_progress_message, "child process running; waiting for output");
+      assert.match(started.last_progress_message ?? "", /waiting for first public output/);
       const terminal = await waitForTerminalRun(client, started.run_id);
       assert.equal(terminal.status, "completed");
     },

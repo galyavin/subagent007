@@ -5,7 +5,9 @@ import {
   failureClassForProcessResult,
   failureReasonCodeForError,
   logFailure,
+  type FailureClass,
   type FailureLogTool,
+  type FailureReasonCode,
 } from "./failureLog.js";
 import {
   DURABLE_RUN_CONTRACT_NAME,
@@ -41,6 +43,7 @@ import {
 import { publicOutputLineFromProcessLine } from "./transcript.js";
 import type {
   RunPublicEvent,
+  RunPublicEventName,
   RunSubagentPromotion,
   RunSubagentRequest,
   RunSubagentResult,
@@ -75,6 +78,10 @@ type RunTaskActivePhase =
   | "failed";
 
 type RunTaskTerminalResult = RunSubagentResult | RunSubagentSessionResult;
+type ChildLifecycleEventName = Extract<
+  RunPublicEventName,
+  "child_spawned" | "child_bridge_started" | "child_session_established" | "child_prompt_submitted"
+>;
 
 export interface RunTaskView extends Partial<RunSubagentResult>, Partial<RunSubagentSessionResult> {
   run_id: string;
@@ -93,6 +100,10 @@ export interface RunTaskView extends Partial<RunSubagentResult>, Partial<RunSuba
   heartbeat_count?: number;
   active_phase?: RunTaskActivePhase;
   last_phase_at?: string;
+  last_child_lifecycle_event?: ChildLifecycleEventName;
+  last_child_lifecycle_at?: string;
+  first_public_output_at?: string;
+  no_public_output_elapsed_ms?: number;
   recent_events?: RunPublicEvent[];
   last_public_output_excerpt?: string;
   requested_wait_ms?: number;
@@ -119,6 +130,9 @@ interface RunTaskState {
   lastProgressMessage?: string;
   activePhase: RunTaskActivePhase;
   lastPhaseAt: string;
+  lastChildLifecycleEvent?: ChildLifecycleEventName;
+  lastChildLifecycleAt?: string;
+  firstPublicOutputAt?: string;
   recentEvents: RunPublicEvent[];
   lastPublicOutputExcerpt?: string;
   promise: Promise<void>;
@@ -137,6 +151,10 @@ type RunTaskProgressView = Pick<
   | "heartbeat_count"
   | "active_phase"
   | "last_phase_at"
+  | "last_child_lifecycle_event"
+  | "last_child_lifecycle_at"
+  | "first_public_output_at"
+  | "no_public_output_elapsed_ms"
   | "recent_events"
   | "last_public_output_excerpt"
 >;
@@ -210,6 +228,25 @@ function setTaskPhase(state: RunTaskState, phase: RunTaskActivePhase, occurredAt
   state.lastPhaseAt = occurredAt;
 }
 
+function noteChildLifecycle(
+  state: RunTaskState,
+  event: ChildLifecycleEventName,
+  occurredAt = new Date().toISOString(),
+): void {
+  if (state.terminalSnapshotStarted) {
+    return;
+  }
+  state.lastChildLifecycleEvent = event;
+  state.lastChildLifecycleAt = occurredAt;
+}
+
+function noteFirstPublicOutput(state: RunTaskState, occurredAt = new Date().toISOString()): void {
+  if (state.terminalSnapshotStarted || state.firstPublicOutputAt) {
+    return;
+  }
+  state.firstPublicOutputAt = occurredAt;
+}
+
 function terminalStatus(result: RunTaskTerminalResult): RunTaskStatus {
   if (result.stop_reason === "cancelled" || ("status" in result && result.status === "cancelled")) {
     return "cancelled";
@@ -235,6 +272,9 @@ function errorTaxonomyForError(error: Error): { error_class: string; reason_code
 }
 
 function progressView(state: RunTaskState, elapsedMs: number): RunTaskProgressView {
+  const noPublicOutputElapsedMs = state.firstPublicOutputAt === undefined
+    ? Math.max(0, elapsedMs)
+    : undefined;
   return {
     elapsed_ms: elapsedMs,
     ...(state.lastProgressAt ? { last_progress_at: state.lastProgressAt } : {}),
@@ -242,6 +282,10 @@ function progressView(state: RunTaskState, elapsedMs: number): RunTaskProgressVi
     heartbeat_count: state.heartbeatCount,
     active_phase: state.activePhase,
     last_phase_at: state.lastPhaseAt,
+    ...(state.lastChildLifecycleEvent ? { last_child_lifecycle_event: state.lastChildLifecycleEvent } : {}),
+    ...(state.lastChildLifecycleAt ? { last_child_lifecycle_at: state.lastChildLifecycleAt } : {}),
+    ...(state.firstPublicOutputAt ? { first_public_output_at: state.firstPublicOutputAt } : {}),
+    ...(noPublicOutputElapsedMs !== undefined ? { no_public_output_elapsed_ms: noPublicOutputElapsedMs } : {}),
     recent_events: state.recentEvents,
     ...(state.lastPublicOutputExcerpt ? { last_public_output_excerpt: state.lastPublicOutputExcerpt } : {}),
   };
@@ -323,6 +367,24 @@ async function appendStatusEvent(
   state.lastProgressAt = written.occurred_at;
 }
 
+async function appendChildLifecycleEvent(
+  state: RunTaskState,
+  event: ChildLifecycleEventName,
+  text: string,
+  progressMessage: string,
+  options: { occurredAt?: string; metadata?: Record<string, unknown> } = {},
+): Promise<void> {
+  const occurredAt = options.occurredAt ?? new Date().toISOString();
+  noteChildLifecycle(state, event, occurredAt);
+  await appendStatusEvent(state, {
+    kind: "child",
+    event,
+    text,
+    occurred_at: occurredAt,
+    ...(options.metadata ? { metadata: options.metadata } : {}),
+  }, progressMessage);
+}
+
 async function appendPublicEvent(state: RunTaskState, event: RunPublicEvent): Promise<RunPublicEvent> {
   const written = await appendRunPublicEvent(defaultRunTasksDir(), state.runId, event);
   const events = [...state.recentEvents, written];
@@ -337,12 +399,18 @@ async function handleTaskHeartbeat(
   message: string | undefined,
   notify: HeartbeatNotify | undefined,
 ): Promise<void> {
-  if (state.activePhase === "awaiting_child_event" || state.activePhase === "running_silent") {
+  const hasPublicOutput = state.firstPublicOutputAt !== undefined;
+  const progressMessage = hasPublicOutput
+    ? message ?? DEFAULT_HEARTBEAT_MESSAGE
+    : "child alive; waiting for first public output";
+  if (!hasPublicOutput && (state.activePhase === "awaiting_child_event" || state.activePhase === "running_silent")) {
+    setTaskPhase(state, "running_silent");
+  } else if (hasPublicOutput && (state.activePhase === "awaiting_child_event" || state.activePhase === "running_silent")) {
     setTaskPhase(state, "running");
   }
-  setTaskProgress(state, message ?? DEFAULT_HEARTBEAT_MESSAGE, beat);
+  setTaskProgress(state, progressMessage, beat);
   await writeTaskSnapshot(await getRunTask(state.runId));
-  await notify?.(beat, message);
+  await notify?.(beat, progressMessage);
 }
 
 async function appendRunStartedEvent(
@@ -393,15 +461,16 @@ async function appendRunStartedEvent(
 async function prepareChildRun(state: RunTaskState): Promise<void> {
   const occurredAt = new Date().toISOString();
   setTaskPhase(state, "awaiting_child_event", occurredAt);
-  await appendStatusEvent(state, {
-    kind: "child",
-    event: "child_spawned",
-    text: "[child_spawned] Pi child process starting",
-    occurred_at: occurredAt,
-  }, "child process starting");
+  await appendChildLifecycleEvent(
+    state,
+    "child_spawned",
+    "[child_spawned] Pi child process starting",
+    "child process starting",
+    { occurredAt },
+  );
   if (state.activePhase === "awaiting_child_event") {
     setTaskPhase(state, "running_silent");
-    setTaskProgress(state, "child process running; waiting for output");
+    setTaskProgress(state, "child process running; waiting for first public output");
   }
   await writeTaskSnapshot(await getRunTask(state.runId));
 }
@@ -436,7 +505,14 @@ async function appendClosedInputEvents(
 
 async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
   const result = state.result;
-  if (!result || state.taskKind !== "run" || result.stop_reason === "cancelled" || result.success) {
+  if (!result || state.taskKind !== "run" || result.success) {
+    return;
+  }
+  const cancelledBeforeFirstOutput =
+    result.stop_reason === "cancelled" &&
+    state.heartbeatCount > 0 &&
+    state.firstPublicOutputAt === undefined;
+  if (result.stop_reason === "cancelled" && !cancelledBeforeFirstOutput) {
     return;
   }
   const missingSessionId =
@@ -444,18 +520,22 @@ async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
     result.exit_code === 0 &&
     result.stop_reason === "completed" &&
     result.session_established === false;
-  const failureClass = result.timed_out
-    ? "timeout"
-    : missingSessionId
-      ? "missing_session_id"
-      : failureClassForProcessResult(result);
-  const reasonCode = failureClass === "timeout"
-    ? "timeout"
-    : failureClass === "missing_session_id"
-      ? "missing_session_id"
-      : failureClass === "nonzero_exit"
-        ? "nonzero_exit"
-        : "unknown_error";
+  const failureClass: FailureClass = cancelledBeforeFirstOutput
+    ? "cancelled"
+    : result.timed_out
+      ? "timeout"
+      : missingSessionId
+        ? "missing_session_id"
+        : failureClassForProcessResult(result);
+  const reasonCode: FailureReasonCode = failureClass === "cancelled"
+    ? "cancelled_before_first_output"
+    : failureClass === "timeout"
+      ? "timeout"
+      : failureClass === "missing_session_id"
+        ? "missing_session_id"
+        : failureClass === "nonzero_exit"
+          ? "nonzero_exit"
+          : "unknown_error";
   await logFailure({
     tool: state.failureLogTool ?? "run_subagent",
     failure_class: failureClass,
@@ -588,6 +668,84 @@ function packetTerminalEvent(result: RunTaskTerminalResult, occurredAt: string):
   };
 }
 
+function eventObjectFromJsonLine(line: string): Record<string, unknown> | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("{")) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    return typeof parsed === "object" && parsed !== null
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function isProcessControlMarkerLine(line: string): boolean {
+  const trimmed = line.trim();
+  return trimmed === "[subagent007 cancelled]" || trimmed.startsWith("[subagent007 timeout]");
+}
+
+function isChildLifecycleEventName(value: unknown): value is ChildLifecycleEventName {
+  return value === "child_bridge_started" ||
+    value === "child_session_established" ||
+    value === "child_prompt_submitted";
+}
+
+function childLifecycleFromProcessLine(line: string): {
+  event: ChildLifecycleEventName;
+  text: string;
+  progressMessage: string;
+  metadata?: Record<string, unknown>;
+} | null {
+  const parsed = eventObjectFromJsonLine(line);
+  if (!parsed) {
+    return null;
+  }
+  if (parsed.type === "subagent007.session") {
+    return {
+      event: "child_session_established",
+      text: "[child_session_established] Pi session established",
+      progressMessage: "Pi session established; waiting for first public output",
+      metadata: {
+        session_id: typeof parsed.session_id === "string" ? parsed.session_id : null,
+        session_file: typeof parsed.session_file === "string" ? parsed.session_file : null,
+        pi_session_id: typeof parsed.pi_session_id === "string" ? parsed.pi_session_id : undefined,
+      },
+    };
+  }
+  if (parsed.type !== "subagent007.lifecycle") {
+    return null;
+  }
+  const event = parsed.event ?? parsed.phase;
+  if (!isChildLifecycleEventName(event)) {
+    return null;
+  }
+  switch (event) {
+    case "child_bridge_started":
+      return {
+        event,
+        text: "[child_bridge_started] Pi child bridge started",
+        progressMessage: "child bridge started; waiting for first public output",
+      };
+    case "child_prompt_submitted":
+      return {
+        event,
+        text: "[child_prompt_submitted] prompt submitted to Pi session",
+        progressMessage: "prompt submitted; waiting for first public output",
+      };
+    case "child_session_established":
+      return {
+        event,
+        text: "[child_session_established] Pi session established",
+        progressMessage: "Pi session established; waiting for first public output",
+      };
+  }
+  return null;
+}
+
 async function appendTerminalEvent(state: RunTaskState): Promise<void> {
   const result = state.result;
   const occurredAt = state.finishedAt ?? new Date().toISOString();
@@ -630,25 +788,52 @@ async function appendTerminalEvent(state: RunTaskState): Promise<void> {
 }
 
 async function observeOutputLine(state: RunTaskState, line: string): Promise<void> {
+  const lifecycle = childLifecycleFromProcessLine(line);
+  if (lifecycle) {
+    const occurredAt = new Date().toISOString();
+    if (state.activePhase === "awaiting_child_event" || state.activePhase === "running_silent") {
+      setTaskPhase(state, "running_silent", occurredAt);
+    }
+    await appendChildLifecycleEvent(
+      state,
+      lifecycle.event,
+      lifecycle.text,
+      lifecycle.progressMessage,
+      { occurredAt, ...(lifecycle.metadata ? { metadata: lifecycle.metadata } : {}) },
+    );
+    await writeTaskSnapshot(await getRunTask(state.runId));
+    return;
+  }
   const publicLine = publicOutputLineFromProcessLine(line);
   if (!publicLine) {
+    if (line.trim() !== "" && !isProcessControlMarkerLine(line) && !eventObjectFromJsonLine(line)) {
+      const occurredAt = new Date().toISOString();
+      noteFirstPublicOutput(state, occurredAt);
+      if (state.activePhase === "awaiting_child_event" || state.activePhase === "running_silent") {
+        setTaskPhase(state, "running", occurredAt);
+      }
+      setTaskProgress(state, "child output received");
+      await writeTaskSnapshot(await getRunTask(state.runId));
+    }
     return;
   }
   if (publicLine.kind === "user") {
     return;
   }
+  const occurredAt = new Date().toISOString();
+  noteFirstPublicOutput(state, occurredAt);
   if (publicLine.event === "input_required") {
-    setTaskPhase(state, "input_required");
+    setTaskPhase(state, "input_required", occurredAt);
   } else if (publicLine.kind === "assistant" || publicLine.kind === "warning" || publicLine.kind === "error") {
-    setTaskPhase(state, "running");
+    setTaskPhase(state, "running", occurredAt);
   } else if (publicLine.event === "input_timed_out" || publicLine.event === "input_closed") {
-    setTaskPhase(state, "running");
+    setTaskPhase(state, "running", occurredAt);
   }
   await appendPublicEvent(state, {
     kind: publicLine.kind,
     event: publicLine.event ?? "message",
     text: publicLine.text,
-    occurred_at: new Date().toISOString(),
+    occurred_at: occurredAt,
   });
   if (publicLine.event === "input_required") {
     setTaskProgress(state, "input required");

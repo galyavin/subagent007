@@ -111,6 +111,25 @@ async function withFakeClient<T>(
   }
 }
 
+async function waitForRunStatus(client: Client, runId: string, expectedStatus: string): Promise<void> {
+  const deadline = Date.now() + 3000;
+  let lastStatus = "unknown";
+  while (Date.now() < deadline) {
+    const response = await client.callTool({
+      name: "get_run",
+      arguments: { run_id: runId },
+    });
+    assert.notEqual(response.isError, true);
+    const view = response.structuredContent as { status: string };
+    lastStatus = view.status;
+    if (lastStatus === expectedStatus) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.fail(`timed out waiting for run ${runId} to reach ${expectedStatus}; last status was ${lastStatus}`);
+}
+
 test("run_subagent appends one central record for a nonzero child failure", async () => {
   await withFakeClient(async (client, { projectDir, failureLogPath }) => {
     const response = await client.callTool({
@@ -146,7 +165,7 @@ test("run_subagent appends one central record for a nonzero child failure", asyn
     assert.equal(failures[0].partial_output_available, false);
     assert.equal(failures[0].resume_possible, false);
     assert.equal(failures[0].resolved_timeout_ms, 110000);
-    assert.equal(failures[0].model, "openai-codex/gpt-5.4-mini");
+    assert.equal(failures[0].model, "openrouter/z-ai/glm-5.2");
     assert.equal(failures[0].thinking_level, "high");
     assert.equal(failures[0].output_mode, "transcript");
     assert.equal(typeof failures[0].output_path, "string");
@@ -526,6 +545,120 @@ test("cancelled start_run tasks do not append unknown failure records", async ()
       await assert.rejects(fs.stat(failureLogPath), /ENOENT/);
     },
     {
+      SUBAGENT007_TIMEOUT_KILL_GRACE_MS: "10",
+      SUBAGENT007_TIMEOUT_FORCE_GRACE_MS: "10",
+    },
+  );
+});
+
+test("silent-but-alive cancelled start_run tasks append a targeted pre-output record", async () => {
+  await withFakeClient(
+    async (client, { projectDir, failureLogPath }) => {
+      const startedResponse = await client.callTool({
+        name: "start_run",
+        arguments: {
+          cwd: projectDir,
+          prompt: "CANCEL_WAIT SECRET_CANCEL_PROMPT",
+          timeout_ms: 6000,
+        },
+      });
+      assert.notEqual(startedResponse.isError, true);
+      const started = startedResponse.structuredContent as { run_id: string };
+
+      const heartbeatDeadline = Date.now() + 2000;
+      type HeartbeatRunView = {
+        status: string;
+        active_phase?: string;
+        heartbeat_count?: number;
+        first_public_output_at?: string;
+      };
+      let heartbeatView: HeartbeatRunView | undefined;
+      while (Date.now() < heartbeatDeadline) {
+        const response = await client.callTool({
+          name: "get_run",
+          arguments: { run_id: started.run_id },
+        });
+        assert.notEqual(response.isError, true);
+        heartbeatView = response.structuredContent as HeartbeatRunView;
+        if ((heartbeatView?.heartbeat_count ?? 0) > 0) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      assert.ok(heartbeatView);
+      assert.equal(heartbeatView.status, "working");
+      assert.equal(heartbeatView.active_phase, "running_silent");
+      assert.equal(heartbeatView.first_public_output_at, undefined);
+
+      const cancelResponse = await client.callTool({
+        name: "cancel_run",
+        arguments: { run_id: started.run_id },
+      });
+      assert.notEqual(cancelResponse.isError, true);
+
+      await waitForRunStatus(client, started.run_id, "cancelled");
+
+      const failures = await readJsonl<FailureRecord>(failureLogPath);
+      assert.equal(failures.length, 1);
+      assert.equal(failures[0].tool, "start_run");
+      assert.equal(failures[0].run_id, started.run_id);
+      assert.equal(failures[0].failure_class, "cancelled");
+      assert.equal(failures[0].reason_code, "cancelled_before_first_output");
+      assert.equal(failures[0].stop_reason, "cancelled");
+      assert.equal(failures[0].success, false);
+      assert.doesNotMatch(JSON.stringify(failures[0]), /SECRET_CANCEL_PROMPT/);
+    },
+    {
+      SUBAGENT007_HEARTBEAT_INTERVAL_MS: "25",
+      SUBAGENT007_TIMEOUT_KILL_GRACE_MS: "10",
+      SUBAGENT007_TIMEOUT_FORCE_GRACE_MS: "10",
+    },
+  );
+});
+
+test("cancelled start_run tasks after raw child output do not append pre-output records", async () => {
+  await withFakeClient(
+    async (client, { projectDir, failureLogPath }) => {
+      const startedResponse = await client.callTool({
+        name: "start_run",
+        arguments: {
+          cwd: projectDir,
+          prompt: "TIMEOUT_RAW_TEXT",
+          timeout_ms: 6000,
+        },
+      });
+      assert.notEqual(startedResponse.isError, true);
+      const started = startedResponse.structuredContent as { run_id: string };
+
+      const outputDeadline = Date.now() + 2000;
+      let activeView: { first_public_output_at?: string; heartbeat_count?: number } | undefined;
+      while (Date.now() < outputDeadline) {
+        const response = await client.callTool({
+          name: "get_run",
+          arguments: { run_id: started.run_id },
+        });
+        assert.notEqual(response.isError, true);
+        activeView = response.structuredContent as { first_public_output_at?: string; heartbeat_count?: number };
+        if (activeView.first_public_output_at && (activeView.heartbeat_count ?? 0) > 0) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      assert.equal(typeof activeView?.first_public_output_at, "string");
+      assert.equal((activeView?.heartbeat_count ?? 0) > 0, true);
+
+      const cancelResponse = await client.callTool({
+        name: "cancel_run",
+        arguments: { run_id: started.run_id },
+      });
+      assert.notEqual(cancelResponse.isError, true);
+
+      await waitForRunStatus(client, started.run_id, "cancelled");
+
+      await assert.rejects(fs.stat(failureLogPath), /ENOENT/);
+    },
+    {
+      SUBAGENT007_HEARTBEAT_INTERVAL_MS: "25",
       SUBAGENT007_TIMEOUT_KILL_GRACE_MS: "10",
       SUBAGENT007_TIMEOUT_FORCE_GRACE_MS: "10",
     },

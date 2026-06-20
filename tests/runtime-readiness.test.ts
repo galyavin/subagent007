@@ -12,6 +12,7 @@ const execFileAsync = promisify(execFile);
 async function writeFixtureProject(options: { dist?: boolean } = {}): Promise<{
   root: string;
   serverEntrypoint: string;
+  childEntrypoint: string;
 }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-runtime-readiness-"));
   const srcDir = path.join(root, "src");
@@ -23,11 +24,14 @@ async function writeFixtureProject(options: { dist?: boolean } = {}): Promise<{
   await fs.writeFile(path.join(root, "tsconfig.json"), JSON.stringify({ compilerOptions: {} }), "utf8");
   await fs.writeFile(path.join(root, "tsconfig.test.json"), JSON.stringify({ extends: "./tsconfig.json" }), "utf8");
   await fs.writeFile(path.join(srcDir, "server.ts"), "export const value = 1;\n", "utf8");
+  await fs.writeFile(path.join(srcDir, "piChild.ts"), "export const value = 2;\n", "utf8");
   const serverEntrypoint = path.join(distDir, "server.js");
+  const childEntrypoint = path.join(distDir, "piChild.js");
   if (options.dist !== false) {
     await fs.writeFile(serverEntrypoint, "console.log('server');\n", "utf8");
+    await fs.writeFile(childEntrypoint, "console.log('child');\n", "utf8");
   }
-  return { root, serverEntrypoint };
+  return { root, serverEntrypoint, childEntrypoint };
 }
 
 function blockClasses(snapshot: Awaited<ReturnType<typeof runtimeReadinessSnapshot>>): string[] {
@@ -70,6 +74,23 @@ test("runtime readiness blocks when the built server entrypoint is missing", asy
   assert.equal(snapshot.blocks.find((block) => block.class === "missing_build")?.reason_code, "server_entrypoint_missing");
 });
 
+test("runtime readiness blocks when the built child entrypoint is missing", async () => {
+  const { root, serverEntrypoint, childEntrypoint } = await writeFixtureProject();
+  await fs.rm(childEntrypoint);
+
+  const snapshot = await runtimeReadinessSnapshot({
+    projectRoot: root,
+    serverEntrypoint,
+    processArgv: ["node", serverEntrypoint],
+    source_state_policy: "allow_unknown",
+  });
+
+  assert.equal(snapshot.ready, false);
+  assert.equal(snapshot.status, "blocked");
+  assert.equal(blockClasses(snapshot).includes("missing_build"), true);
+  assert.equal(snapshot.blocks.find((block) => block.reason_code === "child_entrypoint_missing")?.class, "missing_build");
+});
+
 test("runtime readiness blocks stale dist output when source is newer", async () => {
   const { root, serverEntrypoint } = await writeFixtureProject();
   const old = new Date(Date.now() - 10_000);
@@ -89,6 +110,28 @@ test("runtime readiness blocks stale dist output when source is newer", async ()
   assert.equal(
     snapshot.blocks.find((block) => block.class === "stale_build")?.reason_code,
     "build_input_newer_than_server_entrypoint",
+  );
+});
+
+test("runtime readiness blocks when the built child entrypoint is stale", async () => {
+  const { root, serverEntrypoint, childEntrypoint } = await writeFixtureProject();
+  const old = new Date(Date.now() - 10_000);
+  const fresh = new Date(Date.now());
+  await fs.utimes(childEntrypoint, old, old);
+  await fs.utimes(path.join(root, "src", "piChild.ts"), fresh, fresh);
+
+  const snapshot = await runtimeReadinessSnapshot({
+    projectRoot: root,
+    serverEntrypoint,
+    processArgv: ["node", serverEntrypoint],
+    source_state_policy: "allow_unknown",
+  });
+
+  assert.equal(snapshot.ready, false);
+  assert.equal(blockClasses(snapshot).includes("stale_build"), true);
+  assert.equal(
+    snapshot.blocks.find((block) => block.reason_code === "build_input_newer_than_child_entrypoint")?.class,
+    "stale_build",
   );
 });
 
@@ -147,6 +190,7 @@ test("runtime readiness returns a ready snapshot for a clean current build", asy
   assert.deepEqual(snapshot.blocks, []);
   assert.equal(snapshot.contract.compatible, true);
   assert.equal(snapshot.capabilities.public_tools.includes("get_runtime_readiness"), true);
+  assert.equal(snapshot.build.child_entrypoint.exists, true);
 });
 
 test("runtime readiness blocks incompatible durable-run contract expectations", async () => {
@@ -187,4 +231,3 @@ test("runtime readiness CLI reports missing build before launching MCP", async (
     assert.equal(snapshot.blocks?.[0]?.reason_code, "server_entrypoint_missing");
   }
 });
-

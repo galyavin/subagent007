@@ -8,7 +8,8 @@ const OPENAI_CODEX_MIN_GPT5_MINOR = 4;
 
 export const CURATED_EXACT_MODEL_REFS = [
   "openrouter/qwen/qwen3.6-35b-a3b",
-  "openrouter/deepseek/deepseek-v4-flash",
+  "openrouter/deepseek/deepseek-v4-pro",
+  "openrouter/z-ai/glm-5.2",
 ] as const;
 
 function modelPatternChoices(): string[] {
@@ -32,7 +33,7 @@ export const MODEL_CLASS_CALIBRATIONS: Record<ModelClass, {
     description: "Lowest-complexity class for narrow read-only audits, low-risk probes, and concise first-pass judgment.",
   },
   B: {
-    model: "openrouter/deepseek/deepseek-v4-flash",
+    model: "openrouter/deepseek/deepseek-v4-pro",
     thinkingLevel: "high",
     description: "Simple coding, review, or search tasks with limited ambiguity.",
   },
