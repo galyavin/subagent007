@@ -34,7 +34,7 @@ import {
   type SessionRunRecord,
 } from "./types.js";
 import { ValidationError } from "./types.js";
-import { validateAndResolveRequest } from "./validate.js";
+import { assertDeadlineRiskTimeoutBudget, validateAndResolveRequest } from "./validate.js";
 
 const SESSION_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 
@@ -170,13 +170,15 @@ function assertNoRawSessionId(request: RunSubagentSessionRequest): void {
 
 export async function validateRunSubagentSessionRequestPreflight(
   request: RunSubagentSessionRequest,
+  toolName: "start_session_run" | "run_subagent_session" = "run_subagent_session",
 ): Promise<void> {
   assertNoRawSessionId(request);
   validateSessionKey(request.session_key);
   validateResumeMode(request.resume_mode);
   validateSessionPacketPolicy(request.packet_policy);
   const config = await loadConfig();
-  await validateAndResolveRequest(request, config);
+  const resolved = await validateAndResolveRequest(request, config);
+  assertDeadlineRiskTimeoutBudget(request, resolved, toolName);
 }
 
 function identityHash(cwd: string, sessionKey: string): string {
@@ -553,6 +555,7 @@ export async function runSubagentSession(
   const resumeMode = validateResumeMode(request.resume_mode);
   const packetPolicy = validateSessionPacketPolicy(request.packet_policy);
   const resolvedBase = await validateAndResolveRequest(request, config);
+  assertDeadlineRiskTimeoutBudget(request, resolvedBase, "run_subagent_session");
   const cwd = await fs.realpath(resolvedBase.cwd);
   const resolved = { ...resolvedBase, cwd };
   const skillFilePath = resolveSkillFilePathForRequest(resolved);

@@ -50,6 +50,7 @@ import type {
 import { ValidationError } from "./types.js";
 import { loadConfig } from "./config.js";
 import {
+  assertDeadlineRiskTimeoutBudget,
   runSubagentOneShotIncompatibility,
   type RunSubagentOneShotIncompatibility,
   validateAndResolveRequest,
@@ -513,7 +514,7 @@ function durableTaskCloseReason(state: RunTaskState): string {
 }
 
 async function logBackgroundHandlerError(
-  tool: Extract<FailureLogTool, "run_subagent" | "schedule_run" | "start_run" | "start_session_run">,
+  tool: Extract<FailureLogTool, "run_subagent" | "run_subagent_session" | "schedule_run" | "start_run" | "start_session_run">,
   request: RunSubagentRequest | RunSubagentSessionRequest,
   error: unknown,
 ): Promise<void> {
@@ -806,11 +807,12 @@ export async function startRunTask(
     failureLogTool?: Extract<FailureLogTool, "schedule_run" | "start_run">;
   } = {},
 ): Promise<RunTaskView> {
+  const failureLogTool = options.failureLogTool ?? "start_run";
   const config = await loadConfig();
   const resolved = await validateAndResolveRequest(request, config);
+  assertDeadlineRiskTimeoutBudget(request, resolved, failureLogTool);
   const skillFilePath = resolveSkillFilePathForRequest(resolved);
 
-  const failureLogTool = options.failureLogTool ?? "start_run";
   const state = createRunTaskState("run");
   state.failureLogTool = failureLogTool;
   await registerRunTaskState(state, request);
@@ -941,9 +943,11 @@ export async function startSessionRunTask(
     sessionsDir?: string;
     heartbeat?: HeartbeatNotify;
     heartbeatIntervalMs?: number;
+    failureLogTool?: Extract<FailureLogTool, "start_session_run" | "run_subagent_session">;
   } = {},
 ): Promise<RunTaskView> {
-  await validateRunSubagentSessionRequestPreflight(request);
+  const failureLogTool = options.failureLogTool ?? "start_session_run";
+  await validateRunSubagentSessionRequestPreflight(request, failureLogTool);
 
   const state = createRunTaskState(
     "session",
@@ -963,7 +967,7 @@ export async function startSessionRunTask(
       });
     } catch (error) {
       state.error = error as Error;
-      await logBackgroundHandlerError("start_session_run", request, error);
+      await logBackgroundHandlerError(failureLogTool, request, error);
     } finally {
       await finalizeRunTask(state, durableTaskCloseReason(state));
     }
@@ -980,7 +984,7 @@ export async function runSubagentSessionTaskAndWait(
     heartbeatIntervalMs?: number;
   } = {},
 ): Promise<RunTaskView> {
-  const started = await startSessionRunTask(request, options);
+  const started = await startSessionRunTask(request, { ...options, failureLogTool: "run_subagent_session" });
   const state = tasks.get(started.run_id);
   await state?.promise;
   if (state?.error) {

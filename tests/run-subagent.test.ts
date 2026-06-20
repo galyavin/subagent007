@@ -1248,6 +1248,26 @@ test("MCP run_subagent auto-promotes broad analysis prompts to a cancellable dur
   });
 });
 
+test("MCP run_subagent auto-promotes artifact verification scans before one-shot timeout", async () => {
+  await connectFakeClient(async (client, { projectDir }) => {
+    const response = await client.callTool({
+      name: "run_subagent",
+      arguments: {
+        cwd: projectDir,
+        prompt: "Artifact verification scan A: review docs/DOCTRINE_FULL.md against docs/ARCHITECTURE_FULL.md.",
+        run_kind: "quick_noninteractive",
+      },
+    });
+    assert.notEqual(response.isError, true);
+    const metadata = response.structuredContent as RunSubagentMetadata;
+    assert.equal(metadata.auto_promoted_from, "run_subagent");
+    assert.equal(metadata.promotion_reason_code, "broad_work");
+    assert.equal(metadata.requested_timeout_ms, null);
+    assert.equal(metadata.resolved_timeout_ms, null);
+    assert.equal(metadata.effective_timeout_ms, null);
+  });
+});
+
 test("MCP run_subagent auto-promotes lexical broad-work false positives instead of rejecting them", async () => {
   await connectFakeClient(async (client, { projectDir }) => {
     const response = await client.callTool({
@@ -1267,6 +1287,31 @@ test("MCP run_subagent auto-promotes lexical broad-work false positives instead 
     assert.equal(metadata.resolved_timeout_ms, null);
     assert.equal(metadata.effective_timeout_ms, null);
     assert.equal(await fs.readFile(metadata.output_path, "utf8"), "FAST FINAL");
+  });
+});
+
+test("MCP schedule_run does not hard-reject lexical broad-work false positives with timeout_ms", async () => {
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    const response = await client.callTool({
+      name: "schedule_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "FAST Check the saf-ninja fixture.",
+        wait_ms: 2_000,
+        timeout_ms: 90_000,
+      },
+    });
+    assert.notEqual(response.isError, true);
+    const metadata = response.structuredContent as RunSubagentMetadata;
+    assert.equal(metadata.status, "completed");
+    assert.equal(metadata.success, true);
+    assert.equal(metadata.reason_code, undefined);
+    assert.equal(metadata.requested_timeout_ms, 90_000);
+    assert.equal(metadata.resolved_timeout_ms, 90_000);
+    assert.equal(await fs.readFile(metadata.output_path, "utf8"), "FAST FINAL");
+    const logs = await readJsonl<{ request: { prompt: string } }>(fakeLogPath);
+    assert.equal(logs.length, 1);
+    assert.equal(logs[0].request.prompt, "FAST Check the saf-ninja fixture.");
   });
 });
 
@@ -1307,6 +1352,67 @@ test("MCP schedule_run returns completed output when the durable task finishes w
     assert.equal(metadata.status, "completed");
     assert.equal(metadata.success, true);
     assert.equal(await fs.readFile(metadata.output_path, "utf8"), "FAST FINAL");
+  });
+});
+
+test("MCP schedule_run rejects deadline-risk work with underbudget hard timeout before child spawn", async () => {
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    const response = await client.callTool({
+      name: "schedule_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "Verify the implementation against the requirements before merging.",
+        wait_ms: 0,
+        timeout_ms: 90_000,
+      },
+    });
+    assert.notEqual(response.isError, true);
+    const metadata = response.structuredContent as {
+      kind?: string;
+      child_started?: boolean;
+      reason_code?: string;
+      retry_guidance?: string;
+      message?: string;
+    };
+    assert.equal(metadata.kind, "preflight_rejected");
+    assert.equal(metadata.child_started, false);
+    assert.equal(metadata.reason_code, "timeout_underbudget_for_deadline_risk");
+    assert.match(metadata.retry_guidance ?? "", /Use wait_ms/);
+    assert.match(metadata.message ?? "", /minimum_timeout_ms=600000/);
+    const logs = await readJsonl(fakeLogPath).catch(() => []);
+    assert.equal(logs.length, 0);
+  });
+});
+
+test("MCP session tools reject deadline-risk work with underbudget hard timeout before child spawn", async () => {
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    for (const tool of ["start_session_run", "run_subagent_session"] as const) {
+      const response = await client.callTool({
+        name: tool,
+        arguments: {
+          cwd: projectDir,
+          prompt: "Review the implementation for correctness against the requirements.",
+          session_key: `mcp-session:underbudget-${tool}`,
+          resume_mode: "new",
+          timeout_ms: 90_000,
+        },
+      });
+      assert.notEqual(response.isError, true);
+      const metadata = response.structuredContent as {
+        kind?: string;
+        child_started?: boolean;
+        reason_code?: string;
+        retry_guidance?: string;
+        message?: string;
+      };
+      assert.equal(metadata.kind, "preflight_rejected");
+      assert.equal(metadata.child_started, false);
+      assert.equal(metadata.reason_code, "timeout_underbudget_for_deadline_risk");
+      assert.match(metadata.retry_guidance ?? "", /Use wait_ms/);
+      assert.match(metadata.message ?? "", new RegExp(`tool=${tool}`));
+    }
+    const logs = await readJsonl(fakeLogPath).catch(() => []);
+    assert.equal(logs.length, 0);
   });
 });
 

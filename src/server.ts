@@ -51,6 +51,9 @@ const server = new McpServer({
   version: SERVER_VERSION,
 });
 
+const TIMEOUT_UNDERBUDGET_GUIDANCE =
+  "Use wait_ms for the initial scheduler wait. For long durable work, omit timeout_ms or set timeout_ms to at least the reported minimum.";
+
 function withFailureLogging<TRequest, TResult>(
   tool: FailureLogTool,
   handler: (request: TRequest, extra: ServerExtra) => Promise<TResult>,
@@ -112,6 +115,8 @@ async function preflightRejectedResult(
   const reasonCode = failureReasonCodeForError(error);
   const retryGuidance = error.message.includes("timeout_ms is not supported by run_subagent")
     ? "Use schedule_run or start_run for timed work."
+    : error.message.includes("timeout_ms under budget for deadline-risk workload")
+      ? TIMEOUT_UNDERBUDGET_GUIDANCE
     : undefined;
   await logFailure({
     tool,
@@ -243,7 +248,8 @@ const timedRunInputSchema = {
     .number()
     .int()
     .positive()
-    .optional(),
+    .optional()
+    .describe("Optional hard child-process kill cap. For long durable work, omit this; use wait_ms on schedule_run for the initial response wait."),
 };
 
 const timedSessionInputSchema = {
@@ -252,7 +258,8 @@ const timedSessionInputSchema = {
     .number()
     .int()
     .positive()
-    .optional(),
+    .optional()
+    .describe("Optional hard child-process kill cap. For long durable session work, omit this unless the run must be stopped by a deadline."),
 };
 
 function unrecognizedKeySchemaError(
@@ -409,7 +416,7 @@ server.registerTool(
   {
     title: "Schedule Run",
     description:
-      "Create a durable Pi-backed run task first, then return a terminal result only if it completes within wait_ms.",
+      "Create a durable Pi-backed run task first, then return a terminal result only if it completes within wait_ms. Use wait_ms for the initial response wait; timeout_ms is a hard child kill cap.",
     inputSchema: scheduleRunInputSchema,
   },
   withPreflightRejection("schedule_run", async (request, extra) =>
@@ -422,7 +429,7 @@ server.registerTool(
   {
     title: "Start Run",
     description:
-      "Start one Pi-backed child run as a run-scoped task and return immediately with status and input mailbox metadata.",
+      "Start one Pi-backed child run as a run-scoped task and return immediately with status and input mailbox metadata. Omit timeout_ms for long durable work unless the child must be stopped by a hard deadline.",
     inputSchema: startRunInputSchema,
   },
   withPreflightRejection("start_run", async (request, extra) =>

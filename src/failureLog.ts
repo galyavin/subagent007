@@ -48,6 +48,7 @@ export type FailureReasonCode =
   | "invalid_thinking_level"
   | "invalid_tool_profile"
   | "invalid_timeout_ms"
+  | "timeout_underbudget_for_deadline_risk"
   | "missing_session_id"
   | "nonzero_exit"
   | "packet_required_invalid"
@@ -247,6 +248,9 @@ export function failureReasonCodeForError(error: unknown): FailureReasonCode {
   if (message.includes("default_model_class is not configured")) return "config_missing_default_model_class";
   if (message.includes("timeout_ms must be at least") || message.includes("timeout_ms must be a positive integer")) {
     return "invalid_timeout_ms";
+  }
+  if (message.includes("timeout_ms under budget for deadline-risk workload")) {
+    return "timeout_underbudget_for_deadline_risk";
   }
   if (message.includes("timeout_ms is not supported by run_subagent")) {
     return "run_subagent_timeout_unsupported";

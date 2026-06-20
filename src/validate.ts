@@ -18,6 +18,7 @@ import {
 import { DEFAULT_MODEL_CLASS, resolveModelClass } from "./modelAllowlist.js";
 import { minimumRequestedTimeoutMs } from "./timeoutBudget.js";
 import { ValidationError } from "./types.js";
+import { safeIntegerFromEnv } from "./env.js";
 
 const SKILL_NAME_ERROR =
   "skill must be a bare skill name such as pda-lite or plugin:skill-name; pass pda-lite, not $pda-lite, /skill:pda-lite, a path, markdown link, or prose";
@@ -29,20 +30,36 @@ const PROMPT_SKILL_INVOCATION_PATTERNS = [
   /^(?:use|run|invoke)\s+\$[A-Za-z0-9][A-Za-z0-9_-]*(?::[A-Za-z0-9][A-Za-z0-9_-]*)?(?:\b|\s|$)/i,
 ];
 const ONE_SHOT_MAX_PROMPT_CHARS = 6000;
-const ONE_SHOT_BROAD_WORK_PATTERNS = [
-  /\bHORCs?\b/i,
-  /\bSAFs?\b/i,
+const BROAD_WORK_OBJECTS =
+  String.raw`(?:docs?|repo|diff|artifact|architecture|doctrine|charts?|implementation|requirements?|correctness|changes?|patch|repair|delta|residual)`;
+const STRONG_BROAD_WORK_PATTERNS = [
   /\bhighest-order root cause\b/i,
   /\bsupreme atomic fix\b/i,
   /\bcampaign\b/i,
   /\bobserved real use trials?\b/i,
   /\bimplementation plan\b/i,
   /\breview the repo\b/i,
+  /\bartifact verification\b/i,
+  /\bverification scan\b/i,
+  new RegExp(String.raw`\bverif(?:y|ication)\b.*\b${BROAD_WORK_OBJECTS}\b`, "i"),
+  /\bfresh-?eye\b/i,
+  /\bfollow-?up scan\b/i,
+  new RegExp(String.raw`\breview\b.*\b${BROAD_WORK_OBJECTS}\b`, "i"),
+  /\b(inspect|audit)\b.*\b(diff|repo|implementation|repair|delta)\b/i,
+  new RegExp(String.raw`\bscan\b.*\b${BROAD_WORK_OBJECTS}\b`, "i"),
   /\baudit\b/i,
   /\bsynthesize\b/i,
   /\binvestigate\b/i,
   /\bstress-?test\b/i,
 ];
+const ONE_SHOT_BROAD_WORK_PATTERNS = [
+  /\bHORCs?\b/i,
+  /\bSAFs?\b/i,
+  ...STRONG_BROAD_WORK_PATTERNS,
+];
+const DEADLINE_RISK_BROAD_WORK_PATTERNS = STRONG_BROAD_WORK_PATTERNS;
+const REVIEW_ACTION_PATTERN = /\b(?:verif(?:y|ication)|review|scan)\b/i;
+const CORE_REVIEW_OBJECT_PATTERN = /\b(?:implementation|requirements?|correctness)\b/i;
 const ONE_SHOT_WRITE_WORK_PATTERNS = [
   /\bimplement\b/i,
   /\brepair\b/i,
@@ -52,10 +69,60 @@ const ONE_SHOT_WRITE_WORK_PATTERNS = [
   /\brefactor\b/i,
   /\bfix\b/i,
 ];
+const DEFAULT_DEADLINE_RISK_TIMEOUT_FLOOR_MS = 600_000;
+const DEADLINE_RISK_TIMEOUT_FLOOR_ENV = "SUBAGENT007_DEADLINE_RISK_TIMEOUT_FLOOR_MS";
+
+function promptForClassification(prompt: string): string {
+  return prompt.replace(/\s+/g, " ").trim();
+}
+
+function promptHasCoreReviewActionAndObject(prompt: string): boolean {
+  return REVIEW_ACTION_PATTERN.test(prompt) && CORE_REVIEW_OBJECT_PATTERN.test(prompt);
+}
+
 export interface RunSubagentOneShotIncompatibility {
   reason_code: RunSubagentPromotionReasonCode;
   message: string;
   safe_to_promote: true;
+}
+
+function workloadIncompatibility(
+  resolved: ResolvedRunSubagentRequest,
+  broadWorkPatterns: readonly RegExp[],
+): RunSubagentOneShotIncompatibility | null {
+  const prompt = promptForClassification(resolved.prompt);
+  if (resolved.skill) {
+    return {
+      reason_code: "skill_bound",
+      message: "skill-bound work needs a durable, pollable run",
+      safe_to_promote: true,
+    };
+  }
+  if (resolved.prompt.length > ONE_SHOT_MAX_PROMPT_CHARS) {
+    return {
+      reason_code: "prompt_too_long",
+      message: `prompt exceeds ${ONE_SHOT_MAX_PROMPT_CHARS} characters`,
+      safe_to_promote: true,
+    };
+  }
+  if (
+    promptHasCoreReviewActionAndObject(prompt) ||
+    broadWorkPatterns.some((pattern) => pattern.test(prompt))
+  ) {
+    return {
+      reason_code: "broad_work",
+      message: "prompt asks for broad, exploratory, or synthesis work",
+      safe_to_promote: true,
+    };
+  }
+  if (ONE_SHOT_WRITE_WORK_PATTERNS.some((pattern) => pattern.test(prompt))) {
+    return {
+      reason_code: "workspace_write",
+      message: "write-capable work should be durable and cancellable",
+      safe_to_promote: true,
+    };
+  }
+  return null;
 }
 
 function trimOptional(value: unknown, key: string): string | undefined {
@@ -286,35 +353,51 @@ export function runSubagentOneShotIncompatibility(
   _request: RunSubagentRequest,
   resolved: ResolvedRunSubagentRequest,
 ): RunSubagentOneShotIncompatibility | null {
-  if (resolved.skill) {
-    return {
-      reason_code: "skill_bound",
-      message: "skill-bound work needs a durable, pollable run",
-      safe_to_promote: true,
-    };
+  return workloadIncompatibility(resolved, ONE_SHOT_BROAD_WORK_PATTERNS);
+}
+
+export function deadlineRiskForRun(
+  _request: RunSubagentRequest,
+  resolved: ResolvedRunSubagentRequest,
+): RunSubagentOneShotIncompatibility | null {
+  return workloadIncompatibility(resolved, DEADLINE_RISK_BROAD_WORK_PATTERNS);
+}
+
+export function deadlineRiskTimeoutFloorMs(): number {
+  return Math.max(
+    minimumRequestedTimeoutMs(),
+    safeIntegerFromEnv(
+      DEADLINE_RISK_TIMEOUT_FLOOR_ENV,
+      DEFAULT_DEADLINE_RISK_TIMEOUT_FLOOR_MS,
+      0,
+    ),
+  );
+}
+
+export function assertDeadlineRiskTimeoutBudget(
+  request: RunSubagentRequest,
+  resolved: ResolvedRunSubagentRequest,
+  toolName: "start_run" | "schedule_run" | "start_session_run" | "run_subagent_session",
+): void {
+  if (resolved.timeoutMs === undefined) {
+    return;
   }
-  if (resolved.prompt.length > ONE_SHOT_MAX_PROMPT_CHARS) {
-    return {
-      reason_code: "prompt_too_long",
-      message: `prompt exceeds ${ONE_SHOT_MAX_PROMPT_CHARS} characters`,
-      safe_to_promote: true,
-    };
+  const deadlineRisk = deadlineRiskForRun(request, resolved);
+  if (!deadlineRisk) {
+    return;
   }
-  if (ONE_SHOT_BROAD_WORK_PATTERNS.some((pattern) => pattern.test(resolved.prompt))) {
-    return {
-      reason_code: "broad_work",
-      message: "prompt asks for broad, exploratory, or synthesis work",
-      safe_to_promote: true,
-    };
+  const floorMs = deadlineRiskTimeoutFloorMs();
+  if (resolved.timeoutMs >= floorMs) {
+    return;
   }
-  if (
-    ONE_SHOT_WRITE_WORK_PATTERNS.some((pattern) => pattern.test(resolved.prompt))
-  ) {
-    return {
-      reason_code: "workspace_write",
-      message: "write-capable work should be durable and cancellable",
-      safe_to_promote: true,
-    };
-  }
-  return null;
+  throw new ValidationError(
+    [
+      "timeout_ms under budget for deadline-risk workload",
+      `tool=${toolName}`,
+      `reason=${deadlineRisk.reason_code}`,
+      `requested_timeout_ms=${resolved.timeoutMs}`,
+      `minimum_timeout_ms=${floorMs}`,
+      "use wait_ms for the initial scheduler wait, omit timeout_ms for long durable work, or set timeout_ms to at least the minimum",
+    ].join("; "),
+  );
 }

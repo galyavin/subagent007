@@ -64,6 +64,10 @@ test("failure reason mapping classifies timeout validation precisely", () => {
     failureReasonCodeForError(new ValidationError("timeout_ms must be at least 7001 ms with the configured response headroom and kill grace")),
     "invalid_timeout_ms",
   );
+  assert.equal(
+    failureReasonCodeForError(new ValidationError("timeout_ms under budget for deadline-risk workload; minimum_timeout_ms=600000")),
+    "timeout_underbudget_for_deadline_risk",
+  );
 });
 
 async function withFakeClient<T>(
@@ -336,6 +340,66 @@ test("handler-level validation failures are logged without prompt text", async (
     assert.equal(failures[0].cwd, "relative-path");
     assert.equal(failures[0].cwd_class, "relative");
     assert.doesNotMatch(JSON.stringify(failures[0]), /SECRET_PROMPT_SHOULD_NOT_BE_LOGGED/);
+  });
+});
+
+test("deadline-risk underbudget preflight failures are logged with specific reason", async () => {
+  await withFakeClient(async (client, { projectDir, failureLogPath }) => {
+    const response = await client.callTool({
+      name: "schedule_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "Fresh-eye delta scan for a repaired implementation. Review only material correctness issues.",
+        wait_ms: 0,
+        timeout_ms: 90_000,
+      },
+    });
+
+    assert.notEqual(response.isError, true);
+    assert.equal((response.structuredContent as { kind?: string }).kind, "preflight_rejected");
+    assert.equal(
+      (response.structuredContent as { reason_code?: string }).reason_code,
+      "timeout_underbudget_for_deadline_risk",
+    );
+    assert.equal((response.structuredContent as { child_started?: boolean }).child_started, false);
+
+    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].tool, "schedule_run");
+    assert.equal(failures[0].failure_class, "validation_error");
+    assert.equal(failures[0].reason_code, "timeout_underbudget_for_deadline_risk");
+    assert.equal(failures[0].cwd, projectDir);
+    assert.doesNotMatch(JSON.stringify(failures[0]), /Fresh-eye delta scan/);
+  });
+});
+
+test("deadline-risk underbudget session preflight failures keep session tool identity", async () => {
+  await withFakeClient(async (client, { projectDir, failureLogPath }) => {
+    const response = await client.callTool({
+      name: "run_subagent_session",
+      arguments: {
+        cwd: projectDir,
+        prompt: "Requirements\nverification before merging.",
+        session_key: "coherent-execution:underbudget-session",
+        timeout_ms: 90_000,
+      },
+    });
+
+    assert.notEqual(response.isError, true);
+    assert.equal((response.structuredContent as { kind?: string }).kind, "preflight_rejected");
+    assert.equal(
+      (response.structuredContent as { reason_code?: string }).reason_code,
+      "timeout_underbudget_for_deadline_risk",
+    );
+    assert.equal((response.structuredContent as { child_started?: boolean }).child_started, false);
+
+    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].tool, "run_subagent_session");
+    assert.equal(failures[0].failure_class, "validation_error");
+    assert.equal(failures[0].reason_code, "timeout_underbudget_for_deadline_risk");
+    assert.equal(failures[0].cwd, projectDir);
+    assert.doesNotMatch(JSON.stringify(failures[0]), /Requirements/);
   });
 });
 
