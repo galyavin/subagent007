@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { loadConfig } from "./config.js";
+import { safeIntegerFromEnv } from "./env.js";
 import {
   failureClassForSessionResult,
   failureReasonCodeForSessionResult,
@@ -111,12 +112,7 @@ interface SessionLock {
 const DEFAULT_SESSION_LOCK_LEASE_MS = 30_000;
 
 function sessionLockLeaseMs(): number {
-  const raw = process.env.SUBAGENT007_SESSION_LOCK_LEASE_MS;
-  if (!raw || raw.trim() === "") {
-    return DEFAULT_SESSION_LOCK_LEASE_MS;
-  }
-  const parsed = Number(raw);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : DEFAULT_SESSION_LOCK_LEASE_MS;
+  return safeIntegerFromEnv("SUBAGENT007_SESSION_LOCK_LEASE_MS", DEFAULT_SESSION_LOCK_LEASE_MS, 1);
 }
 
 function validationSummary(error: z.ZodError): string {
