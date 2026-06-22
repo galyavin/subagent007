@@ -595,14 +595,14 @@ test("cancelled start_run tasks do not append unknown failure records", async ()
   );
 });
 
-test("silent-but-alive cancelled start_run tasks append a targeted pre-output record", async () => {
+test("truly silent cancelled start_run tasks append a targeted pre-output record", async () => {
   await withFakeClient(
     async (client, { projectDir, failureLogPath }) => {
       const startedResponse = await client.callTool({
         name: "start_run",
         arguments: {
           cwd: projectDir,
-          prompt: "CANCEL_WAIT SECRET_CANCEL_PROMPT",
+          prompt: "CANCEL_WAIT OMIT_PROMPT_SUBMITTED SECRET_CANCEL_PROMPT",
           timeout_ms: 6000,
         },
       });
@@ -651,6 +651,61 @@ test("silent-but-alive cancelled start_run tasks append a targeted pre-output re
       assert.equal(failures[0].stop_reason, "cancelled");
       assert.equal(failures[0].success, false);
       assert.doesNotMatch(JSON.stringify(failures[0]), /SECRET_CANCEL_PROMPT/);
+    },
+    {
+      SUBAGENT007_HEARTBEAT_INTERVAL_MS: "25",
+      SUBAGENT007_TIMEOUT_KILL_GRACE_MS: "10",
+      SUBAGENT007_TIMEOUT_FORCE_GRACE_MS: "10",
+    },
+  );
+});
+
+test("cancelled start_run tasks after prompt submission do not append pre-output records", async () => {
+  await withFakeClient(
+    async (client, { projectDir, failureLogPath }) => {
+      const startedResponse = await client.callTool({
+        name: "start_run",
+        arguments: {
+          cwd: projectDir,
+          prompt: "CANCEL_WAIT SECRET_CANCEL_PROMPT",
+          timeout_ms: 6000,
+        },
+      });
+      assert.notEqual(startedResponse.isError, true);
+      const started = startedResponse.structuredContent as { run_id: string };
+
+      const promptDeadline = Date.now() + 2000;
+      type PromptRunView = {
+        status: string;
+        first_public_output_at?: string;
+        recent_events?: Array<{ kind: string; event?: string }>;
+      };
+      let promptView: PromptRunView | undefined;
+      while (Date.now() < promptDeadline) {
+        const response = await client.callTool({
+          name: "get_run",
+          arguments: { run_id: started.run_id },
+        });
+        assert.notEqual(response.isError, true);
+        promptView = response.structuredContent as PromptRunView;
+        if ((promptView.recent_events ?? []).some((event) =>
+          event.kind === "child" && event.event === "child_prompt_submitted"
+        )) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      assert.ok(promptView);
+      assert.equal(promptView.first_public_output_at, undefined);
+
+      const cancelResponse = await client.callTool({
+        name: "cancel_run",
+        arguments: { run_id: started.run_id },
+      });
+      assert.notEqual(cancelResponse.isError, true);
+
+      await waitForRunStatus(client, started.run_id, "cancelled");
+      await assert.rejects(fs.stat(failureLogPath), /ENOENT/);
     },
     {
       SUBAGENT007_HEARTBEAT_INTERVAL_MS: "25",

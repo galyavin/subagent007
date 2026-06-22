@@ -504,8 +504,11 @@ async function appendClosedInputEvents(
   }
 }
 
-function sawChildSessionEstablished(state: RunTaskState): boolean {
-  return state.recentEvents.some((event) => event.kind === "child" && event.event === "child_session_established");
+function sawChildProgressPastSpawn(state: RunTaskState): boolean {
+  return state.recentEvents.some((event) =>
+    event.kind === "child" &&
+    (event.event === "child_session_established" || event.event === "child_prompt_submitted")
+  );
 }
 
 async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
@@ -517,7 +520,7 @@ async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
     result.stop_reason === "cancelled" &&
     state.heartbeatCount > 0 &&
     state.firstPublicOutputAt === undefined &&
-    !sawChildSessionEstablished(state);
+    !sawChildProgressPastSpawn(state);
   if (result.stop_reason === "cancelled" && !cancelledBeforeFirstOutput) {
     return;
   }

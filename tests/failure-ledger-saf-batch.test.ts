@@ -168,3 +168,49 @@ test("cancelled runs after child session establishment do not append cancelled-b
     },
   );
 });
+
+test("cancelled runs after prompt submission do not append cancelled-before-first-output failures", async () => {
+  await withFailureLoggingClient(
+    async (client, { projectDir, failureLogPath }) => {
+      const startedResponse = await client.callTool({
+        name: "start_run",
+        arguments: {
+          cwd: projectDir,
+          prompt: "CANCEL_WAIT SECRET_CANCEL_PROMPT",
+          timeout_ms: 6000,
+        },
+      });
+      assert.notEqual(startedResponse.isError, true);
+      const started = startedResponse.structuredContent as { run_id: string };
+
+      const active = await waitForRun(client, started.run_id, (view) =>
+        view.status === "working" &&
+        view.first_public_output_at === undefined &&
+        (view.recent_events ?? []).some((event) =>
+          event.kind === "child" && event.event === "child_prompt_submitted"
+        )
+      );
+      assert.equal(active.first_public_output_at, undefined);
+
+      const cancelResponse = await client.callTool({
+        name: "cancel_run",
+        arguments: { run_id: started.run_id },
+      });
+      assert.notEqual(cancelResponse.isError, true);
+
+      await waitForRun(client, started.run_id, (view) => view.status === "cancelled");
+      let failures: FailureRecord[] = [];
+      try {
+        failures = await readJsonl<FailureRecord>(failureLogPath);
+      } catch (error) {
+        assert.match(String(error), /ENOENT/);
+      }
+      assert.deepEqual(failures, []);
+    },
+    {
+      SUBAGENT007_HEARTBEAT_INTERVAL_MS: "25",
+      SUBAGENT007_TIMEOUT_KILL_GRACE_MS: "10",
+      SUBAGENT007_TIMEOUT_FORCE_GRACE_MS: "10",
+    },
+  );
+});

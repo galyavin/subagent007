@@ -50,7 +50,7 @@ export async function createFakePiChild(tmpPrefix = "subagent007-fake-pi-"): Pro
       "if (request.sessionMode === 'resume') sessionFile = request.sessionFile;",
       "if (sessionFile && !request.prompt.includes('OMIT_SESSION_EVENT')) writeEvent({ type: 'subagent007.session', session_id: sessionFile, session_file: sessionFile, pi_session_id: 'fake-pi-session-id' });",
       "if (!sessionFile && request.prompt.includes('EMIT_EPHEMERAL_SESSION_EVENT')) writeEvent({ type: 'subagent007.session', session_id: null, session_file: null, pi_session_id: 'fake-ephemeral-session-id' });",
-      "writeEvent({ type: 'subagent007.lifecycle', event: 'child_prompt_submitted' });",
+      "if (!request.prompt.includes('OMIT_PROMPT_SUBMITTED')) writeEvent({ type: 'subagent007.lifecycle', event: 'child_prompt_submitted' });",
       "if (request.prompt.includes('TIMEOUT_SPAWN_CHILD')) {",
       "  process.on('SIGTERM', () => {});",
       "  const child = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);\"], { stdio: 'ignore' });",
