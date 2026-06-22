@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
-import { fileURLToPath } from "node:url";
+import { assertConfiguredChildEntrypointAvailable } from "./childEntrypoint.js";
 import { loadConfig } from "./config.js";
 import {
   defaultInputRequestsDir,
@@ -125,29 +125,8 @@ async function heartbeatMessageForPendingInput(
   );
 }
 
-function piChildPath(): string {
-  if (process.env.SUBAGENT007_PI_CHILD_PATH) {
-    return path.resolve(process.env.SUBAGENT007_PI_CHILD_PATH);
-  }
-  return path.join(path.dirname(fileURLToPath(import.meta.url)), "piChild.js");
-}
-
 export async function assertPiChildEntrypointAvailable(): Promise<string> {
-  const childEntrypoint = piChildPath();
-  try {
-    const stat = await fs.stat(childEntrypoint);
-    if (!stat.isFile()) {
-      throw new ValidationError(`Subagent007 child entrypoint is not a file: ${childEntrypoint}`);
-    }
-    return childEntrypoint;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      throw new ValidationError(
-        `Subagent007 child entrypoint is missing: ${childEntrypoint}. Run npm run build and restart the MCP server.`,
-      );
-    }
-    throw error;
-  }
+  return assertConfiguredChildEntrypointAvailable();
 }
 
 async function writeChildRequestFile(request: PiChildRequestFile): Promise<{

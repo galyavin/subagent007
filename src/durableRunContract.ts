@@ -48,6 +48,13 @@ export function durableRunContractView(): {
     address: "run_id/request_id";
     waiting_status: "input_required";
     waiting_status_terminal: false;
+    pending_cardinality: "zero_or_more";
+    safe_auto_answer: "exactly_one_pending";
+    multiple_pending_action: "fail_closed";
+    duplicate_answer: "rejected";
+    stale_request_id: "rejected";
+    foreign_request_id: "rejected";
+    terminal_pending_settlement: "closed_or_timed_out";
   };
 } {
   const buildSha = serverBuildSha();
@@ -77,6 +84,13 @@ export function durableRunContractView(): {
       address: "run_id/request_id",
       waiting_status: "input_required",
       waiting_status_terminal: false,
+      pending_cardinality: "zero_or_more",
+      safe_auto_answer: "exactly_one_pending",
+      multiple_pending_action: "fail_closed",
+      duplicate_answer: "rejected",
+      stale_request_id: "rejected",
+      foreign_request_id: "rejected",
+      terminal_pending_settlement: "closed_or_timed_out",
     },
   };
 }

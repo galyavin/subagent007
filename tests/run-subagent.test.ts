@@ -33,6 +33,9 @@ type RunSubagentMetadata = {
   requested_timeout_ms: number | null;
   resolved_timeout_ms: number | null;
   effective_timeout_ms: number | null;
+  partial_output_available?: boolean;
+  resume_possible?: boolean;
+  duration_ms?: number;
   stop_signal: string | null;
   timeout_recovery_hint?: string;
   session_id: string | null;
@@ -625,7 +628,16 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       contract_version?: number;
       statuses?: { non_terminal?: string[]; terminal?: string[] };
       capabilities?: string[];
-      input_mailbox?: { waiting_status_terminal?: boolean };
+      input_mailbox?: {
+        waiting_status_terminal?: boolean;
+        pending_cardinality?: string;
+        safe_auto_answer?: string;
+        multiple_pending_action?: string;
+        duplicate_answer?: string;
+        stale_request_id?: string;
+        foreign_request_id?: string;
+        terminal_pending_settlement?: string;
+      };
     };
     assert.equal(contract.contract_name, "subagent007.durable_run");
     assert.equal(contract.contract_version, 1);
@@ -634,6 +646,13 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.equal(contract.capabilities?.includes("file_backed_output_references"), true);
     assert.equal(contract.capabilities?.includes("restart_drift_fail_closed"), true);
     assert.equal(contract.input_mailbox?.waiting_status_terminal, false);
+    assert.equal(contract.input_mailbox?.pending_cardinality, "zero_or_more");
+    assert.equal(contract.input_mailbox?.safe_auto_answer, "exactly_one_pending");
+    assert.equal(contract.input_mailbox?.multiple_pending_action, "fail_closed");
+    assert.equal(contract.input_mailbox?.duplicate_answer, "rejected");
+    assert.equal(contract.input_mailbox?.stale_request_id, "rejected");
+    assert.equal(contract.input_mailbox?.foreign_request_id, "rejected");
+    assert.equal(contract.input_mailbox?.terminal_pending_settlement, "closed_or_timed_out");
     const readinessResponse = await client.callTool({
       name: "get_runtime_readiness",
       arguments: {
@@ -2112,6 +2131,20 @@ test("get_run persists stale active restart drift as terminal failed snapshot", 
       last_phase_at: "2026-06-19T00:00:01.000Z",
     }, null, 2)}\n`,
   );
+  await fs.writeFile(
+    path.join(runTasksDir, `${runId}.events.jsonl`),
+    `${JSON.stringify({
+      schema_version: 1,
+      kind: "child",
+      event: "child_session_established",
+      text: "[child_session_established] Pi session established",
+      occurred_at: "2026-06-19T00:00:02.000Z",
+      metadata: {
+        session_id: "pi-session-stale",
+        session_file: "/tmp/pi-session-stale.jsonl",
+      },
+    })}\n`,
+  );
   const request = await createInputRequest({
     mailboxRoot: inputRequestsDir,
     runId,
@@ -2142,6 +2175,18 @@ test("get_run persists stale active restart drift as terminal failed snapshot", 
     assert.equal(metadata.success, false);
     assert.equal(metadata.error_class, "restart_drift");
     assert.equal(metadata.reason_code, "server_restarted_active_run");
+    assert.equal(metadata.exit_code, null);
+    assert.equal(metadata.timed_out, false);
+    assert.equal(metadata.partial_output_available, false);
+    assert.equal(metadata.resume_possible, false);
+    assert.equal(metadata.requested_timeout_ms, null);
+    assert.equal(metadata.resolved_timeout_ms, null);
+    assert.equal(metadata.effective_timeout_ms, null);
+    assert.equal(metadata.session_id, "pi-session-stale");
+    assert.equal(metadata.session_established, true);
+    assert.equal(Array.isArray(metadata.output_references), true);
+    assert.equal(metadata.output_references?.length, 0);
+    assert.equal(typeof metadata.duration_ms, "number");
     assert.equal(metadata.contract_name, "subagent007.durable_run");
     assert.equal(metadata.input_requests.some((entry) => entry.status === "pending"), false);
     assert.ok(metadata.input_requests.some((entry) =>
@@ -2153,6 +2198,12 @@ test("get_run persists stale active restart drift as terminal failed snapshot", 
     assert.equal(persisted.status, "failed");
     assert.equal(persisted.error_class, "restart_drift");
     assert.equal(persisted.reason_code, "server_restarted_active_run");
+    assert.equal(persisted.exit_code, null);
+    assert.equal(persisted.timed_out, false);
+    assert.equal(persisted.partial_output_available, false);
+    assert.equal(persisted.resume_possible, false);
+    assert.equal(persisted.session_id, "pi-session-stale");
+    assert.equal(persisted.output_references?.length, 0);
 
     const secondResponse = await client.callTool({
       name: "get_run",

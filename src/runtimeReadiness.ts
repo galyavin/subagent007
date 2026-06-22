@@ -9,6 +9,10 @@ import {
   DURABLE_RUN_CAPABILITIES,
   durableRunContractView,
 } from "./durableRunContract.js";
+import {
+  configuredChildEntrypointPath,
+  configuredChildEntrypointPathSource,
+} from "./childEntrypoint.js";
 import { SERVER_VERSION, serverBuildSha } from "./runtimeMetadata.js";
 
 const execFileAsync = promisify(execFile);
@@ -129,6 +133,7 @@ export interface RuntimeReadinessSnapshot {
     dist_dir: string;
     server_entrypoint: FileFact;
     child_entrypoint: FileFact;
+    child_entrypoint_source: "env" | "server_entrypoint_dir";
     newest_build_input?: BuildInputFact;
     stale: boolean;
   };
@@ -156,10 +161,6 @@ function defaultServerEntrypoint(projectRoot: string, processArgv: string[]): st
   return invoked && invoked.trim() !== ""
     ? path.resolve(invoked)
     : path.join(projectRoot, "dist", "server.js");
-}
-
-function childEntrypointPath(serverEntrypoint: string): string {
-  return path.join(path.dirname(serverEntrypoint), "piChild.js");
 }
 
 async function fileFact(filePath: string): Promise<FileFact> {
@@ -338,7 +339,8 @@ export async function runtimeReadinessSnapshot(
   const processArgv = options.processArgv ?? process.argv;
   const projectRoot = path.resolve(options.projectRoot ?? defaultProjectRoot());
   const serverEntrypoint = path.resolve(options.serverEntrypoint ?? defaultServerEntrypoint(projectRoot, processArgv));
-  const childEntrypoint = childEntrypointPath(serverEntrypoint);
+  const childEntrypoint = configuredChildEntrypointPath({ defaultDir: path.dirname(serverEntrypoint) });
+  const childEntrypointSource = configuredChildEntrypointPathSource() === "env" ? "env" : "server_entrypoint_dir";
   const policy = sourceStatePolicyFromInput(options.source_state_policy);
   const [entrypointFact, childEntrypointFact, entrypointRealpath, newestInput, gitState] = await Promise.all([
     fileFact(serverEntrypoint),
@@ -442,6 +444,7 @@ export async function runtimeReadinessSnapshot(
       dist_dir: path.join(projectRoot, "dist"),
       server_entrypoint: entrypointFact,
       child_entrypoint: childEntrypointFact,
+      child_entrypoint_source: childEntrypointSource,
       ...(newestInput ? { newest_build_input: newestInput } : {}),
       stale: stale || childStale,
     },

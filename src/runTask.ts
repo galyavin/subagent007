@@ -272,6 +272,92 @@ function errorTaxonomyForError(error: Error): { error_class: string; reason_code
   };
 }
 
+function elapsedMsBetween(startedAt: string, finishedAt: string): number {
+  const started = Date.parse(startedAt);
+  const finished = Date.parse(finishedAt);
+  if (!Number.isFinite(started) || !Number.isFinite(finished)) {
+    return 0;
+  }
+  return Math.max(0, finished - started);
+}
+
+function syntheticTerminalFailureEnvelope(options: {
+  startedAt: string;
+  finishedAt: string;
+  errorClass: string;
+  reasonCode: string;
+  sessionId?: string | null;
+  sessionEstablished?: boolean;
+  outputPath?: string;
+  outputReferences?: RunTaskView["output_references"];
+}): Pick<
+  RunTaskView,
+  | "success"
+  | "exit_code"
+  | "timed_out"
+  | "partial_output_available"
+  | "resume_possible"
+  | "duration_ms"
+  | "requested_timeout_ms"
+  | "resolved_timeout_ms"
+  | "effective_timeout_ms"
+  | "session_id"
+  | "session_established"
+  | "output_references"
+  | "error_class"
+  | "reason_code"
+> & { output_path?: string } {
+  return {
+    success: false,
+    exit_code: null,
+    timed_out: false,
+    partial_output_available: false,
+    resume_possible: false,
+    duration_ms: elapsedMsBetween(options.startedAt, options.finishedAt),
+    requested_timeout_ms: null,
+    resolved_timeout_ms: null,
+    effective_timeout_ms: null,
+    session_id: options.sessionId ?? null,
+    session_established: options.sessionEstablished ?? (options.sessionId !== undefined && options.sessionId !== null),
+    output_references: options.outputReferences ?? [],
+    ...(options.outputPath ? { output_path: options.outputPath } : {}),
+    error_class: options.errorClass,
+    reason_code: options.reasonCode,
+  };
+}
+
+function sessionIdFromEvents(events: RunPublicEvent[] | undefined): string | null {
+  if (!events) {
+    return null;
+  }
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    const sessionId = event.metadata?.session_id;
+    if (typeof sessionId === "string" && sessionId.trim() !== "") {
+      return sessionId;
+    }
+  }
+  return null;
+}
+
+function syntheticTerminalFailureEventMetadata(
+  envelope: ReturnType<typeof syntheticTerminalFailureEnvelope>,
+): Record<string, unknown> {
+  return {
+    success: envelope.success,
+    error_class: envelope.error_class,
+    reason_code: envelope.reason_code,
+    exit_code: envelope.exit_code,
+    timed_out: envelope.timed_out,
+    duration_ms: envelope.duration_ms,
+    effective_timeout_ms: envelope.effective_timeout_ms,
+    partial_output_available: envelope.partial_output_available,
+    resume_possible: envelope.resume_possible,
+    session_id: envelope.session_id,
+    output_reference_count: envelope.output_references?.length ?? 0,
+  };
+}
+
 function progressView(state: RunTaskState, elapsedMs: number): RunTaskProgressView {
   const noPublicOutputElapsedMs = state.firstPublicOutputAt === undefined
     ? Math.max(0, elapsedMs)
@@ -782,13 +868,22 @@ async function appendTerminalEvent(state: RunTaskState): Promise<void> {
     return;
   }
   if (state.error) {
+    const taxonomy = errorTaxonomyForError(state.error);
+    const sessionId = sessionIdFromEvents(state.recentEvents);
+    const failureEnvelope = syntheticTerminalFailureEnvelope({
+      startedAt: state.startedAt,
+      finishedAt: occurredAt,
+      errorClass: taxonomy.error_class,
+      reasonCode: taxonomy.reason_code,
+      sessionId,
+    });
     await appendStatusEvent(state, {
       kind: "terminal",
       event: state.cancelRequested ? "cancellation_settled" : "failed",
       text: state.cancelRequested ? "[cancellation_settled] run cancelled" : `[failed] ${state.error.message}`,
       occurred_at: occurredAt,
       metadata: {
-        success: false,
+        ...syntheticTerminalFailureEventMetadata(failureEnvelope),
         error: state.error.message,
       },
     }, state.cancelRequested ? "run cancelled" : state.error.message);
@@ -897,6 +992,21 @@ async function persistRestartDriftSnapshot(
   eventProjection: Pick<RunTaskView, "recent_events" | "last_public_output_excerpt">,
 ): Promise<RunTaskView> {
   const finishedAt = new Date().toISOString();
+  const sessionEvents = [
+    ...(snapshot.recent_events ?? []),
+    ...(eventProjection.recent_events ?? []),
+  ];
+  const sessionId = snapshot.session_id ?? sessionIdFromEvents(sessionEvents);
+  const failureEnvelope = syntheticTerminalFailureEnvelope({
+    startedAt: snapshot.started_at,
+    finishedAt,
+    errorClass: "restart_drift",
+    reasonCode: "server_restarted_active_run",
+    sessionId,
+    sessionEstablished: snapshot.session_established ?? sessionId !== null,
+    outputPath: snapshot.output_path,
+    outputReferences: snapshot.output_references,
+  });
   const mailboxRoot = path.dirname(snapshot.input_requests_dir);
   await closePendingInputRequestsForRun({
     mailboxRoot,
@@ -908,11 +1018,7 @@ async function persistRestartDriftSnapshot(
     event: "failed",
     text: "[failed] run is not active after MCP server restart",
     occurred_at: finishedAt,
-    metadata: {
-      success: false,
-      error_class: "restart_drift",
-      reason_code: "server_restarted_active_run",
-    },
+    metadata: syntheticTerminalFailureEventMetadata(failureEnvelope),
   });
   const inputRequests = await listInputRequests({ mailboxRoot, runId: snapshot.run_id });
   const events = await loadSnapshotEvents(snapshot);
@@ -926,10 +1032,8 @@ async function persistRestartDriftSnapshot(
     active_phase: "failed",
     last_phase_at: finishedAt,
     input_requests: inputRequests,
-    success: false,
+    ...failureEnvelope,
     error: "run is not active in this MCP server process; the server may have restarted",
-    error_class: "restart_drift",
-    reason_code: "server_restarted_active_run",
   };
   await writeTaskSnapshot(staleView);
   return staleView;
@@ -971,6 +1075,15 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
     };
   }
   if (state.error) {
+    const taxonomy = errorTaxonomyForError(state.error);
+    const sessionId = sessionIdFromEvents(state.recentEvents);
+    const failureEnvelope = syntheticTerminalFailureEnvelope({
+      startedAt: state.startedAt,
+      finishedAt: state.finishedAt ?? new Date().toISOString(),
+      errorClass: taxonomy.error_class,
+      reasonCode: taxonomy.reason_code,
+      sessionId,
+    });
     return {
       ...contractFields(),
       run_id: state.runId,
@@ -983,10 +1096,9 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
       finished_at: state.finishedAt,
       input_requests_dir: state.inputRequestsDir,
       input_requests: inputRequests,
-      success: false,
+      ...failureEnvelope,
       ...activeProgressView(state),
       error: state.error.message,
-      ...errorTaxonomyForError(state.error),
     };
   }
   return activeRunTaskView(state, inputRequests);

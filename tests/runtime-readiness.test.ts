@@ -6,6 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { runtimeReadinessSnapshot } from "../src/runtimeReadiness.js";
+import { withEnv } from "./helpers/testUtils.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -89,6 +90,29 @@ test("runtime readiness blocks when the built child entrypoint is missing", asyn
   assert.equal(snapshot.status, "blocked");
   assert.equal(blockClasses(snapshot).includes("missing_build"), true);
   assert.equal(snapshot.blocks.find((block) => block.reason_code === "child_entrypoint_missing")?.class, "missing_build");
+});
+
+test("runtime readiness honors the configured child entrypoint path", async () => {
+  const { root, serverEntrypoint } = await writeFixtureProject();
+  const configuredChildEntrypoint = path.join(root, "dist", "configured-missing-piChild.js");
+
+  await withEnv({ SUBAGENT007_PI_CHILD_PATH: configuredChildEntrypoint }, async () => {
+    const snapshot = await runtimeReadinessSnapshot({
+      projectRoot: root,
+      serverEntrypoint,
+      processArgv: ["node", serverEntrypoint],
+      source_state_policy: "allow_unknown",
+    });
+
+    assert.equal(snapshot.ready, false);
+    assert.equal(snapshot.status, "blocked");
+    assert.equal(snapshot.build.child_entrypoint.path, configuredChildEntrypoint);
+    assert.equal(snapshot.build.child_entrypoint_source, "env");
+    assert.equal(
+      snapshot.blocks.find((block) => block.reason_code === "child_entrypoint_missing")?.evidence?.child_entrypoint,
+      configuredChildEntrypoint,
+    );
+  });
 });
 
 test("runtime readiness blocks stale dist output when source is newer", async () => {
