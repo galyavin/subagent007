@@ -44,29 +44,29 @@ function defaultModelHealthPath(): string {
 
 function assertRecord(value: unknown): asserts value is ModelHealthRecord {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new ValidationError("model health record must be an object");
+    throw new ValidationError("model health record must be an object", "unknown_validation_error");
   }
   const record = value as Record<string, unknown>;
   if (record.schema_version !== 1) {
-    throw new ValidationError("model health record schema_version must be 1");
+    throw new ValidationError("model health record schema_version must be 1", "unknown_validation_error");
   }
   if (!MODEL_CLASSES.includes(String(record.model_class) as ModelClass)) {
-    throw new ValidationError("model health record model_class is invalid");
+    throw new ValidationError("model health record model_class is invalid", "invalid_model_class");
   }
   assertNonEmptyStringField(record, "resolved_model");
   if (record.surface !== MODEL_HEALTH_SURFACE_ONE_SHOT) {
-    throw new ValidationError("model health record surface is invalid");
+    throw new ValidationError("model health record surface is invalid", "unknown_validation_error");
   }
   assertNonEmptyStringField(record, "checked_at");
   if (typeof record.usable_for_one_shot !== "boolean") {
-    throw new ValidationError("model health record usable_for_one_shot must be boolean");
+    throw new ValidationError("model health record usable_for_one_shot must be boolean", "unknown_validation_error");
   }
 }
 
 function assertNonEmptyStringField(record: Record<string, unknown>, field: string): void {
   const value = record[field];
   if (typeof value !== "string" || value.trim() === "") {
-    throw new ValidationError(`model health record ${field} must be a nonempty string`);
+    throw new ValidationError(`model health record ${field} must be a nonempty string`, "unknown_validation_error");
   }
 }
 
@@ -78,10 +78,10 @@ async function readRecords(healthPath = defaultModelHealthPath()): Promise<Model
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return [];
     }
-    throw new ValidationError(`model health file is unreadable: ${(error as Error).message}`);
+    throw new ValidationError(`model health file is unreadable: ${(error as Error).message}`, "unknown_validation_error");
   }
   if (!Array.isArray(parsed)) {
-    throw new ValidationError("model health file must contain an array");
+    throw new ValidationError("model health file must contain an array", "unknown_validation_error");
   }
   for (const record of parsed) {
     assertRecord(record);
@@ -160,6 +160,7 @@ export async function assertModelClassUsableForOneShot(modelClass: ModelClass): 
   if (health.status === "unhealthy") {
     throw new ValidationError(
       `model_class ${modelClass} is known unhealthy for run_subagent one-shot use; refresh model health or use schedule_run/start_run with a healthy model_class`,
+      "model_class_unhealthy",
     );
   }
 }

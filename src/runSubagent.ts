@@ -25,7 +25,7 @@ import { computeTimeoutBudget } from "./timeoutBudget.js";
 import { safeIntegerFromEnv } from "./env.js";
 import { resolvePiAgentDir } from "./piAgentDir.js";
 import { resolveRequestedSkill } from "./skillResources.js";
-import type { RunStopReason } from "./types.js";
+import type { FailureReasonCode, RunStopReason } from "./types.js";
 import type {
   OutputMode,
   PromptProvenance,
@@ -186,7 +186,7 @@ function runErrorTaxonomy(input: {
   exitCode: number | null;
   sessionMode: RunSubagentSessionMode;
   sessionEstablished: boolean;
-}): { error_class?: string; reason_code?: string } {
+}): { error_class?: string; reason_code?: FailureReasonCode } {
   if (input.success || input.cancelled) {
     return {};
   }
@@ -259,7 +259,10 @@ export async function runSubagentCore(
   } = {},
 ): Promise<RunSubagentResult> {
   if (!options.allowTimeout && request.timeout_ms !== undefined) {
-    throw new ValidationError("timeout_ms is not supported by run_subagent; use schedule_run or start_run for timed work");
+    throw new ValidationError(
+      "timeout_ms is not supported by run_subagent; use schedule_run or start_run for timed work",
+      "run_subagent_timeout_unsupported",
+    );
   }
   const config = await loadConfig();
   const resolved = await validateAndResolveRequest(request, config);

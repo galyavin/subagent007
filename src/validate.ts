@@ -8,6 +8,7 @@ import {
   TOOL_PROFILES,
   type ModelClass,
   type OutputMode,
+  type FailureReasonCode,
   type ResolvedRunSubagentRequest,
   type RunContinuity,
   type RunSubagentPromotionReasonCode,
@@ -72,6 +73,31 @@ const ONE_SHOT_WRITE_WORK_PATTERNS = [
 const DEFAULT_DEADLINE_RISK_TIMEOUT_FLOOR_MS = 600_000;
 const DEADLINE_RISK_TIMEOUT_FLOOR_ENV = "SUBAGENT007_DEADLINE_RISK_TIMEOUT_FLOOR_MS";
 
+function validationReasonCodeForKey(key: string): FailureReasonCode {
+  switch (key) {
+    case "model_class":
+      return "invalid_model_class";
+    case "output_mode":
+      return "invalid_output_mode";
+    case "tool_profile":
+      return "invalid_tool_profile";
+    case "skill":
+    case "skill_name":
+      return "invalid_skill";
+    case "continuity.mode":
+    case "continuity.session_id":
+      return "invalid_session_id";
+    case "prompt":
+      return "prompt_missing";
+    case "cwd":
+      return "cwd_not_absolute";
+    case "timeout_ms":
+      return "invalid_timeout_ms";
+    default:
+      return "unknown_validation_error";
+  }
+}
+
 function promptForClassification(prompt: string): string {
   return prompt.replace(/\s+/g, " ").trim();
 }
@@ -130,7 +156,7 @@ function trimOptional(value: unknown, key: string): string | undefined {
     return undefined;
   }
   if (typeof value !== "string") {
-    throw new ValidationError(`${key} must be a string`);
+    throw new ValidationError(`${key} must be a string`, validationReasonCodeForKey(key));
   }
   const trimmed = value.trim();
   return trimmed === "" ? undefined : trimmed;
@@ -147,7 +173,7 @@ function validateChoice<T extends string>(
     return undefined;
   }
   if (!choices.includes(choice as T)) {
-    throw new ValidationError(`${key} must be one of: ${choices.join(", ")}`);
+    throw new ValidationError(`${key} must be one of: ${choices.join(", ")}`, validationReasonCodeForKey(key));
   }
   return choice as T;
 }
@@ -157,10 +183,10 @@ export function validateSkillName(value: unknown, key = "skill"): string | undef
     return undefined;
   }
   if (typeof value !== "string") {
-    throw new ValidationError(`${key} must be a string or null`);
+    throw new ValidationError(`${key} must be a string or null`, "invalid_skill");
   }
   if (!SKILL_NAME_PATTERN.test(value)) {
-    throw new ValidationError(SKILL_NAME_ERROR);
+    throw new ValidationError(SKILL_NAME_ERROR, "invalid_skill");
   }
   return value;
 }
@@ -173,6 +199,7 @@ function assertNoUnstructuredSkillInvocation(prompt: string, resolvedSkill: stri
   if (PROMPT_SKILL_INVOCATION_PATTERNS.some((pattern) => pattern.test(firstLine))) {
     throw new ValidationError(
       "Pass skill_name instead of putting skill invocation syntax in prompt.",
+      "invalid_skill",
     );
   }
 }
@@ -181,7 +208,7 @@ function resolveSkillName(request: RunSubagentRequest, prompt: string): string |
   const legacySkill = validateSkillName(request.skill, "skill");
   const canonicalSkill = validateSkillName(request.skill_name, "skill_name");
   if (legacySkill && canonicalSkill && legacySkill !== canonicalSkill) {
-    throw new ValidationError("skill and skill_name must match when both are provided");
+    throw new ValidationError("skill and skill_name must match when both are provided", "invalid_skill");
   }
   const resolvedSkill = canonicalSkill ?? legacySkill;
   assertNoUnstructuredSkillInvocation(prompt, resolvedSkill);
@@ -209,34 +236,37 @@ function validateContinuity(value: unknown, request: unknown): RunContinuity {
   ) {
     throw new ValidationError(
       "session_id is not a run_subagent input; use continuity.mode fresh or continuity.mode resume with continuity.session_id",
+      "invalid_session_id",
     );
   }
   if (value === undefined) {
     return { mode: "ephemeral" };
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new ValidationError("continuity must be an object when provided");
+    throw new ValidationError("continuity must be an object when provided", "invalid_session_id");
   }
   const continuity = value as Record<string, unknown>;
   const mode = validateChoice(continuity.mode, "continuity.mode", RUN_CONTINUITY_MODES);
   if (!mode) {
     throw new ValidationError(
       `continuity.mode must be one of: ${RUN_CONTINUITY_MODES.join(", ")}`,
+      "invalid_session_id",
     );
   }
   const rawSessionId = trimOptional(continuity.session_id, "continuity.session_id");
   if (mode === "resume") {
     if (!rawSessionId) {
-      throw new ValidationError("continuity.session_id is required when continuity.mode is resume");
+      throw new ValidationError("continuity.session_id is required when continuity.mode is resume", "invalid_session_id");
     }
     if (!path.isAbsolute(rawSessionId)) {
-      throw new ValidationError("continuity.session_id must be an absolute path when continuity.mode is resume");
+      throw new ValidationError("continuity.session_id must be an absolute path when continuity.mode is resume", "invalid_session_id");
     }
     return { mode, session_id: rawSessionId };
   }
   if (rawSessionId !== undefined) {
     throw new ValidationError(
       "continuity.session_id is only valid when continuity.mode is resume",
+      "invalid_session_id",
     );
   }
   return { mode };
@@ -252,43 +282,45 @@ async function validateResumeSessionFile(continuity: RunContinuity): Promise<voi
     stat = await fs.stat(continuity.session_id);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      throw new ValidationError(`resume session file does not exist: ${continuity.session_id}`);
+      throw new ValidationError(`resume session file does not exist: ${continuity.session_id}`, "invalid_session_id");
     }
     throw new ValidationError(
       `resume session file is not accessible: ${continuity.session_id}: ${(error as Error).message}`,
+      "invalid_session_id",
     );
   }
   if (!stat.isFile()) {
-    throw new ValidationError(`resume session path is not a file: ${continuity.session_id}`);
+    throw new ValidationError(`resume session path is not a file: ${continuity.session_id}`, "invalid_session_id");
   }
   if (stat.size === 0) {
-    throw new ValidationError(`resume session file is empty: ${continuity.session_id}`);
+    throw new ValidationError(`resume session file is empty: ${continuity.session_id}`, "invalid_session_id");
   }
   try {
     await fs.access(continuity.session_id, fsConstants.R_OK);
   } catch (error) {
     throw new ValidationError(
       `resume session file is not readable: ${continuity.session_id}: ${(error as Error).message}`,
+      "invalid_session_id",
     );
   }
 }
 
 async function validateCwd(value: unknown): Promise<string> {
   if (typeof value !== "string" || value.trim() === "") {
-    throw new ValidationError("cwd must be a nonempty absolute path");
+    throw new ValidationError("cwd must be a nonempty absolute path", "cwd_not_absolute");
   }
   const cwd = value.trim();
   if (!path.isAbsolute(cwd)) {
-    throw new ValidationError("cwd must be an absolute path");
+    throw new ValidationError("cwd must be an absolute path", "cwd_not_absolute");
   }
   let stat;
   try {
     stat = await fs.stat(cwd);
   } catch (error) {
-    throw new ValidationError(`cwd is not accessible: ${(error as Error).message}`);
+    throw new ValidationError(`cwd is not accessible: ${(error as Error).message}`, "cwd_inaccessible");
   }
   if (!stat.isDirectory()) {
-    throw new ValidationError("cwd must be a directory");
+    throw new ValidationError("cwd must be a directory", "cwd_not_directory");
   }
   return cwd;
 }
@@ -299,16 +331,19 @@ export async function validateAndResolveRequest(
 ): Promise<ResolvedRunSubagentRequest> {
   const prompt = trimOptional(request.prompt, "prompt");
   if (!prompt) {
-    throw new ValidationError("prompt must be a nonempty string");
+    throw new ValidationError("prompt must be a nonempty string", "prompt_missing");
   }
 
   const cwd = await validateCwd(request.cwd);
 
   if ("model" in request) {
-    throw new ValidationError("model is no longer a public input; use model_class");
+    throw new ValidationError("model is no longer a public input; use model_class", "invalid_model");
   }
   if ("thinking_level" in request) {
-    throw new ValidationError("thinking_level is calibrated by model_class and is no longer a public input");
+    throw new ValidationError(
+      "thinking_level is calibrated by model_class and is no longer a public input",
+      "invalid_thinking_level",
+    );
   }
   const modelClass = validateModelClass(request.model_class) ?? config.default_model_class ?? DEFAULT_MODEL_CLASS;
   const resolvedModelClass = resolveModelClass(modelClass);
@@ -321,12 +356,13 @@ export async function validateAndResolveRequest(
       request.timeout_ms <= 0 ||
       !Number.isInteger(request.timeout_ms)
     ) {
-      throw new ValidationError("timeout_ms must be a positive integer when provided");
+      throw new ValidationError("timeout_ms must be a positive integer when provided", "invalid_timeout_ms");
     }
     const minTimeoutMs = minimumRequestedTimeoutMs();
     if (request.timeout_ms < minTimeoutMs) {
       throw new ValidationError(
         `timeout_ms must be at least ${minTimeoutMs} ms with the configured response headroom and kill grace`,
+        "invalid_timeout_ms",
       );
     }
     timeoutMs = request.timeout_ms;
@@ -399,5 +435,6 @@ export function assertDeadlineRiskTimeoutBudget(
       `minimum_timeout_ms=${floorMs}`,
       "use wait_ms for the initial scheduler wait, omit timeout_ms for long durable work, or set timeout_ms to at least the minimum",
     ].join("; "),
+    "timeout_underbudget_for_deadline_risk",
   );
 }

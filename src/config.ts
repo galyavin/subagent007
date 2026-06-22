@@ -23,11 +23,11 @@ function modelClass(value: unknown, key: string): ModelClass | undefined {
     return undefined;
   }
   if (typeof value !== "string" || value.trim() === "") {
-    throw new ValidationError(`${key} must be a nonempty string when provided`);
+    throw new ValidationError(`${key} must be a nonempty string when provided`, "invalid_model_class");
   }
   const modelClassValue = value.trim();
   if (!MODEL_CLASSES.includes(modelClassValue as ModelClass)) {
-    throw new ValidationError(`${key} must be one of: ${MODEL_CLASSES.join(", ")}`);
+    throw new ValidationError(`${key} must be one of: ${MODEL_CLASSES.join(", ")}`, "invalid_model_class");
   }
   return modelClassValue as ModelClass;
 }
@@ -63,17 +63,23 @@ export async function loadConfigRecord(configPath = defaultConfigPath()): Promis
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return {};
     }
-    throw new ValidationError(`failed to read config file ${configPath}: ${(error as Error).message}`);
+    throw new ValidationError(
+      `failed to read config file ${configPath}: ${(error as Error).message}`,
+      "unknown_validation_error",
+    );
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    throw new ValidationError(`config file ${configPath} is not valid JSON: ${(error as Error).message}`);
+    throw new ValidationError(
+      `config file ${configPath} is not valid JSON: ${(error as Error).message}`,
+      "unknown_validation_error",
+    );
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new ValidationError(`config file ${configPath} must contain a JSON object`);
+    throw new ValidationError(`config file ${configPath} must contain a JSON object`, "unknown_validation_error");
   }
 
   const record = parsed as Record<string, unknown>;

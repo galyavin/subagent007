@@ -42,6 +42,11 @@ import {
   recentEventsProjection,
 } from "./runEvents.js";
 import { publicOutputLineFromProcessLine } from "./transcript.js";
+import {
+  terminalRunTaskEventDetails,
+  terminalRunTaskStatus,
+  type RunTaskActivePhase,
+} from "./runLifecycle.js";
 import type {
   RunPublicEvent,
   RunPublicEventName,
@@ -65,18 +70,6 @@ import { safeIntegerFromEnv } from "./env.js";
 
 type RunTaskStatus = DurableRunStatus;
 const TERMINAL_RUN_STATUS_SET = new Set<RunTaskStatus>(TERMINAL_RUN_STATUSES);
-
-type RunTaskActivePhase =
-  | "starting"
-  | "awaiting_child_event"
-  | "running_silent"
-  | "running"
-  | "input_required"
-  | "cancelling"
-  | "timed_out"
-  | "cancelled"
-  | "completed"
-  | "failed";
 
 type RunTaskTerminalResult = RunSubagentResult | RunSubagentSessionResult;
 type ChildLifecycleEventName = Extract<
@@ -112,7 +105,7 @@ export interface RunTaskView extends Partial<RunSubagentResult>, Partial<RunSuba
   wait_truncated?: boolean;
   error?: string;
   error_class?: string;
-  reason_code?: string;
+  reason_code?: FailureReasonCode;
 }
 
 interface RunTaskState {
@@ -194,7 +187,7 @@ async function readTaskSnapshot(runId: string): Promise<RunTaskView | null> {
 }
 
 function taskNotFound(runId: string): ValidationError {
-  return new ValidationError(`run not found: ${runId}`);
+  return new ValidationError(`run not found: ${runId}`, "run_not_found");
 }
 
 function createRunTaskState(taskKind: "run" | "session", sessionKey?: string): RunTaskState {
@@ -248,16 +241,6 @@ function noteFirstPublicOutput(state: RunTaskState, occurredAt = new Date().toIS
   state.firstPublicOutputAt = occurredAt;
 }
 
-function terminalStatus(result: RunTaskTerminalResult): RunTaskStatus {
-  if (result.stop_reason === "cancelled" || ("status" in result && result.status === "cancelled")) {
-    return "cancelled";
-  }
-  if (result.timed_out || result.stop_reason === "timeout" || ("status" in result && result.status === "timed_out")) {
-    return "timed_out";
-  }
-  return result.success ? "completed" : "failed";
-}
-
 function contractFields(): Pick<RunTaskView, "contract_name" | "contract_version"> {
   return {
     contract_name: DURABLE_RUN_CONTRACT_NAME,
@@ -265,7 +248,7 @@ function contractFields(): Pick<RunTaskView, "contract_name" | "contract_version
   };
 }
 
-function errorTaxonomyForError(error: Error): { error_class: string; reason_code: string } {
+function errorTaxonomyForError(error: Error): { error_class: string; reason_code: FailureReasonCode } {
   return {
     error_class: error instanceof ValidationError ? "validation_error" : "unknown_error",
     reason_code: failureReasonCodeForError(error),
@@ -285,7 +268,7 @@ function syntheticTerminalFailureEnvelope(options: {
   startedAt: string;
   finishedAt: string;
   errorClass: string;
-  reasonCode: string;
+  reasonCode: FailureReasonCode;
   sessionId?: string | null;
   sessionEstablished?: boolean;
   outputPath?: string;
@@ -379,7 +362,7 @@ function progressView(state: RunTaskState, elapsedMs: number): RunTaskProgressVi
 }
 
 function terminalProgressView(state: RunTaskState, result: RunTaskTerminalResult): RunTaskProgressView {
-  const terminalEvent = terminalEventDetails(result);
+  const terminalEvent = terminalRunTaskEventDetails(result);
   const recentEvents = state.recentEvents.some((event) => event.kind === "terminal" && event.event === terminalEvent.event)
     ? state.recentEvents
     : recentEventsProjection([
@@ -705,44 +688,6 @@ async function logBackgroundHandlerError(
   });
 }
 
-function terminalEventDetails(result: RunTaskTerminalResult): {
-  phase: RunTaskActivePhase;
-  event: "cancellation_settled" | "timeout" | "completed" | "failed";
-  text: string;
-  progressMessage: string;
-} {
-  if (result.stop_reason === "cancelled") {
-    return {
-      phase: "cancelled",
-      event: "cancellation_settled",
-      text: "[cancellation_settled] run cancelled",
-      progressMessage: "run cancelled",
-    };
-  }
-  if (result.stop_reason === "timeout") {
-    return {
-      phase: "timed_out",
-      event: "timeout",
-      text: "[timeout] run timed out",
-      progressMessage: "run timed out",
-    };
-  }
-  if (result.success) {
-    return {
-      phase: "completed",
-      event: "completed",
-      text: "[completed] run completed",
-      progressMessage: "run completed",
-    };
-  }
-  return {
-    phase: "failed",
-    event: "failed",
-    text: "[failed] run failed",
-    progressMessage: "run failed",
-  };
-}
-
 function packetTerminalEvent(result: RunTaskTerminalResult, occurredAt: string): RunPublicEvent | null {
   if (!("packet_parse_status" in result) || result.packet_parse_status === "not_run") {
     return null;
@@ -851,7 +796,7 @@ async function appendTerminalEvent(state: RunTaskState): Promise<void> {
         ...packetEvent,
       }, packetEvent.event === "packet_accepted" ? "packet accepted" : "packet rejected");
     }
-    const terminalEvent = terminalEventDetails(result);
+    const terminalEvent = terminalRunTaskEventDetails(result);
     await appendStatusEvent(state, {
       kind: "terminal",
       event: terminalEvent.event,
@@ -1066,7 +1011,7 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
       run_id: state.runId,
       task_id: state.runId,
       task_kind: state.taskKind,
-      status: terminalStatus(state.result),
+      status: terminalRunTaskStatus(state.result),
       started_at: state.startedAt,
       finished_at: state.finishedAt,
       input_requests_dir: state.inputRequestsDir,
@@ -1156,7 +1101,7 @@ function scheduleWaitMs(value: unknown): number {
     !Number.isInteger(value) ||
     value < 0
   ) {
-    throw new ValidationError("wait_ms must be a nonnegative integer when provided");
+    throw new ValidationError("wait_ms must be a nonnegative integer when provided", "invalid_wait_ms");
   }
   return value;
 }
@@ -1380,7 +1325,10 @@ export async function runSubagentOneShotTask(
   } = {},
 ): Promise<RunTaskView> {
   if (request.timeout_ms !== undefined) {
-    throw new ValidationError("timeout_ms is not supported by run_subagent; use schedule_run or start_run for timed work");
+    throw new ValidationError(
+      "timeout_ms is not supported by run_subagent; use schedule_run or start_run for timed work",
+      "run_subagent_timeout_unsupported",
+    );
   }
   const config = await loadConfig();
   const resolved = await validateAndResolveRequest(request, config);
@@ -1509,14 +1457,17 @@ export async function answerRunTaskInput(options: {
     throw taskNotFound(options.runId);
   }
   if (state.cancelRequested || state.result || state.error) {
-    throw new ValidationError(`run is not accepting input: ${options.runId}`);
+    throw new ValidationError(`run is not accepting input: ${options.runId}`, "run_not_accepting_input");
   }
   const requests = await listInputRequests({
     mailboxRoot: state.mailboxRoot,
     runId: state.runId,
   });
   if (!requests.some((request) => request.request_id === options.requestId)) {
-    throw new ValidationError(`input request is not part of run ${options.runId}: ${options.requestId}`);
+    throw new ValidationError(
+      `input request is not part of run ${options.runId}: ${options.requestId}`,
+      "input_request_not_part_of_run",
+    );
   }
   await answerInputRequest({
     mailboxRoot: state.mailboxRoot,

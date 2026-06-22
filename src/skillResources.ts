@@ -47,6 +47,7 @@ function collisionName(diagnostic: unknown): string | undefined {
 function ambiguousSkillError(skillName: string): Error {
   return new ValidationError(
     `skill ${JSON.stringify(skillName)} is ambiguous across configured Subagent007 skill paths`,
+    "invalid_skill",
   );
 }
 
@@ -65,6 +66,7 @@ export function resolveRequestedSkill(skillName: string, options: Omit<SkillReso
   if (matches.length === 0) {
     throw new ValidationError(
       `unknown skill ${JSON.stringify(skillName)}; requested skills must resolve to exactly one configured Subagent007 skill`,
+      "invalid_skill",
     );
   }
   if (matches.length > 1) {

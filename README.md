@@ -64,7 +64,7 @@ Use model classes instead of concrete model IDs. The default class is `C`; calle
 | --- | --- | --- |
 | `A` | Lowest-complexity class for narrow read-only audits, low-risk probes, and concise first-pass judgment. Prefer `B` or `C` when implementation, broad repo-grounded investigation, architectural judgment, or predictable tool use matters. | `openrouter/qwen/qwen3.6-35b-a3b`, `high` |
 | `B` | Simple coding, review, or search tasks with limited ambiguity. Use strict prompts/timeouts for anything exploratory because tool loops can stall. | `openrouter/deepseek/deepseek-v4-pro`, `high` |
-| `C` | Default for bounded implementation, repo-grounded fixes, and ordinary technical reasoning. Prefer `D` or `E` for security-heavy audits, broad architectural synthesis, or work where hidden edge-case coverage matters. | `openrouter/z-ai/glm-5.2`, `high` |
+| `C` | Default for bounded implementation, repo-grounded fixes, and ordinary technical reasoning. Prefer `D` or `E` for security-heavy audits, broad architectural synthesis, or work where hidden edge-case coverage matters. | `openai-codex/gpt-5.4-mini`, `high` |
 | `D` | Complex multi-file debugging, planning, synthesis, and high-abstraction work | `openai-codex/gpt-5.5`, `high` |
 | `E` | Highest-abstraction, highest-difficulty work requiring deepest technical judgment | `openai-codex/gpt-5.5`, `xhigh` |
 
@@ -261,10 +261,11 @@ Environment overrides:
 
 - Paths: `SUBAGENT007_CONFIG_PATH`, `SUBAGENT007_RUNS_DIR`, `SUBAGENT007_RUN_TASKS_DIR`, `SUBAGENT007_PI_RAW_SESSIONS_DIR`, `SUBAGENT007_SESSIONS_DIR`, `SUBAGENT007_INPUT_REQUESTS_DIR`, `SUBAGENT007_FAILURE_LOG_PATH`, `SUBAGENT007_MODEL_HEALTH_PATH`
 - Timeouts/progress: `SUBAGENT007_INPUT_REQUEST_TIMEOUT_MS`, `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`, `SUBAGENT007_SCHEDULE_RUN_MAX_WAIT_MS`, `SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS`, `SUBAGENT007_DEADLINE_RISK_TIMEOUT_FLOOR_MS`, `SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS`, `SUBAGENT007_TIMEOUT_KILL_GRACE_MS`, `SUBAGENT007_TIMEOUT_FORCE_GRACE_MS`, `SUBAGENT007_HEARTBEAT_INTERVAL_MS`, `SUBAGENT007_MAX_TRANSCRIPT_BYTES`, `SUBAGENT007_SESSION_LOCK_LEASE_MS`
-- Pi/runtime: `SUBAGENT007_PI_AGENT_DIR`, `PI_CODING_AGENT_DIR`, `SUBAGENT007_PI_SKILL_PATHS`
+- Pi/runtime: `SUBAGENT007_PI_AGENT_DIR`, `PI_CODING_AGENT_DIR`, `SUBAGENT007_PI_SKILL_PATHS`, `SUBAGENT007_PI_CHILD_PATH`
 - Failure logging and campaigns: `SUBAGENT007_FAILURE_LOG=off`, `SUBAGENT007_BUILD_SHA`, `GIT_COMMIT`, `SUBAGENT007_RECORD_SOURCE`, `SUBAGENT007_CAMPAIGN_ID`, `SUBAGENT007_CAMPAIGN_LEDGER_PATH`, `SUBAGENT007_COVERAGE_MANIFEST_PATH`
 
 `SUBAGENT007_PI_AGENT_DIR` wins over Pi's native `PI_CODING_AGENT_DIR`; otherwise the Pi agent directory defaults to `~/.pi/agent`. The resolved agent directory is used for Pi auth, custom models, settings/resources, and session behavior.
+`SUBAGENT007_PI_CHILD_PATH` overrides the built child entrypoint and is intended for tests or controlled probes; do not set it for normal MCP use.
 
 `SUBAGENT007_SCHEDULE_RUN_MAX_WAIT_MS` caps how long `schedule_run` may keep the MCP call open before returning a pollable active run view; the default is 30000. `SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS`, `SUBAGENT007_TIMEOUT_KILL_GRACE_MS`, and `SUBAGENT007_TIMEOUT_FORCE_GRACE_MS` reserve time inside caller-provided `timeout_ms` so the MCP server can terminate the child process and return metadata before the caller deadline. `SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS` can raise the accepted floor for timed tools. `SUBAGENT007_DEADLINE_RISK_TIMEOUT_FLOOR_MS` sets the preflight floor for deadline-risk run requests that provide a hard `timeout_ms`; the default is 600000. `SUBAGENT007_HEARTBEAT_INTERVAL_MS` controls active-run snapshot cadence and MCP progress notification cadence when the client provides a progress token.
 
@@ -295,10 +296,12 @@ Only probe calls recorded in `campaign_ledger_path` should claim MCP call-attemp
 ```sh
 npm run build
 npm run typecheck
+npm run docs:check
 npm test
 npm run models:reconcile
 ```
 
 Run `npm run build` after changing `src/`; the registered MCP command and package tarball use `dist/server.js`.
+Run `npm run docs:check` after changing README model calibration rows, environment-variable docs, `src/modelAllowlist.ts`, or runtime environment-variable handling in `src/` or `scripts/`; it fails when README facts drift from source.
 
 Tests use `SUBAGENT007_PI_CHILD_PATH` to replace the real Pi child with a fake child process. Do not set it for normal MCP use. `npm test` injects a private failure ledger unless `SUBAGENT007_FAILURE_LOG_PATH` is already set; explicit paths are preserved and fingerprinted.

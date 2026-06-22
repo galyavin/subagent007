@@ -24,6 +24,7 @@ import {
   RUN_STOP_REASONS,
   SESSION_PACKET_POLICIES,
   type ContractPacketV1,
+  type FailureReasonCode,
   TOOL_PROFILES,
   type PacketParseStatus,
   type ResumeMode,
@@ -119,14 +120,26 @@ function validationSummary(error: z.ZodError): string {
   return error.issues.map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`).join("; ");
 }
 
+function validationReasonCodeForKey(key: string): FailureReasonCode {
+  switch (key) {
+    case "resume_mode":
+      return "invalid_resume_mode";
+    case "packet_policy":
+      return "invalid_packet_policy";
+    default:
+      return "unknown_validation_error";
+  }
+}
+
 function validateSessionKey(value: unknown): string {
   if (typeof value !== "string" || value.trim() === "") {
-    throw new ValidationError("session_key must be a nonempty string");
+    throw new ValidationError("session_key must be a nonempty string", "invalid_session_key");
   }
   const key = value.trim();
   if (!SESSION_KEY_PATTERN.test(key)) {
     throw new ValidationError(
       "session_key must start with an ASCII letter or digit and contain only letters, digits, underscores, hyphens, dots, or colons",
+      "invalid_session_key",
     );
   }
   return key;
@@ -142,7 +155,7 @@ function validateOptionalChoice<T extends string>(
     return defaultValue;
   }
   if (typeof value !== "string" || !choices.includes(value as T)) {
-    throw new ValidationError(`${key} must be one of: ${choices.join(", ")}`);
+    throw new ValidationError(`${key} must be one of: ${choices.join(", ")}`, validationReasonCodeForKey(key));
   }
   return value as T;
 }
@@ -157,10 +170,13 @@ function validateSessionPacketPolicy(value: unknown): SessionPacketPolicy {
 
 function assertNoRawSessionId(request: RunSubagentSessionRequest): void {
   if ((request as { session_id?: unknown }).session_id !== undefined) {
-    throw new ValidationError("session_id is not supported by run_subagent_session; use session_key");
+    throw new ValidationError("session_id is not supported by run_subagent_session; use session_key", "raw_session_id_unsupported");
   }
   if ((request as { continuity?: unknown }).continuity !== undefined) {
-    throw new ValidationError("continuity is not supported by run_subagent_session; use session_key and resume_mode");
+    throw new ValidationError(
+      "continuity is not supported by run_subagent_session; use session_key and resume_mode",
+      "raw_session_id_unsupported",
+    );
   }
 }
 
@@ -197,11 +213,11 @@ async function readManifest(manifestPath: string): Promise<SessionManifest | nul
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return null;
     }
-    throw new ValidationError(`session manifest is unreadable: ${(error as Error).message}`);
+    throw new ValidationError(`session manifest is unreadable: ${(error as Error).message}`, "session_manifest_invalid");
   }
   const result = sessionManifestSchema.safeParse(parsed);
   if (!result.success) {
-    throw new ValidationError(`session manifest is invalid: ${validationSummary(result.error)}`);
+    throw new ValidationError(`session manifest is invalid: ${validationSummary(result.error)}`, "session_manifest_invalid");
   }
   return result.data;
 }
@@ -263,7 +279,7 @@ async function acquireLock(lockPath: string, taskId?: string): Promise<SessionLo
         refresh: async () => {
           const current = await readLockOwner(lockPath);
           if (current?.owner_id !== ownerId) {
-            throw new ValidationError("session lock ownership was lost");
+            throw new ValidationError("session lock ownership was lost", "session_already_running");
           }
           await writeOwner("w");
         },
@@ -287,11 +303,11 @@ async function acquireLock(lockPath: string, taskId?: string): Promise<SessionLo
         ? ` by pid ${existingOwner.pid} on ${existingOwner.hostname}${
             existingOwner.task_id ? ` for task ${existingOwner.task_id}` : ""
           }`
-        : "";
-      throw new ValidationError(`session is already running${ownerDescription}`);
+          : "";
+      throw new ValidationError(`session is already running${ownerDescription}`, "session_already_running");
     }
   }
-  throw new ValidationError("session is already running");
+  throw new ValidationError("session is already running", "session_already_running");
 }
 
 async function writePacket(sessionDir: string, runId: string, output: string): Promise<{
@@ -340,7 +356,7 @@ function assertExistingSession(
     return;
   }
   if (resumeMode === "require_existing") {
-    throw new ValidationError(`session does not exist for session_key: ${sessionKey}`);
+    throw new ValidationError(`session does not exist for session_key: ${sessionKey}`, "session_does_not_exist");
   }
 }
 
@@ -350,7 +366,7 @@ function assertNewSessionAllowed(
   sessionKey: string,
 ): void {
   if (manifest && resumeMode === "new") {
-    throw new ValidationError(`session already exists for session_key: ${sessionKey}`);
+    throw new ValidationError(`session already exists for session_key: ${sessionKey}`, "session_already_exists");
   }
 }
 
@@ -360,7 +376,7 @@ function assertManifestCompatible(
   skill: string | undefined,
 ): void {
   if (manifest.cwd !== cwd) {
-    throw new ValidationError("session manifest cwd does not match requested cwd");
+    throw new ValidationError("session manifest cwd does not match requested cwd", "session_cwd_mismatch");
   }
   const requestedSkill = skill ?? null;
   if (manifest.skill !== requestedSkill) {
@@ -368,6 +384,7 @@ function assertManifestCompatible(
       `session skill mismatch: existing=${manifest.skill ?? "none"} requested=${
         requestedSkill ?? "none"
       }`,
+      "session_skill_mismatch",
     );
   }
 }
@@ -390,12 +407,14 @@ async function readLedgerRecords(ledgerPath: string): Promise<SessionRunRecord[]
     } catch (error) {
       throw new ValidationError(
         `session ledger is invalid at line ${index + 1}: ${(error as Error).message}`,
+        "session_ledger_invalid",
       );
     }
     const result = sessionRunRecordSchema.safeParse(parsed);
     if (!result.success) {
       throw new ValidationError(
         `session ledger is invalid at line ${index + 1}: ${validationSummary(result.error)}`,
+        "session_ledger_invalid",
       );
     }
     return result.data;
@@ -420,14 +439,15 @@ async function reconcileManifestWithLedger(
   if (records.length < manifest.run_count) {
     throw new ValidationError(
       `session ledger is behind manifest: ledger=${records.length} manifest=${manifest.run_count}`,
+      "session_ledger_invalid",
     );
   }
   const last = records.at(-1);
   if (!last || last.action === "not_created") {
-    throw new ValidationError("session ledger cannot reconcile manifest from a failed start record");
+    throw new ValidationError("session ledger cannot reconcile manifest from a failed start record", "session_ledger_invalid");
   }
   if (last.subagent_session_id && last.subagent_session_id !== manifest.subagent_session_id) {
-    throw new ValidationError("session ledger subagent_session_id does not match manifest");
+    throw new ValidationError("session ledger subagent_session_id does not match manifest", "session_ledger_invalid");
   }
   const reconciled: SessionManifest = {
     ...manifest,

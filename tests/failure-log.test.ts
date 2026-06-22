@@ -70,6 +70,17 @@ test("failure reason mapping classifies timeout validation precisely", () => {
   );
 });
 
+test("failure reason mapping classifies wait and input request lookup validation precisely", () => {
+  assert.equal(
+    failureReasonCodeForError(new ValidationError("wait_ms must be a nonnegative integer when provided")),
+    "invalid_wait_ms",
+  );
+  assert.equal(
+    failureReasonCodeForError(new ValidationError("input request not found: run-123")),
+    "input_request_not_found",
+  );
+});
+
 test("failure reason mapping classifies child entrypoint validation precisely", () => {
   assert.equal(
     failureReasonCodeForError(new ValidationError("Subagent007 child entrypoint is missing: /tmp/piChild.js. Run npm run build and restart the MCP server.")),
@@ -78,6 +89,13 @@ test("failure reason mapping classifies child entrypoint validation precisely", 
   assert.equal(
     failureReasonCodeForError(new ValidationError("Subagent007 child entrypoint is not a file: /tmp/piChild.js")),
     "child_entrypoint_not_file",
+  );
+});
+
+test("failure reason mapping prefers structured validation reason code over message fallback", () => {
+  assert.equal(
+    failureReasonCodeForError(new ValidationError("tool_profile must be one of: all, inspect", "invalid_output_mode")),
+    "invalid_output_mode",
   );
 });
 

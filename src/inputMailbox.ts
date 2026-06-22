@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { defaultSubagentStatePath, timestampedRandomId } from "./output.js";
-import { ValidationError } from "./types.js";
+import { ValidationError, type FailureReasonCode } from "./types.js";
 
 const INPUT_REQUEST_STATUSES = ["pending", "answered", "timed_out", "closed"] as const;
 export type InputRequestStatus = (typeof INPUT_REQUEST_STATUSES)[number];
@@ -62,9 +62,9 @@ export function newRunId(): string {
   return timestampedRandomId();
 }
 
-function assertSafeId(value: string, key: string): void {
+function assertSafeId(value: string, key: string, reasonCode: FailureReasonCode = "unknown_validation_error"): void {
   if (!/^[A-Za-z0-9_.:-]+$/.test(value)) {
-    throw new ValidationError(`${key} must contain only letters, digits, underscores, hyphens, dots, or colons`);
+    throw new ValidationError(`${key} must contain only letters, digits, underscores, hyphens, dots, or colons`, reasonCode);
   }
 }
 
@@ -130,7 +130,7 @@ export async function createInputRequest(options: {
   assertSafeId(runId, "run_id");
   const question = options.question.trim();
   if (question === "") {
-    throw new ValidationError("question must be a nonempty string");
+    throw new ValidationError("question must be a nonempty string", "unknown_validation_error");
   }
   const requestId = `${runId}-${randomBytes(6).toString("hex")}`;
   const record: InputRequestRecord = {
@@ -233,10 +233,10 @@ async function requestStatus(recordPath: string): Promise<{
 }
 
 async function findRequestPath(mailboxRoot: string, requestId: string): Promise<string> {
-  assertSafeId(requestId, "request_id");
+  assertSafeId(requestId, "request_id", "input_request_not_found");
   const match = /^(?<runId>.+)-[a-f0-9]{12}$/.exec(requestId);
   if (!match?.groups?.runId) {
-    throw new ValidationError(`input request not found: ${requestId}`);
+    throw new ValidationError(`input request not found: ${requestId}`, "input_request_not_found");
   }
   const candidate = requestPath(mailboxRoot, match.groups.runId, requestId);
   try {
@@ -246,7 +246,7 @@ async function findRequestPath(mailboxRoot: string, requestId: string): Promise<
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       throw error;
     }
-    throw new ValidationError(`input request not found: ${requestId}`);
+    throw new ValidationError(`input request not found: ${requestId}`, "input_request_not_found");
   }
 }
 
@@ -298,15 +298,15 @@ export async function listInputRequests(options: {
 
 function alreadySettledError(requestId: string, status: InputRequestStatus): ValidationError {
   if (status === "answered") {
-    return new ValidationError(`input request is already answered: ${requestId}`);
+    return new ValidationError(`input request is already answered: ${requestId}`, "input_request_already_answered");
   }
   if (status === "timed_out") {
-    return new ValidationError(`input request is already timed out: ${requestId}`);
+    return new ValidationError(`input request is already timed out: ${requestId}`, "input_request_already_timed_out");
   }
   if (status === "closed") {
-    return new ValidationError(`input request is already closed: ${requestId}`);
+    return new ValidationError(`input request is already closed: ${requestId}`, "input_request_already_closed");
   }
-  return new ValidationError(`input request is already settled: ${requestId}`);
+  return new ValidationError(`input request is already settled: ${requestId}`, "unknown_validation_error");
 }
 
 async function settleInputRequestAtPath(options: {
@@ -318,10 +318,10 @@ async function settleInputRequestAtPath(options: {
 }): Promise<InputTerminalRecord> {
   if (options.outcome === "answered") {
     if (typeof options.answer !== "string" || options.answer.trim() === "") {
-      throw new ValidationError("answer must be a nonempty string");
+      throw new ValidationError("answer must be a nonempty string", "unknown_validation_error");
     }
   } else if (options.answer !== undefined) {
-    throw new ValidationError(`${options.outcome} input request settlement cannot include an answer`);
+    throw new ValidationError(`${options.outcome} input request settlement cannot include an answer`, "unknown_validation_error");
   }
 
   const currentStatus = await requestStatus(options.recordPath);
@@ -382,7 +382,7 @@ export async function answerInputRequest(options: {
   });
   const answer = answerRecordFromTerminal(terminal);
   if (!answer) {
-    throw new ValidationError(`input request was not answered: ${options.requestId}`);
+    throw new ValidationError(`input request was not answered: ${options.requestId}`, "unknown_validation_error");
   }
   return answer;
 }

@@ -146,5 +146,6 @@ export function resolveAllowedModelRef(modelRef: string): string {
     `model ${JSON.stringify(modelRef)} is not in the curated Subagent007 Pi allowlist; allowed models: ${
       formatAllowedModelChoices()
     }`,
+    "invalid_model",
   );
 }

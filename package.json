@@ -22,6 +22,7 @@
     "premodel-health:probe": "npm run build",
     "model-health:probe": "node scripts/probe-model-health.mjs",
     "runtime:readiness": "node scripts/check-runtime-readiness.mjs",
+    "docs:check": "node scripts/check-docs-runtime-facts.mjs",
     "observed-campaign": "node scripts/run-observed-campaign.mjs",
     "observed-mcp-probe": "node scripts/run-observed-mcp-probe.mjs",
     "failure-log:archive": "node scripts/archive-failure-log.mjs"

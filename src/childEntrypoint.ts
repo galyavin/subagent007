@@ -17,13 +17,14 @@ export async function assertConfiguredChildEntrypointAvailable(
   try {
     const stat = await fs.stat(childEntrypoint);
     if (!stat.isFile()) {
-      throw new ValidationError(`Subagent007 child entrypoint is not a file: ${childEntrypoint}`);
+      throw new ValidationError(`Subagent007 child entrypoint is not a file: ${childEntrypoint}`, "child_entrypoint_not_file");
     }
     return childEntrypoint;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       throw new ValidationError(
         `Subagent007 child entrypoint is missing: ${childEntrypoint}. Run npm run build and restart the MCP server.`,
+        "child_entrypoint_missing",
       );
     }
     throw error;

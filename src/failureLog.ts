@@ -3,7 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { defaultSubagentStatePath, timestampedRandomId } from "./output.js";
 import { SERVER_VERSION, serverBuildSha } from "./runtimeMetadata.js";
-import { ValidationError } from "./types.js";
+import { ValidationError, type FailureReasonCode } from "./types.js";
+
+export type { FailureReasonCode } from "./types.js";
 
 export type FailureLogTool =
   | "run_subagent"
@@ -30,55 +32,6 @@ export type FailureClass =
   | "restart_drift"
   | "session_error"
   | "unknown_error";
-
-export type FailureReasonCode =
-  | "child_entrypoint_missing"
-  | "child_entrypoint_not_file"
-  | "config_missing_default_model_class"
-  | "cancelled_before_first_output"
-  | "cwd_inaccessible"
-  | "cwd_not_absolute"
-  | "cwd_not_directory"
-  | "handler_error"
-  | "invalid_output_mode"
-  | "invalid_packet_policy"
-  | "invalid_model"
-  | "invalid_model_class"
-  | "model_class_unhealthy"
-  | "invalid_resume_mode"
-  | "invalid_session_id"
-  | "invalid_session_key"
-  | "invalid_skill"
-  | "invalid_thinking_level"
-  | "invalid_tool_profile"
-  | "invalid_timeout_ms"
-  | "timeout_underbudget_for_deadline_risk"
-  | "missing_session_id"
-  | "nonzero_exit"
-  | "packet_required_invalid"
-  | "packet_required_missing"
-  | "prompt_missing"
-  | "raw_session_id_unsupported"
-  | "run_not_accepting_input"
-  | "run_not_found"
-  | "run_subagent_incompatible_workload"
-  | "run_subagent_timeout_unsupported"
-  | "input_request_already_answered"
-  | "input_request_already_closed"
-  | "input_request_already_timed_out"
-  | "input_request_not_part_of_run"
-  | "session_already_exists"
-  | "session_already_running"
-  | "session_cwd_mismatch"
-  | "session_does_not_exist"
-  | "session_ledger_invalid"
-  | "session_manifest_invalid"
-  | "session_skill_mismatch"
-  | "server_restarted_active_run"
-  | "spawn_error"
-  | "timeout"
-  | "unknown_error"
-  | "unknown_validation_error";
 
 export interface FailureLogRecord {
   schema_version: 2;
@@ -246,6 +199,9 @@ export function failureReasonCodeForError(error: unknown): FailureReasonCode {
   if (!(error instanceof ValidationError)) {
     return "handler_error";
   }
+  if (error.reasonCode) {
+    return error.reasonCode;
+  }
   const message = error.message;
   if (message.includes("cwd must be an absolute path")) return "cwd_not_absolute";
   if (message.includes("cwd is not accessible")) return "cwd_inaccessible";
@@ -263,6 +219,7 @@ export function failureReasonCodeForError(error: unknown): FailureReasonCode {
   if (message.includes("timeout_ms is not supported by run_subagent")) {
     return "run_subagent_timeout_unsupported";
   }
+  if (message.includes("wait_ms must be a nonnegative integer")) return "invalid_wait_ms";
   if (message.includes("incompatible with run_subagent's quick_noninteractive contract")) {
     return "run_subagent_incompatible_workload";
   }
@@ -282,6 +239,7 @@ export function failureReasonCodeForError(error: unknown): FailureReasonCode {
   if (message.includes("session_id")) return "invalid_session_id";
   if (message.includes("run not found")) return "run_not_found";
   if (message.includes("run is not accepting input")) return "run_not_accepting_input";
+  if (message.includes("input request not found")) return "input_request_not_found";
   if (message.includes("input request is not part of run")) return "input_request_not_part_of_run";
   if (message.includes("input request is already answered")) return "input_request_already_answered";
   if (message.includes("input request is already timed out")) return "input_request_already_timed_out";
@@ -289,6 +247,7 @@ export function failureReasonCodeForError(error: unknown): FailureReasonCode {
   if (message.includes("session_key must")) return "invalid_session_key";
   if (message.includes("resume_mode must")) return "invalid_resume_mode";
   if (message.includes("packet_policy must")) return "invalid_packet_policy";
+  if (message.includes("session lock ownership was lost")) return "session_already_running";
   if (message.includes("session already exists")) return "session_already_exists";
   if (message.includes("session is already running")) return "session_already_running";
   if (message.includes("session does not exist")) return "session_does_not_exist";
