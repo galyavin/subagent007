@@ -64,7 +64,7 @@ test("legacy default model and thinking config maps to default model class", asy
   await fs.writeFile(
     configPath,
     JSON.stringify({
-      default_model: "openrouter/z-ai/glm-5.2",
+      default_model: "openai-codex/gpt-5.4-mini",
       default_thinking_level: "high",
     }),
   );
@@ -91,7 +91,7 @@ test("malformed legacy model config does not block class defaults", async () => 
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-cwd-"));
   const resolved = await validateAndResolveRequest({ prompt: "x", cwd }, config);
   assert.equal(resolved.modelClass, "C");
-  assert.equal(resolved.model, "openrouter/z-ai/glm-5.2");
+  assert.equal(resolved.model, "openai-codex/gpt-5.4-mini");
   assert.equal(resolved.thinkingLevel, "high");
 });
 
@@ -104,7 +104,7 @@ test("model health records reject unsupported model classes", async () => {
       {
         schema_version: 1,
         model_class: "Z",
-        resolved_model: "openrouter/z-ai/glm-5.2",
+        resolved_model: "openai-codex/gpt-5.4-mini",
         surface: "run_subagent_one_shot",
         checked_at: "2026-06-11T00:00:00.000Z",
         usable_for_one_shot: true,
@@ -124,7 +124,7 @@ test("model health records require nonempty string fields", async () => {
   const baseRecord = {
     schema_version: 1,
     model_class: "C",
-    resolved_model: "openrouter/z-ai/glm-5.2",
+    resolved_model: "openai-codex/gpt-5.4-mini",
     surface: "run_subagent_one_shot",
     checked_at: "2026-06-11T00:00:00.000Z",
     usable_for_one_shot: true,
@@ -423,7 +423,7 @@ test("resolves model classes to calibrated model and thinking level", async () =
   for (const [modelClass, model, thinkingLevel] of [
     ["A", "openrouter/qwen/qwen3.6-35b-a3b", "high"],
     ["B", "openrouter/deepseek/deepseek-v4-pro", "high"],
-    ["C", "openrouter/z-ai/glm-5.2", "high"],
+    ["C", "openai-codex/gpt-5.4-mini", "high"],
     ["D", "openai-codex/gpt-5.5", "high"],
     ["E", "openai-codex/gpt-5.5", "xhigh"],
   ] as const) {

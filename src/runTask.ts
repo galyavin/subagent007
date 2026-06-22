@@ -24,6 +24,7 @@ import {
   type InputRequestView,
 } from "./inputMailbox.js";
 import {
+  assertPiChildEntrypointAvailable,
   runSubagentCore,
   resolveSkillFilePathForRequest,
   RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT,
@@ -503,6 +504,10 @@ async function appendClosedInputEvents(
   }
 }
 
+function sawChildSessionEstablished(state: RunTaskState): boolean {
+  return state.recentEvents.some((event) => event.kind === "child" && event.event === "child_session_established");
+}
+
 async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
   const result = state.result;
   if (!result || state.taskKind !== "run" || result.success) {
@@ -511,7 +516,8 @@ async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
   const cancelledBeforeFirstOutput =
     result.stop_reason === "cancelled" &&
     state.heartbeatCount > 0 &&
-    state.firstPublicOutputAt === undefined;
+    state.firstPublicOutputAt === undefined &&
+    !sawChildSessionEstablished(state);
   if (result.stop_reason === "cancelled" && !cancelledBeforeFirstOutput) {
     return;
   }
@@ -997,6 +1003,7 @@ export async function startRunTask(
   const resolved = await validateAndResolveRequest(request, config);
   assertDeadlineRiskTimeoutBudget(request, resolved, failureLogTool);
   const skillFilePath = resolveSkillFilePathForRequest(resolved);
+  await assertPiChildEntrypointAvailable();
 
   const state = createRunTaskState("run");
   state.failureLogTool = failureLogTool;
@@ -1268,6 +1275,7 @@ export async function runSubagentOneShotTask(
     return runSubagentPromotedTask(request, incompatibility, skillFilePath, options);
   }
   await assertModelClassUsableForOneShot(resolved.modelClass);
+  await assertPiChildEntrypointAvailable();
 
   const state = createRunTaskState("run");
   await registerRunTaskState(state, request);

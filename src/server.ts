@@ -23,6 +23,7 @@ import {
   runtimeReadinessSnapshot,
   SOURCE_STATE_POLICIES,
 } from "./runtimeReadiness.js";
+import { assertConfiguredChildEntrypointAvailable } from "./childEntrypoint.js";
 import {
   answerRunTaskInput,
   cancelRunTask,
@@ -160,6 +161,16 @@ function withPreflightRejection<TRequest, TResult extends object>(
       throw error;
     }
   };
+}
+
+function withChildEntrypointPreflight<TRequest, TResult extends object>(
+  tool: FailureLogTool,
+  handler: (request: TRequest, extra: ServerExtra) => Promise<TResult>,
+): (request: TRequest, extra: ServerExtra) => Promise<ReturnType<typeof jsonToolResult<Record<string, unknown>>>> {
+  return withPreflightRejection(tool, async (request, extra) => {
+    await assertConfiguredChildEntrypointAvailable();
+    return handler(request, extra);
+  });
 }
 
 function jsonObjectToolResult<TResult extends object>(
@@ -419,7 +430,7 @@ server.registerTool(
       "Create a durable Pi-backed run task first, then return a terminal result only if it completes within wait_ms. Use wait_ms for the initial response wait; timeout_ms is a hard child kill cap.",
     inputSchema: scheduleRunInputSchema,
   },
-  withPreflightRejection("schedule_run", async (request, extra) =>
+  withChildEntrypointPreflight("schedule_run", async (request, extra) =>
     scheduleRunTask(request, taskHeartbeatOptions(extra)),
   ),
 );
@@ -432,7 +443,7 @@ server.registerTool(
       "Start one Pi-backed child run as a run-scoped task and return immediately with status and input mailbox metadata. Omit timeout_ms for long durable work unless the child must be stopped by a hard deadline.",
     inputSchema: startRunInputSchema,
   },
-  withPreflightRejection("start_run", async (request, extra) =>
+  withChildEntrypointPreflight("start_run", async (request, extra) =>
     startRunTask(request, taskHeartbeatOptions(extra)),
   ),
 );
@@ -498,7 +509,7 @@ server.registerTool(
       "Run one quick, non-interactive Pi-backed subagent invocation in an absolute cwd, write cleaned final or transcript output to Markdown, and return metadata.",
     inputSchema: runInputSchema,
   },
-  withPreflightRejection("run_subagent", async (request, extra) =>
+  withChildEntrypointPreflight("run_subagent", async (request, extra) =>
     runSubagentOneShotTask(request, taskHeartbeatOptions(extra)),
   ),
 );
@@ -511,7 +522,7 @@ server.registerTool(
       "Start or resume a named persistent Pi-backed subagent session as a durable, pollable task.",
     inputSchema: runSessionInputSchema,
   },
-  withPreflightRejection("start_session_run", async (request, extra) =>
+  withChildEntrypointPreflight("start_session_run", async (request, extra) =>
     startSessionRunTask(request, taskHeartbeatOptions(extra)),
   ),
 );
@@ -524,7 +535,7 @@ server.registerTool(
       "Run or resume a named persistent Pi-backed subagent session in an absolute cwd, write output and append an auditable session ledger.",
     inputSchema: runSessionInputSchema,
   },
-  withPreflightRejection("run_subagent_session", async (request, extra) =>
+  withChildEntrypointPreflight("run_subagent_session", async (request, extra) =>
     runSubagentSessionTaskAndWait(request, taskHeartbeatOptions(extra)),
   ),
 );

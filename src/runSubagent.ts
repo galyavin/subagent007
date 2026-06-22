@@ -132,6 +132,24 @@ function piChildPath(): string {
   return path.join(path.dirname(fileURLToPath(import.meta.url)), "piChild.js");
 }
 
+export async function assertPiChildEntrypointAvailable(): Promise<string> {
+  const childEntrypoint = piChildPath();
+  try {
+    const stat = await fs.stat(childEntrypoint);
+    if (!stat.isFile()) {
+      throw new ValidationError(`Subagent007 child entrypoint is not a file: ${childEntrypoint}`);
+    }
+    return childEntrypoint;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new ValidationError(
+        `Subagent007 child entrypoint is missing: ${childEntrypoint}. Run npm run build and restart the MCP server.`,
+      );
+    }
+    throw error;
+  }
+}
+
 async function writeChildRequestFile(request: PiChildRequestFile): Promise<{
   requestPath: string;
   cleanup: () => Promise<void>;
@@ -277,6 +295,7 @@ export async function runSubagentCore(
   let childRequest: { requestPath: string; cleanup: () => Promise<void> } | undefined;
   let processOutputPath: string | undefined;
   try {
+    const childEntrypoint = await assertPiChildEntrypointAvailable();
     const timeoutBudget = computeTimeoutBudget(
       resolved.timeoutMs ?? (options.allowTimeout ? undefined : defaultRunSubagentTimeoutMs()),
     );
@@ -312,7 +331,7 @@ export async function runSubagentCore(
     let parsedSessionId: string | null = null;
     const processResult = await runChildProcess({
       command: process.execPath,
-      args: [piChildPath(), childRequest.requestPath],
+      args: [childEntrypoint, childRequest.requestPath],
       cwd: resolved.cwd,
       timeoutBudget,
       heartbeat: options.heartbeat

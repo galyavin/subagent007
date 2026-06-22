@@ -70,6 +70,17 @@ test("failure reason mapping classifies timeout validation precisely", () => {
   );
 });
 
+test("failure reason mapping classifies child entrypoint validation precisely", () => {
+  assert.equal(
+    failureReasonCodeForError(new ValidationError("Subagent007 child entrypoint is missing: /tmp/piChild.js. Run npm run build and restart the MCP server.")),
+    "child_entrypoint_missing",
+  );
+  assert.equal(
+    failureReasonCodeForError(new ValidationError("Subagent007 child entrypoint is not a file: /tmp/piChild.js")),
+    "child_entrypoint_not_file",
+  );
+});
+
 async function withFakeClient<T>(
   run: (client: Client, dirs: { projectDir: string; failureLogPath: string }) => Promise<T>,
   extraEnv: Record<string, string> = {},
@@ -92,13 +103,13 @@ async function withFakeClient<T>(
     args: [path.resolve("dist/server.js")],
     env: {
       ...process.env,
-      ...extraEnv,
       SUBAGENT007_CONFIG_PATH: configPath,
       SUBAGENT007_FAILURE_LOG_PATH: failureLogPath,
       SUBAGENT007_MODEL_HEALTH_PATH: path.join(stateDir, "model-health.json"),
       SUBAGENT007_PI_CHILD_PATH: fake.childPath,
       FAKE_PI_LOG_PATH: fake.logPath,
       SUBAGENT007_RECORD_SOURCE: "test",
+      ...extraEnv,
     },
   });
   const client = new Client({ name: "subagent007-pi-failure-log-test", version: "0.1.0" });
@@ -165,7 +176,7 @@ test("run_subagent appends one central record for a nonzero child failure", asyn
     assert.equal(failures[0].partial_output_available, false);
     assert.equal(failures[0].resume_possible, false);
     assert.equal(failures[0].resolved_timeout_ms, 110000);
-    assert.equal(failures[0].model, "openrouter/z-ai/glm-5.2");
+    assert.equal(failures[0].model, "openai-codex/gpt-5.4-mini");
     assert.equal(failures[0].thinking_level, "high");
     assert.equal(failures[0].output_mode, "transcript");
     assert.equal(typeof failures[0].output_path, "string");
@@ -390,6 +401,39 @@ test("deadline-risk underbudget preflight failures are logged with specific reas
     assert.equal(failures[0].cwd, projectDir);
     assert.doesNotMatch(JSON.stringify(failures[0]), /Fresh-eye delta scan/);
   });
+});
+
+test("missing child entrypoint preflight failures are logged without spawning a child", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-missing-child-"));
+  const missingChildPath = path.join(tmp, "missing-piChild.js");
+  await withFakeClient(
+    async (client, { projectDir, failureLogPath }) => {
+      const response = await client.callTool({
+        name: "start_run",
+        arguments: {
+          cwd: projectDir,
+          prompt: "FAST",
+        },
+      });
+
+      assert.notEqual(response.isError, true);
+      assert.equal((response.structuredContent as { kind?: string }).kind, "preflight_rejected");
+      assert.equal(
+        (response.structuredContent as { reason_code?: string }).reason_code,
+        "child_entrypoint_missing",
+      );
+      assert.equal((response.structuredContent as { child_started?: boolean }).child_started, false);
+
+      const failures = await readJsonl<FailureRecord>(failureLogPath);
+      assert.equal(failures.length, 1);
+      assert.equal(failures[0].tool, "start_run");
+      assert.equal(failures[0].failure_class, "validation_error");
+      assert.equal(failures[0].reason_code, "child_entrypoint_missing");
+      assert.equal(failures[0].cwd, projectDir);
+      assert.doesNotMatch(JSON.stringify(failures[0]), /FAST/);
+    },
+    { SUBAGENT007_PI_CHILD_PATH: missingChildPath },
+  );
 });
 
 test("deadline-risk underbudget session preflight failures keep session tool identity", async () => {

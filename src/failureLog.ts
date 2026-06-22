@@ -32,6 +32,8 @@ export type FailureClass =
   | "unknown_error";
 
 export type FailureReasonCode =
+  | "child_entrypoint_missing"
+  | "child_entrypoint_not_file"
   | "config_missing_default_model_class"
   | "cancelled_before_first_output"
   | "cwd_inaccessible"
@@ -248,6 +250,8 @@ export function failureReasonCodeForError(error: unknown): FailureReasonCode {
   if (message.includes("cwd must be an absolute path")) return "cwd_not_absolute";
   if (message.includes("cwd is not accessible")) return "cwd_inaccessible";
   if (message.includes("cwd must be a directory")) return "cwd_not_directory";
+  if (message.includes("child entrypoint is missing")) return "child_entrypoint_missing";
+  if (message.includes("child entrypoint is not a file")) return "child_entrypoint_not_file";
   if (message.includes("prompt must be a nonempty string")) return "prompt_missing";
   if (message.includes("default_model_class is not configured")) return "config_missing_default_model_class";
   if (message.includes("timeout_ms must be at least") || message.includes("timeout_ms must be a positive integer")) {
