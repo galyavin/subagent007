@@ -9,10 +9,7 @@ import {
   DURABLE_RUN_CAPABILITIES,
   durableRunContractView,
 } from "./durableRunContract.js";
-import {
-  configuredChildEntrypointPath,
-  configuredChildEntrypointPathSource,
-} from "./childEntrypoint.js";
+import { configuredChildEntrypointPath } from "./childEntrypoint.js";
 import { SERVER_VERSION, serverBuildSha } from "./runtimeMetadata.js";
 
 const execFileAsync = promisify(execFile);
@@ -340,7 +337,7 @@ export async function runtimeReadinessSnapshot(
   const projectRoot = path.resolve(options.projectRoot ?? defaultProjectRoot());
   const serverEntrypoint = path.resolve(options.serverEntrypoint ?? defaultServerEntrypoint(projectRoot, processArgv));
   const childEntrypoint = configuredChildEntrypointPath({ defaultDir: path.dirname(serverEntrypoint) });
-  const childEntrypointSource = configuredChildEntrypointPathSource() === "env" ? "env" : "server_entrypoint_dir";
+  const childEntrypointSource = process.env.SUBAGENT007_PI_CHILD_PATH ? "env" : "server_entrypoint_dir";
   const policy = sourceStatePolicyFromInput(options.source_state_policy);
   const [entrypointFact, childEntrypointFact, entrypointRealpath, newestInput, gitState] = await Promise.all([
     fileFact(serverEntrypoint),

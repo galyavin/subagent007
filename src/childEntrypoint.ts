@@ -3,12 +3,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ValidationError } from "./types.js";
 
-export type ChildEntrypointPathSource = "env" | "default";
-
-export function configuredChildEntrypointPathSource(): ChildEntrypointPathSource {
-  return process.env.SUBAGENT007_PI_CHILD_PATH ? "env" : "default";
-}
-
 export function configuredChildEntrypointPath(options: { defaultDir?: string } = {}): string {
   if (process.env.SUBAGENT007_PI_CHILD_PATH) {
     return path.resolve(process.env.SUBAGENT007_PI_CHILD_PATH);
