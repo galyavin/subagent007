@@ -324,6 +324,102 @@ test("schedule_run terminal child failures keep the schedule_run tool identity",
   });
 });
 
+test("restart drift failure stays authoritative when the stale owner later times out", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-restart-drift-log-"));
+  const projectDir = path.join(tmp, "project");
+  const stateDir = path.join(tmp, "state");
+  const runTasksDir = path.join(stateDir, "run-tasks");
+  const inputRequestsDir = path.join(stateDir, "input-requests");
+  const configPath = path.join(stateDir, "config.json");
+  const failureLogPath = path.join(stateDir, "failures.jsonl");
+  const modelHealthPath = path.join(stateDir, "model-health.json");
+  const fake = await createFakePiChild();
+  await fs.mkdir(projectDir, { recursive: true });
+  await fs.mkdir(stateDir, { recursive: true });
+  await fs.writeFile(configPath, JSON.stringify({ default_model_class: "C" }));
+
+  const sharedEnv = {
+    ...process.env,
+    SUBAGENT007_CONFIG_PATH: configPath,
+    SUBAGENT007_RUN_TASKS_DIR: runTasksDir,
+    SUBAGENT007_INPUT_REQUESTS_DIR: inputRequestsDir,
+    SUBAGENT007_FAILURE_LOG_PATH: failureLogPath,
+    SUBAGENT007_MODEL_HEALTH_PATH: modelHealthPath,
+    SUBAGENT007_PI_CHILD_PATH: fake.childPath,
+    FAKE_PI_LOG_PATH: fake.logPath,
+    SUBAGENT007_RECORD_SOURCE: "test",
+    SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS: "20",
+    SUBAGENT007_TIMEOUT_KILL_GRACE_MS: "20",
+    SUBAGENT007_TIMEOUT_FORCE_GRACE_MS: "20",
+  };
+
+  const transportA = new StdioClientTransport({
+    command: process.execPath,
+    args: [path.resolve("dist/server.js")],
+    env: sharedEnv,
+  });
+  const clientA = new Client({ name: "subagent007-pi-restart-drift-owner", version: "0.1.0" });
+
+  const transportB = new StdioClientTransport({
+    command: process.execPath,
+    args: [path.resolve("dist/server.js")],
+    env: sharedEnv,
+  });
+  const clientB = new Client({ name: "subagent007-pi-restart-drift-reader", version: "0.1.0" });
+
+  try {
+    await clientA.connect(transportA);
+    const startedResponse = await clientA.callTool({
+      name: "start_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "TIMEOUT_RAW_TEXT",
+        continuity: { mode: "fresh" },
+        timeout_ms: 1500,
+        output_mode: "transcript",
+      },
+    });
+    assert.notEqual(startedResponse.isError, true);
+    const started = startedResponse.structuredContent as { run_id: string };
+
+    await clientB.connect(transportB);
+    const driftResponse = await clientB.callTool({
+      name: "get_run",
+      arguments: { run_id: started.run_id },
+    });
+    assert.notEqual(driftResponse.isError, true);
+    const drift = driftResponse.structuredContent as { status: string; error_class?: string; reason_code?: string };
+    assert.equal(drift.status, "failed");
+    assert.equal(drift.error_class, "restart_drift");
+    assert.equal(drift.reason_code, "server_restarted_active_run");
+
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].tool, "start_run");
+    assert.equal(failures[0].run_id, started.run_id);
+    assert.equal(failures[0].task_kind, "run");
+    assert.equal(failures[0].failure_class, "restart_drift");
+    assert.equal(failures[0].reason_code, "server_restarted_active_run");
+    assert.equal(failures[0].timed_out, false);
+    assert.equal(failures[0].stop_reason, "failed");
+    assert.equal(failures[0].stop_signal, null);
+
+    const persisted = JSON.parse(await fs.readFile(path.join(runTasksDir, `${started.run_id}.json`), "utf8")) as {
+      status: string;
+      error_class?: string;
+      reason_code?: string;
+    };
+    assert.equal(persisted.status, "failed");
+    assert.equal(persisted.error_class, "restart_drift");
+    assert.equal(persisted.reason_code, "server_restarted_active_run");
+  } finally {
+    await clientB.close().catch(() => {});
+    await clientA.close().catch(() => {});
+  }
+});
+
 test("failure records include a valid campaign id from environment", async () => {
   await withFakeClient(
     async (client, { projectDir, failureLogPath }) => {

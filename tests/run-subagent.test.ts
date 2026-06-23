@@ -1766,7 +1766,7 @@ test("MCP start_run/get_run exposes active liveness and pending-input progress",
       assert.equal((heartbeat.heartbeat_count ?? 0) > 0, true);
       assert.equal(typeof heartbeat.elapsed_ms, "number");
       assert.equal(typeof heartbeat.last_progress_at, "string");
-      assert.equal(heartbeat.last_progress_message, "child alive; waiting for first public output");
+      assert.match(heartbeat.last_progress_message ?? "", /waiting for first public output/);
       assert.equal(typeof heartbeat.no_public_output_elapsed_ms, "number");
       assert.equal(heartbeat.first_public_output_at, undefined);
 

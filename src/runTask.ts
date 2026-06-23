@@ -76,6 +76,10 @@ type ChildLifecycleEventName = Extract<
   RunPublicEventName,
   "child_spawned" | "child_bridge_started" | "child_session_established" | "child_prompt_submitted"
 >;
+type RunTaskFailureLogTool = Extract<
+  FailureLogTool,
+  "run_subagent" | "schedule_run" | "start_run" | "start_session_run" | "run_subagent_session"
+>;
 
 export interface RunTaskView extends Partial<RunSubagentResult>, Partial<RunSubagentSessionResult> {
   run_id: string;
@@ -132,7 +136,7 @@ interface RunTaskState {
   promise: Promise<void>;
   terminalSnapshotStarted: boolean;
   cwd?: string;
-  failureLogTool?: Extract<FailureLogTool, "run_subagent" | "schedule_run" | "start_run">;
+  failureLogTool?: RunTaskFailureLogTool;
   sessionKey?: string;
   promotion?: RunSubagentPromotion;
 }
@@ -168,6 +172,15 @@ function taskRecordPath(runId: string): string {
 }
 
 async function writeTaskSnapshot(view: RunTaskView): Promise<void> {
+  const existing = await readTaskSnapshot(view.run_id);
+  if (
+    existing &&
+    isRestartDriftSnapshot(existing) &&
+    isTerminalRunStatus(view.status) &&
+    !isRestartDriftSnapshot(view)
+  ) {
+    return;
+  }
   await fs.mkdir(defaultRunTasksDir(), { recursive: true });
   const recordPath = taskRecordPath(view.run_id);
   const tmpPath = `${recordPath}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
@@ -495,6 +508,7 @@ async function appendRunStartedEvent(
     metadata: {
       task_kind: state.taskKind,
       cwd: typeof request.cwd === "string" ? request.cwd : undefined,
+      tool: state.failureLogTool,
     },
   }, DEFAULT_HEARTBEAT_MESSAGE);
   if (typeof request.prompt === "string" && request.prompt.trim() !== "") {
@@ -581,6 +595,9 @@ function sawChildProgressPastSpawn(state: RunTaskState): boolean {
 }
 
 async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
+  if (await authoritativeRestartDriftSnapshot(state.runId)) {
+    return;
+  }
   const result = state.result;
   if (!result || state.taskKind !== "run" || result.success) {
     return;
@@ -654,6 +671,12 @@ async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
 }
 
 async function finalizeRunTask(state: RunTaskState, closeReason: string): Promise<void> {
+  const preservedRestartDrift = await authoritativeRestartDriftSnapshot(state.runId);
+  if (preservedRestartDrift) {
+    state.finishedAt = preservedRestartDrift.finished_at ?? new Date().toISOString();
+    state.terminalSnapshotStarted = true;
+    return;
+  }
   state.finishedAt = new Date().toISOString();
   const closed = await closePendingInputRequestsForRun({
     mailboxRoot: state.mailboxRoot,
@@ -661,7 +684,19 @@ async function finalizeRunTask(state: RunTaskState, closeReason: string): Promis
     reason: closeReason,
   });
   await appendClosedInputEvents(state, closed);
+  const restartDriftAfterInputClose = await authoritativeRestartDriftSnapshot(state.runId);
+  if (restartDriftAfterInputClose) {
+    state.finishedAt = restartDriftAfterInputClose.finished_at ?? state.finishedAt;
+    state.terminalSnapshotStarted = true;
+    return;
+  }
   await appendTerminalEvent(state);
+  const restartDriftBeforePersist = await authoritativeRestartDriftSnapshot(state.runId);
+  if (restartDriftBeforePersist) {
+    state.finishedAt = restartDriftBeforePersist.finished_at ?? state.finishedAt;
+    state.terminalSnapshotStarted = true;
+    return;
+  }
   state.terminalSnapshotStarted = true;
   await logTerminalRunTaskFailure(state);
   await writeTaskSnapshot(await getRunTask(state.runId));
@@ -932,15 +967,61 @@ async function loadSnapshotEvents(
   };
 }
 
+function eventsForFailureLog(
+  snapshot: Pick<RunTaskView, "recent_events">,
+  eventProjection: Pick<RunTaskView, "recent_events">,
+): RunPublicEvent[] {
+  return [
+    ...(snapshot.recent_events ?? []),
+    ...(eventProjection.recent_events ?? []),
+  ];
+}
+
+function isRunTaskFailureLogTool(value: unknown): value is RunTaskFailureLogTool {
+  return value === "run_subagent" ||
+    value === "schedule_run" ||
+    value === "start_run" ||
+    value === "start_session_run" ||
+    value === "run_subagent_session";
+}
+
+function failureLogToolFromRunEvents(
+  events: RunPublicEvent[],
+  taskKind: RunTaskView["task_kind"],
+): RunTaskFailureLogTool {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.event !== "run_started") {
+      continue;
+    }
+    const tool = event.metadata?.tool;
+    if (isRunTaskFailureLogTool(tool)) {
+      return tool;
+    }
+  }
+  return taskKind === "session" ? "start_session_run" : "start_run";
+}
+
+function isRestartDriftSnapshot(snapshot: RunTaskView): boolean {
+  return snapshot.status === "failed" &&
+    snapshot.error_class === "restart_drift" &&
+    snapshot.reason_code === "server_restarted_active_run";
+}
+
+async function authoritativeRestartDriftSnapshot(runId: string): Promise<RunTaskView | null> {
+  const snapshot = await readTaskSnapshot(runId);
+  if (!snapshot || !isRestartDriftSnapshot(snapshot)) {
+    return null;
+  }
+  return snapshot;
+}
+
 async function persistRestartDriftSnapshot(
   snapshot: RunTaskView,
   eventProjection: Pick<RunTaskView, "recent_events" | "last_public_output_excerpt">,
 ): Promise<RunTaskView> {
   const finishedAt = new Date().toISOString();
-  const sessionEvents = [
-    ...(snapshot.recent_events ?? []),
-    ...(eventProjection.recent_events ?? []),
-  ];
+  const sessionEvents = eventsForFailureLog(snapshot, eventProjection);
   const sessionId = snapshot.session_id ?? sessionIdFromEvents(sessionEvents);
   const failureEnvelope = syntheticTerminalFailureEnvelope({
     startedAt: snapshot.started_at,
@@ -980,6 +1061,37 @@ async function persistRestartDriftSnapshot(
     ...failureEnvelope,
     error: "run is not active in this MCP server process; the server may have restarted",
   };
+  await logFailure({
+    tool: failureLogToolFromRunEvents(sessionEvents, snapshot.task_kind),
+    failure_class: "restart_drift",
+    reason_code: "server_restarted_active_run",
+    cwd: cwdFromRunStartedEvent(sessionEvents),
+    run_id: snapshot.run_id,
+    task_kind: snapshot.task_kind,
+    output_path: staleView.output_path,
+    session_key: snapshot.session_key,
+    success: false,
+    exit_code: null,
+    timed_out: false,
+    partial_output_available: false,
+    resume_possible: false,
+    duration_ms: staleView.duration_ms,
+    requested_timeout_ms: staleView.requested_timeout_ms,
+    resolved_timeout_ms: staleView.resolved_timeout_ms,
+    timeout_floor_ms: staleView.timeout_floor_ms,
+    effective_timeout_ms: staleView.effective_timeout_ms,
+    timeout_headroom_ms: staleView.timeout_headroom_ms,
+    kill_grace_ms: staleView.kill_grace_ms,
+    force_grace_ms: staleView.force_grace_ms,
+    stop_reason: "failed",
+    stop_signal: null,
+    model_class: staleView.resolved_model_class,
+    model: staleView.resolved_model,
+    thinking_level: staleView.resolved_thinking_level,
+    skill: staleView.requested_skill,
+    output_mode: staleView.requested_output_mode,
+    tool_profile: staleView.resolved_tool_profile,
+  });
   await writeTaskSnapshot(staleView);
   return staleView;
 }
@@ -1205,6 +1317,7 @@ export async function startSessionRunTask(
     "session",
     typeof request.session_key === "string" ? request.session_key : undefined,
   );
+  state.failureLogTool = failureLogTool;
   await registerRunTaskState(state, request);
 
   state.promise = (async () => {
