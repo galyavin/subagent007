@@ -617,17 +617,21 @@ async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
     result.session_established === false;
   const failureClass: FailureClass = cancelledBeforeFirstOutput
     ? "cancelled"
-    : result.timed_out
+    : result.error_class === "timeout"
       ? "timeout"
-      : missingSessionId
+      : result.error_class === "missing_session_id" || missingSessionId
         ? "missing_session_id"
-        : failureClassForProcessResult(result);
+        : result.error_class === "nonzero_exit"
+          ? "nonzero_exit"
+          : failureClassForProcessResult(result);
   const reasonCode: FailureReasonCode = failureClass === "cancelled"
     ? "cancelled_before_first_output"
     : failureClass === "timeout"
       ? "timeout"
       : failureClass === "missing_session_id"
         ? "missing_session_id"
+        : failureClass === "nonzero_exit" && result.reason_code
+          ? result.reason_code
         : failureClass === "nonzero_exit"
           ? "nonzero_exit"
           : "unknown_error";

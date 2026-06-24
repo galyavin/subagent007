@@ -202,6 +202,30 @@ test("run_subagent appends one central record for a nonzero child failure", asyn
   });
 });
 
+test("run_subagent classifies Codex usage limits without generic nonzero reason", async () => {
+  await withFakeClient(async (client, { projectDir, failureLogPath }) => {
+    const response = await client.callTool({
+      name: "run_subagent",
+      arguments: {
+        cwd: projectDir,
+        prompt: "USAGE_LIMIT_REACHED",
+        run_kind: "quick_noninteractive",
+        output_mode: "transcript",
+      },
+    });
+
+    assert.notEqual(response.isError, true);
+    const metadata = response.structuredContent as { reason_code?: string };
+    assert.equal(metadata.reason_code, "usage_limit_reached");
+
+    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].tool, "run_subagent");
+    assert.equal(failures[0].failure_class, "nonzero_exit");
+    assert.equal(failures[0].reason_code, "usage_limit_reached");
+  });
+});
+
 test("run_subagent timeout failure records include canonical run identity and stop signal", async () => {
   await withFakeClient(
     async (client, { projectDir, failureLogPath }) => {

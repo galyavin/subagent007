@@ -123,6 +123,31 @@ test("start_run rejects a missing configured child entrypoint before spawning", 
   );
 });
 
+test("start_run logs Codex usage limits with the specific reason code", async () => {
+  await withFailureLoggingClient(async (client, { projectDir, failureLogPath }) => {
+    const response = await client.callTool({
+      name: "start_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "USAGE_LIMIT_REACHED",
+        output_mode: "transcript",
+      },
+    });
+
+    assert.notEqual(response.isError, true);
+    const started = response.structuredContent as { run_id: string };
+    const terminal = await waitForRun(client, started.run_id, (view) => view.status === "failed");
+    assert.equal(terminal.error_class, "nonzero_exit");
+    assert.equal(terminal.reason_code, "usage_limit_reached");
+
+    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].tool, "start_run");
+    assert.equal(failures[0].failure_class, "nonzero_exit");
+    assert.equal(failures[0].reason_code, "usage_limit_reached");
+  });
+});
+
 test("cancelled runs after child session establishment do not append cancelled-before-first-output failures", async () => {
   await withFailureLoggingClient(
     async (client, { projectDir, failureLogPath }) => {

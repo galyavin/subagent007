@@ -39,6 +39,7 @@ import { ValidationError } from "./types.js";
 import { validateAndResolveRequest } from "./validate.js";
 
 const DEFAULT_RUN_SUBAGENT_TIMEOUT_MS = 110_000;
+const FAILURE_OUTPUT_TAIL_BYTES = 64 * 1024;
 export const RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT =
   "Use schedule_run or start_run with explicit timeout_ms for broad, exploratory, interactive, cancellable, polling, or long-running work.";
 
@@ -178,6 +179,39 @@ export function partialOutputAvailableForRun(input: {
   );
 }
 
+async function readOutputTail(filePath: string): Promise<string> {
+  const stats = await fs.stat(filePath);
+  const start = Math.max(0, stats.size - FAILURE_OUTPUT_TAIL_BYTES);
+  const length = stats.size - start;
+  if (length === 0) {
+    return "";
+  }
+  const handle = await fs.open(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, start);
+    return buffer.toString("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
+function childFailureReasonCodeFromOutput(outputText: string): FailureReasonCode | undefined {
+  return outputText.split(/\r?\n/).some((line) =>
+    line.includes("[subagent007 error]") && line.includes("\"type\":\"usage_limit_reached\"")
+  )
+    ? "usage_limit_reached"
+    : undefined;
+}
+
+async function childFailureReasonCodeFromOutputFile(filePath: string): Promise<FailureReasonCode | undefined> {
+  try {
+    return childFailureReasonCodeFromOutput(await readOutputTail(filePath));
+  } catch {
+    return undefined;
+  }
+}
+
 function runErrorTaxonomy(input: {
   success: boolean;
   cancelled: boolean;
@@ -186,6 +220,7 @@ function runErrorTaxonomy(input: {
   exitCode: number | null;
   sessionMode: RunSubagentSessionMode;
   sessionEstablished: boolean;
+  childFailureReasonCode?: FailureReasonCode;
 }): { error_class?: string; reason_code?: FailureReasonCode } {
   if (input.success || input.cancelled) {
     return {};
@@ -204,7 +239,7 @@ function runErrorTaxonomy(input: {
     return { error_class: "missing_session_id", reason_code: "missing_session_id" };
   }
   if (input.exitCode !== null && input.exitCode !== 0) {
-    return { error_class: "nonzero_exit", reason_code: "nonzero_exit" };
+    return { error_class: "nonzero_exit", reason_code: input.childFailureReasonCode ?? "nonzero_exit" };
   }
   return { error_class: "unknown_error", reason_code: "unknown_error" };
 }
@@ -330,6 +365,9 @@ export async function runSubagentCore(
       },
     });
     processOutputPath = processResult.outputPath;
+    const childFailureReasonCode = processResult.exitCode !== null && processResult.exitCode !== 0
+      ? await childFailureReasonCodeFromOutputFile(processResult.outputPath)
+      : undefined;
     const finalMessage = await readFinalMessage(finalMessageTarget.outputLastMessagePath);
     const writtenOutputMode: OutputMode = finalMessage ? "final" : "transcript";
     const output = finalMessage
@@ -411,6 +449,7 @@ export async function runSubagentCore(
         exitCode: processResult.exitCode,
         sessionMode,
         sessionEstablished,
+        childFailureReasonCode,
       }),
       ...(timeoutRecoveryHint ? { timeout_recovery_hint: timeoutRecoveryHint } : {}),
       session_id: sessionId,

@@ -70,6 +70,7 @@ export type FailureReasonCode =
   | "server_restarted_active_run"
   | "spawn_error"
   | "timeout"
+  | "usage_limit_reached"
   | "unknown_error"
   | "unknown_validation_error";
 
