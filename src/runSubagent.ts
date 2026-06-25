@@ -218,6 +218,7 @@ function runErrorTaxonomy(input: {
   timedOut: boolean;
   stopReason: RunStopReason;
   exitCode: number | null;
+  stopSignal: string | null;
   sessionMode: RunSubagentSessionMode;
   sessionEstablished: boolean;
   childFailureReasonCode?: FailureReasonCode;
@@ -240,6 +241,9 @@ function runErrorTaxonomy(input: {
   }
   if (input.exitCode !== null && input.exitCode !== 0) {
     return { error_class: "nonzero_exit", reason_code: input.childFailureReasonCode ?? "nonzero_exit" };
+  }
+  if (input.stopSignal) {
+    return { error_class: "signal_terminated", reason_code: "process_signal_terminated" };
   }
   return { error_class: "unknown_error", reason_code: "unknown_error" };
 }
@@ -447,6 +451,7 @@ export async function runSubagentCore(
         timedOut: processResult.timedOut,
         stopReason: processResult.stopReason,
         exitCode: processResult.exitCode,
+        stopSignal: processResult.stopSignal,
         sessionMode,
         sessionEstablished,
         childFailureReasonCode,

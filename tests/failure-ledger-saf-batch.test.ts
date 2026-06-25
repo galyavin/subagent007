@@ -14,6 +14,7 @@ type FailureRecord = {
   reason_code: string;
   run_id?: string;
   child_started?: boolean;
+  stop_signal?: string | null;
 };
 
 type RunView = {
@@ -145,6 +146,31 @@ test("start_run logs Codex usage limits with the specific reason code", async ()
     assert.equal(failures[0].tool, "start_run");
     assert.equal(failures[0].failure_class, "nonzero_exit");
     assert.equal(failures[0].reason_code, "usage_limit_reached");
+  });
+});
+
+test("start_run logs signal-terminated children without unknown-error collapse", async () => {
+  await withFailureLoggingClient(async (client, { projectDir, failureLogPath }) => {
+    const response = await client.callTool({
+      name: "start_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "SIGNAL_TERM",
+      },
+    });
+
+    assert.notEqual(response.isError, true);
+    const started = response.structuredContent as { run_id: string };
+    const terminal = await waitForRun(client, started.run_id, (view) => view.status === "failed");
+    assert.equal(terminal.error_class, "signal_terminated");
+    assert.equal(terminal.reason_code, "process_signal_terminated");
+
+    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].tool, "start_run");
+    assert.equal(failures[0].failure_class, "signal_terminated");
+    assert.equal(failures[0].reason_code, "process_signal_terminated");
+    assert.equal(failures[0].stop_signal, "SIGTERM");
   });
 });
 

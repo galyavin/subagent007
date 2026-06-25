@@ -71,6 +71,7 @@ export type FailureReasonCode =
   | "spawn_error"
   | "timeout"
   | "usage_limit_reached"
+  | "process_signal_terminated"
   | "unknown_error"
   | "unknown_validation_error";
 

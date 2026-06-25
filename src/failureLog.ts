@@ -31,6 +31,7 @@ export type FailureClass =
   | "missing_session_id"
   | "restart_drift"
   | "session_error"
+  | "signal_terminated"
   | "unknown_error";
 
 export interface FailureLogRecord {
@@ -133,6 +134,8 @@ function defaultReasonCode(failureClass: FailureClass): FailureReasonCode {
       return "unknown_validation_error";
     case "session_error":
       return "handler_error";
+    case "signal_terminated":
+      return "process_signal_terminated";
     case "unknown_error":
       return "unknown_error";
   }
@@ -181,12 +184,16 @@ export async function logFailure(
 export function failureClassForProcessResult(result: {
   timed_out: boolean;
   exit_code: number | null;
+  stop_signal?: string | null;
 }): FailureClass {
   if (result.timed_out) {
     return "timeout";
   }
   if (result.exit_code !== null && result.exit_code !== 0) {
     return "nonzero_exit";
+  }
+  if (result.stop_signal) {
+    return "signal_terminated";
   }
   return "unknown_error";
 }

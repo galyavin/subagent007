@@ -634,6 +634,8 @@ async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
           ? result.reason_code
         : failureClass === "nonzero_exit"
           ? "nonzero_exit"
+          : failureClass === "signal_terminated"
+            ? "process_signal_terminated"
           : "unknown_error";
   await logFailure({
     tool: state.failureLogTool ?? "run_subagent",
