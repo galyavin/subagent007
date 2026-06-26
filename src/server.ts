@@ -119,13 +119,15 @@ async function preflightRejectedResult(
     : error.message.includes("timeout_ms under budget for deadline-risk workload")
       ? TIMEOUT_UNDERBUDGET_GUIDANCE
     : undefined;
-  await logFailure({
-    tool,
-    failure_class: "validation_error",
-    reason_code: reasonCode,
-    cwd: cwdFromRequest(request),
-    success: false,
-  });
+  if (reasonCode !== "timeout_underbudget_for_deadline_risk") {
+    await logFailure({
+      tool,
+      failure_class: "validation_error",
+      reason_code: reasonCode,
+      cwd: cwdFromRequest(request),
+      success: false,
+    });
+  }
   return {
     status: "rejected",
     kind: "preflight_rejected",

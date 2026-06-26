@@ -511,7 +511,7 @@ test("handler-level validation failures are logged without prompt text", async (
   });
 });
 
-test("deadline-risk underbudget preflight failures are logged with specific reason", async () => {
+test("deadline-risk underbudget preflight rejections are not logged as failures", async () => {
   await withFakeClient(async (client, { projectDir, failureLogPath }) => {
     const response = await client.callTool({
       name: "schedule_run",
@@ -531,13 +531,7 @@ test("deadline-risk underbudget preflight failures are logged with specific reas
     );
     assert.equal((response.structuredContent as { child_started?: boolean }).child_started, false);
 
-    const failures = await readJsonl<FailureRecord>(failureLogPath);
-    assert.equal(failures.length, 1);
-    assert.equal(failures[0].tool, "schedule_run");
-    assert.equal(failures[0].failure_class, "validation_error");
-    assert.equal(failures[0].reason_code, "timeout_underbudget_for_deadline_risk");
-    assert.equal(failures[0].cwd, projectDir);
-    assert.doesNotMatch(JSON.stringify(failures[0]), /Fresh-eye delta scan/);
+    await assert.rejects(fs.stat(failureLogPath), /ENOENT/);
   });
 });
 
@@ -574,7 +568,7 @@ test("missing child entrypoint preflight failures are logged without spawning a 
   );
 });
 
-test("deadline-risk underbudget session preflight failures keep session tool identity", async () => {
+test("deadline-risk underbudget session preflight rejections are not logged as failures", async () => {
   await withFakeClient(async (client, { projectDir, failureLogPath }) => {
     const response = await client.callTool({
       name: "run_subagent_session",
@@ -594,13 +588,7 @@ test("deadline-risk underbudget session preflight failures keep session tool ide
     );
     assert.equal((response.structuredContent as { child_started?: boolean }).child_started, false);
 
-    const failures = await readJsonl<FailureRecord>(failureLogPath);
-    assert.equal(failures.length, 1);
-    assert.equal(failures[0].tool, "run_subagent_session");
-    assert.equal(failures[0].failure_class, "validation_error");
-    assert.equal(failures[0].reason_code, "timeout_underbudget_for_deadline_risk");
-    assert.equal(failures[0].cwd, projectDir);
-    assert.doesNotMatch(JSON.stringify(failures[0]), /Requirements/);
+    await assert.rejects(fs.stat(failureLogPath), /ENOENT/);
   });
 });
 
