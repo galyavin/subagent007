@@ -22,6 +22,7 @@ Use this server as a durable delegation boundary. Treat `run_id` as the unit of 
 | Quick, bounded, non-interactive one-shot work | `run_subagent` | Requires `run_kind: "quick_noninteractive"`; rejects caller `timeout_ms`; one-shot-incompatible valid requests auto-promote to a durable run. |
 | Broad, long, cancellable, polling, or caller-interactive work | `schedule_run` or `start_run` plus `get_run` | Prefer `schedule_run` for uncertain work. It creates the durable task before waiting, caps the initial wait, and reports `wait_truncated` when shortened. Use `start_run` when the caller wants only an immediate task handle. Leave `timeout_ms` unset unless there is a hard kill deadline. |
 | Durable continuity by semantic key | `start_session_run` plus `get_run`, or `run_subagent_session` for compatibility | Requires `session_key`; use when manifest/ledger continuity matters. Prefer the async task form for long, cancellable, or abandoned-client-safe work. |
+| Existing durable run operations | `get_run`, `answer_run_input`, `cancel_run` | Use the returned `run_id`; answer only listed pending `request_id` values; poll after cancellation until a terminal state appears. |
 | Model-class/config health | `list_model_classes` | `list_allowed_models` is a compatibility alias. |
 | Durable-run adapter compatibility | `get_run_contract` | Check `contract_name`, `contract_version`, terminal/non-terminal statuses, and capabilities before launching command-mode adapters; fail closed when incompatible. |
 | Runtime/build/source readiness | `get_runtime_readiness`; or `npm run runtime:readiness` before MCP launch | Use the script when a caller needs to prove the built server entrypoint can launch. It reports typed blocks such as `missing_build`, `stale_build`, `dirty_source`, `source_state_unknown`, `incompatible_contract`, and `runtime_launch_failure`. |
@@ -116,7 +117,7 @@ Optional common fields:
 - `output_mode`: `final` or `transcript`; default is `final`; use `transcript` for debugging or audit trails
 - `tool_profile`: legacy compatibility field; accepted values resolve to `all` and do not restrict child tools
 
-Tool-specific input rules:
+Child-invocation input rules:
 
 | Tool | Required beyond `cwd`/`prompt` | Accepted fields beyond common inputs | Rejected fields |
 | --- | --- | --- | --- |
@@ -125,6 +126,8 @@ Tool-specific input rules:
 | `start_run` | none | `continuity`, `timeout_ms` | top-level `session_id` |
 | `start_session_run` | `session_key` | `resume_mode`, `packet_policy`, `timeout_ms` | `continuity`, top-level `session_id` |
 | `run_subagent_session` | `session_key` | `resume_mode`, `packet_policy`, `timeout_ms` | `continuity`, top-level `session_id` |
+
+Operation-only tools do not accept `cwd` or `prompt`: `get_run` takes `run_id`; `cancel_run` takes `run_id`; `answer_run_input` takes `run_id`, `request_id`, and `answer`.
 
 For raw Pi `continuity`, use `mode: "ephemeral"`, `mode: "fresh"`, or `mode: "resume"` with absolute `continuity.session_id`. Resume session ids must point to an existing, readable, nonempty session file. Prefer named sessions for durable project work; raw continuity is for callers that already manage Pi session files.
 
@@ -305,5 +308,6 @@ npm run models:reconcile
 
 Run `npm run build` after changing `src/`; the registered MCP command and package tarball use `dist/server.js`.
 Run `npm run docs:check` after changing README model calibration rows, environment-variable docs, `src/modelAllowlist.ts`, or runtime environment-variable handling in `src/` or `scripts/`; it fails when README facts drift from source.
+There is no lint script; use `npm run typecheck`, `npm run docs:check`, and `npm test` as the local gates.
 
 Tests use `SUBAGENT007_PI_CHILD_PATH` to replace the real Pi child with a fake child process. Do not set it for normal MCP use. `npm test` injects a private failure ledger unless `SUBAGENT007_FAILURE_LOG_PATH` is already set; explicit paths are preserved and fingerprinted.
