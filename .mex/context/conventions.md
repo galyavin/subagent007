@@ -1,0 +1,49 @@
+---
+name: conventions
+description: How code is written in this project — naming, structure, patterns, and style. Load when writing new code or reviewing existing code.
+triggers:
+  - "convention"
+  - "pattern"
+  - "naming"
+  - "style"
+  - "how should I"
+  - "what's the right way"
+edges:
+  - target: context/architecture.md
+    condition: when a convention depends on understanding the system structure
+last_updated: 2026-06-30
+---
+
+# Conventions
+
+## Naming
+- TypeScript files use camelCase module names such as `runSubagent.ts`, `runtimeReadiness.ts`, and `activeChildLease.ts`.
+- Public JSON fields and reason codes use snake_case, for example `reason_code`, `child_started`, and `local_capacity_exhausted`.
+- Environment variables use the `SUBAGENT007_*` prefix except Pi-native compatibility names such as `PI_CODING_AGENT_DIR`.
+- Durable run identity is `run_id`; mailbox identity is `run_id` plus `request_id`.
+- Public model tiers are named model classes `A`, `B`, `C`, `D`, and `E`.
+
+## Structure
+- `src/server.ts` owns MCP registration and handler-level result shaping.
+- `src/runTask.ts` owns durable task lifecycle; do not duplicate task state transitions in handlers.
+- `src/runSubagent.ts` owns the Pi child request-file contract and child result projection.
+- `src/types.ts` is the public type/reason-code source; update tests and README when public fields change.
+- `tests/*.test.ts` are integration-heavy Node tests; helpers live in `tests/helpers/`.
+- `scripts/*.mjs` are operational commands and should be documented in AGENTS/setup context when added.
+
+## Patterns
+- Semantic preflight rejection must happen before child launch and return structured content with `kind:"preflight_rejected"` and `child_started:false`.
+- Public event views and transcripts must stay sanitized; never expose raw thinking, private tool payloads, full composed prompts, or answer values.
+- When adding an environment variable, update source constants, README environment docs, and `npm run docs:check` coverage.
+- When changing child execution, verify timeout/cancel/parent-exit cleanup because fake child descendants can otherwise outlive the test run.
+- Compatibility aliases such as `list_allowed_models`, legacy `skill`, and legacy `tool_profile` are intentional unless a migration explicitly removes them.
+
+## Verify Checklist
+Before presenting code changes:
+- [ ] `npm run typecheck` passes for TypeScript source/test changes.
+- [ ] `npm run build` has refreshed `dist/` after `src/` edits.
+- [ ] Focused tests cover the touched public behavior or failure mode.
+- [ ] `npm test` passes for shared lifecycle, public schema, or child-process changes.
+- [ ] `npm run docs:check` passes after README/runtime fact or env-var changes.
+- [ ] Preflight failures still happen before child spawn and preserve `child_started:false`.
+- [ ] Failure logs and public result metadata remain synchronized when reason codes or provider fields change.
