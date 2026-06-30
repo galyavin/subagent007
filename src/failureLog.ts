@@ -77,6 +77,17 @@ export interface FailureLogRecord {
   skill?: string | null;
   output_mode?: string;
   tool_profile?: string;
+  provider_error_type?: string;
+  provider_status_code?: number;
+  provider_error_message?: string;
+  usage_limit_plan_type?: string | null;
+  usage_limit_resets_at?: number | null;
+  usage_limit_resets_in_seconds?: number | null;
+  usage_limit_retry_after_seconds?: number | null;
+  usage_limit_primary_used_percent?: number | null;
+  usage_limit_secondary_used_percent?: number | null;
+  usage_limit_primary_reset_after_seconds?: number | null;
+  usage_limit_secondary_reset_after_seconds?: number | null;
 }
 
 function defaultFailureLogPath(): string {

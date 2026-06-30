@@ -48,6 +48,26 @@ type RunSubagentSessionMode =
   | { kind: "fresh" }
   | { kind: "resume"; sessionId: string };
 
+type UsageLimitMetadata = Pick<
+  RunSubagentResult,
+  | "provider_error_type"
+  | "provider_status_code"
+  | "provider_error_message"
+  | "usage_limit_plan_type"
+  | "usage_limit_resets_at"
+  | "usage_limit_resets_in_seconds"
+  | "usage_limit_retry_after_seconds"
+  | "usage_limit_primary_used_percent"
+  | "usage_limit_secondary_used_percent"
+  | "usage_limit_primary_reset_after_seconds"
+  | "usage_limit_secondary_reset_after_seconds"
+>;
+
+interface ChildFailureMetadata {
+  reasonCode?: FailureReasonCode;
+  usageLimitMetadata?: UsageLimitMetadata;
+}
+
 interface PiChildRequestFile {
   prompt: string;
   cwd: string;
@@ -196,19 +216,109 @@ async function readOutputTail(filePath: string): Promise<string> {
   }
 }
 
-function childFailureReasonCodeFromOutput(outputText: string): FailureReasonCode | undefined {
-  return outputText.split(/\r?\n/).some((line) =>
-    line.includes("[subagent007 error]") && line.includes("\"type\":\"usage_limit_reached\"")
-  )
-    ? "usage_limit_reached"
-    : undefined;
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null ? value as Record<string, unknown> : undefined;
 }
 
-async function childFailureReasonCodeFromOutputFile(filePath: string): Promise<FailureReasonCode | undefined> {
+function numberFromUnknown(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function stringFromUnknown(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
+function headerValue(headers: Record<string, unknown> | undefined, headerName: string): unknown {
+  if (!headers) {
+    return undefined;
+  }
+  const lowerHeaderName = headerName.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === lowerHeaderName) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function usageLimitMetadataFromErrorEvent(event: Record<string, unknown>): UsageLimitMetadata {
+  const providerError = asRecord(event.error);
+  const headers = asRecord(event.headers) ?? asRecord(providerError?.headers);
+  const providerErrorType = stringFromUnknown(providerError?.type) ?? "usage_limit_reached";
+  const providerStatusCode = numberFromUnknown(event.status_code);
+  const providerErrorMessage = stringFromUnknown(providerError?.message);
+  const planType = stringFromUnknown(providerError?.plan_type) ?? stringFromUnknown(headerValue(headers, "X-Codex-Plan-Type"));
+  const resetsAt = numberFromUnknown(providerError?.resets_at);
+  const resetsInSeconds = numberFromUnknown(providerError?.resets_in_seconds);
+  const retryAfterSeconds = numberFromUnknown(headerValue(headers, "Retry-After"));
+  const primaryUsedPercent = numberFromUnknown(headerValue(headers, "X-Codex-Primary-Used-Percent"));
+  const secondaryUsedPercent = numberFromUnknown(headerValue(headers, "X-Codex-Secondary-Used-Percent"));
+  const primaryResetAfterSeconds = numberFromUnknown(headerValue(headers, "X-Codex-Primary-Reset-After-Seconds"));
+  const secondaryResetAfterSeconds = numberFromUnknown(headerValue(headers, "X-Codex-Secondary-Reset-After-Seconds"));
+
+  return {
+    provider_error_type: providerErrorType,
+    ...(providerStatusCode !== undefined ? { provider_status_code: providerStatusCode } : {}),
+    ...(providerErrorMessage !== undefined ? { provider_error_message: providerErrorMessage } : {}),
+    ...(planType !== undefined ? { usage_limit_plan_type: planType } : {}),
+    ...(resetsAt !== undefined ? { usage_limit_resets_at: resetsAt } : {}),
+    ...(resetsInSeconds !== undefined ? { usage_limit_resets_in_seconds: resetsInSeconds } : {}),
+    ...(retryAfterSeconds !== undefined ? { usage_limit_retry_after_seconds: retryAfterSeconds } : {}),
+    ...(primaryUsedPercent !== undefined ? { usage_limit_primary_used_percent: primaryUsedPercent } : {}),
+    ...(secondaryUsedPercent !== undefined ? { usage_limit_secondary_used_percent: secondaryUsedPercent } : {}),
+    ...(primaryResetAfterSeconds !== undefined
+      ? { usage_limit_primary_reset_after_seconds: primaryResetAfterSeconds }
+      : {}),
+    ...(secondaryResetAfterSeconds !== undefined
+      ? { usage_limit_secondary_reset_after_seconds: secondaryResetAfterSeconds }
+      : {}),
+  };
+}
+
+function parseSubagentErrorEvent(line: string): Record<string, unknown> | undefined {
+  if (!line.includes("[subagent007 error]")) {
+    return undefined;
+  }
+  const jsonStart = line.indexOf("{");
+  if (jsonStart < 0) {
+    return undefined;
+  }
   try {
-    return childFailureReasonCodeFromOutput(await readOutputTail(filePath));
+    return asRecord(JSON.parse(line.slice(jsonStart)));
   } catch {
     return undefined;
+  }
+}
+
+function childFailureMetadataFromOutput(outputText: string): ChildFailureMetadata {
+  for (const line of outputText.split(/\r?\n/)) {
+    const errorEvent = parseSubagentErrorEvent(line);
+    const providerError = asRecord(errorEvent?.error);
+    if (providerError?.type === "usage_limit_reached") {
+      return {
+        reasonCode: "usage_limit_reached",
+        usageLimitMetadata: usageLimitMetadataFromErrorEvent(errorEvent ?? {}),
+      };
+    }
+    if (line.includes("[subagent007 error]") && line.includes("\"type\":\"usage_limit_reached\"")) {
+      return { reasonCode: "usage_limit_reached" };
+    }
+  }
+  return {};
+}
+
+async function childFailureMetadataFromOutputFile(filePath: string): Promise<ChildFailureMetadata> {
+  try {
+    return childFailureMetadataFromOutput(await readOutputTail(filePath));
+  } catch {
+    return {};
   }
 }
 
@@ -369,9 +479,9 @@ export async function runSubagentCore(
       },
     });
     processOutputPath = processResult.outputPath;
-    const childFailureReasonCode = processResult.exitCode !== null && processResult.exitCode !== 0
-      ? await childFailureReasonCodeFromOutputFile(processResult.outputPath)
-      : undefined;
+    const childFailure = processResult.exitCode !== null && processResult.exitCode !== 0
+      ? await childFailureMetadataFromOutputFile(processResult.outputPath)
+      : {};
     const finalMessage = await readFinalMessage(finalMessageTarget.outputLastMessagePath);
     const writtenOutputMode: OutputMode = finalMessage ? "final" : "transcript";
     const output = finalMessage
@@ -454,8 +564,9 @@ export async function runSubagentCore(
         stopSignal: processResult.stopSignal,
         sessionMode,
         sessionEstablished,
-        childFailureReasonCode,
+        childFailureReasonCode: childFailure.reasonCode,
       }),
+      ...(childFailure.usageLimitMetadata ?? {}),
       ...(timeoutRecoveryHint ? { timeout_recovery_hint: timeoutRecoveryHint } : {}),
       session_id: sessionId,
       session_established: sessionEstablished,

@@ -67,6 +67,7 @@ import {
 import { defaultSubagentStatePath } from "./output.js";
 import { assertModelClassUsableForOneShot } from "./modelHealth.js";
 import { safeIntegerFromEnv } from "./env.js";
+import { acquireActiveChildLease, type ActiveChildLease } from "./activeChildLease.js";
 
 type RunTaskStatus = DurableRunStatus;
 const TERMINAL_RUN_STATUS_SET = new Set<RunTaskStatus>(TERMINAL_RUN_STATUSES);
@@ -569,6 +570,28 @@ async function registerRunTaskState(
   await writeTaskSnapshot(await getRunTask(state.runId));
 }
 
+async function registerRunTaskStateWithChildLease(
+  state: RunTaskState,
+  request: RunSubagentRequest | RunSubagentSessionRequest,
+): Promise<ActiveChildLease> {
+  const childLease = await acquireActiveChildLease(state.runId);
+  try {
+    await registerRunTaskState(state, request);
+    return childLease;
+  } catch (error) {
+    await releaseChildLease(childLease);
+    throw error;
+  }
+}
+
+async function releaseChildLease(childLease: ActiveChildLease): Promise<void> {
+  try {
+    await childLease.release();
+  } catch {
+    // Capacity accounting is a guardrail; release failure must not mask the run outcome.
+  }
+}
+
 async function appendClosedInputEvents(
   state: RunTaskState,
   closed: Awaited<ReturnType<typeof closePendingInputRequestsForRun>>,
@@ -660,6 +683,17 @@ async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
     force_grace_ms: result.force_grace_ms,
     stop_reason: result.stop_reason,
     stop_signal: result.stop_signal,
+    provider_error_type: result.provider_error_type,
+    provider_status_code: result.provider_status_code,
+    provider_error_message: result.provider_error_message,
+    usage_limit_plan_type: result.usage_limit_plan_type,
+    usage_limit_resets_at: result.usage_limit_resets_at,
+    usage_limit_resets_in_seconds: result.usage_limit_resets_in_seconds,
+    usage_limit_retry_after_seconds: result.usage_limit_retry_after_seconds,
+    usage_limit_primary_used_percent: result.usage_limit_primary_used_percent,
+    usage_limit_secondary_used_percent: result.usage_limit_secondary_used_percent,
+    usage_limit_primary_reset_after_seconds: result.usage_limit_primary_reset_after_seconds,
+    usage_limit_secondary_reset_after_seconds: result.usage_limit_secondary_reset_after_seconds,
     ...(state.promotion
       ? {
           auto_promoted_from: state.promotion.auto_promoted_from,
@@ -1185,7 +1219,7 @@ export async function startRunTask(
 
   const state = createRunTaskState("run");
   state.failureLogTool = failureLogTool;
-  await registerRunTaskState(state, request);
+  const childLease = await registerRunTaskStateWithChildLease(state, request);
 
   state.promise = (async () => {
     try {
@@ -1202,6 +1236,7 @@ export async function startRunTask(
       state.error = error as Error;
       await logBackgroundHandlerError(failureLogTool, request, error);
     } finally {
+      await releaseChildLease(childLease);
       await finalizeRunTask(state, durableTaskCloseReason(state));
     }
   })();
@@ -1324,7 +1359,7 @@ export async function startSessionRunTask(
     typeof request.session_key === "string" ? request.session_key : undefined,
   );
   state.failureLogTool = failureLogTool;
-  await registerRunTaskState(state, request);
+  const childLease = await registerRunTaskStateWithChildLease(state, request);
 
   state.promise = (async () => {
     try {
@@ -1340,6 +1375,7 @@ export async function startSessionRunTask(
       state.error = error as Error;
       await logBackgroundHandlerError(failureLogTool, request, error);
     } finally {
+      await releaseChildLease(childLease);
       await finalizeRunTask(state, durableTaskCloseReason(state));
     }
   })();
@@ -1399,15 +1435,20 @@ async function runSubagentPromotedTask(
   };
   const state = createRunTaskState("run");
   state.promotion = promotion;
-  await registerRunTaskState(state, request);
-  await appendStatusEvent(state, {
-    kind: "task",
-    event: "auto_promoted",
-    text: "[auto_promoted] run_subagent -> durable_run",
-    occurred_at: new Date().toISOString(),
-    metadata: { ...promotion },
-  }, "run_subagent auto-promoted to durable run");
-  await writeTaskSnapshot(await getRunTask(state.runId));
+  const childLease = await registerRunTaskStateWithChildLease(state, request);
+  try {
+    await appendStatusEvent(state, {
+      kind: "task",
+      event: "auto_promoted",
+      text: "[auto_promoted] run_subagent -> durable_run",
+      occurred_at: new Date().toISOString(),
+      metadata: { ...promotion },
+    }, "run_subagent auto-promoted to durable run");
+    await writeTaskSnapshot(await getRunTask(state.runId));
+  } catch (error) {
+    await releaseChildLease(childLease);
+    throw error;
+  }
 
   state.promise = (async () => {
     try {
@@ -1428,6 +1469,7 @@ async function runSubagentPromotedTask(
       state.error = error as Error;
       await logBackgroundHandlerError("run_subagent", request, error);
     } finally {
+      await releaseChildLease(childLease);
       await finalizeRunTask(state, durableTaskCloseReason(state));
     }
   })();
@@ -1460,7 +1502,7 @@ export async function runSubagentOneShotTask(
   await assertPiChildEntrypointAvailable();
 
   const state = createRunTaskState("run");
-  await registerRunTaskState(state, request);
+  const childLease = await registerRunTaskStateWithChildLease(state, request);
 
   state.promise = (async () => {
     try {
@@ -1476,6 +1518,7 @@ export async function runSubagentOneShotTask(
       state.error = error as Error;
       await logBackgroundHandlerError("run_subagent", request, error);
     } finally {
+      await releaseChildLease(childLease);
       await finalizeRunTask(state, "run reached a terminal state");
     }
   })();

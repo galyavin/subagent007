@@ -118,6 +118,8 @@ async function preflightRejectedResult(
     ? "Use schedule_run or start_run for timed work."
     : error.message.includes("timeout_ms under budget for deadline-risk workload")
       ? TIMEOUT_UNDERBUDGET_GUIDANCE
+    : reasonCode === "local_capacity_exhausted"
+      ? "Retry after an active child run completes or raise SUBAGENT007_MAX_ACTIVE_CHILDREN."
     : undefined;
   if (reasonCode !== "timeout_underbudget_for_deadline_risk") {
     await logFailure({

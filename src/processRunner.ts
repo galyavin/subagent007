@@ -100,6 +100,8 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
     let heartbeatBeat = 0;
     let heartbeatInFlight = false;
     let abortListener: (() => void) | undefined;
+    let cleanupOnParentExit: (() => void) | undefined;
+    let terminationStarted = false;
     const forceFinishDelayMs = options.timeoutBudget.killGraceMs + options.timeoutBudget.forceGraceMs;
 
     const clearTimers = () => {
@@ -110,6 +112,9 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
       }
       if (abortListener) {
         options.abortSignal?.removeEventListener("abort", abortListener);
+      }
+      if (cleanupOnParentExit) {
+        process.removeListener("exit", cleanupOnParentExit);
       }
     };
 
@@ -188,6 +193,13 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
       child.kill(signal);
     };
 
+    cleanupOnParentExit = () => {
+      if (!settled && !closed) {
+        signalChild("SIGKILL");
+      }
+    };
+    process.once("exit", cleanupOnParentExit);
+
     const appendControlMarker = (marker: string) => {
       writeOutput(marker);
       for (const line of marker.split(/\r?\n/)) {
@@ -196,6 +208,10 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
     };
 
     const startGracefulTermination = () => {
+      if (terminationStarted) {
+        return;
+      }
+      terminationStarted = true;
       signalChild("SIGTERM");
       killTimeout = setTimeout(() => {
         if (!closed) {

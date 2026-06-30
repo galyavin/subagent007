@@ -44,6 +44,17 @@ type FailureRecord = {
   calibration_era?: string;
   thinking_level?: string;
   output_mode?: string;
+  provider_error_type?: string;
+  provider_status_code?: number;
+  provider_error_message?: string;
+  usage_limit_plan_type?: string | null;
+  usage_limit_resets_at?: number | null;
+  usage_limit_resets_in_seconds?: number | null;
+  usage_limit_retry_after_seconds?: number | null;
+  usage_limit_primary_used_percent?: number | null;
+  usage_limit_secondary_used_percent?: number | null;
+  usage_limit_primary_reset_after_seconds?: number | null;
+  usage_limit_secondary_reset_after_seconds?: number | null;
 };
 
 const TIMESTAMPED_EVENT_ID_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{9}Z-[0-9a-f]{12}$/;
@@ -202,27 +213,56 @@ test("run_subagent appends one central record for a nonzero child failure", asyn
   });
 });
 
-test("run_subagent classifies Codex usage limits without generic nonzero reason", async () => {
+test("run_subagent classifies Codex usage limits and preserves provider reset metadata", async () => {
   await withFakeClient(async (client, { projectDir, failureLogPath }) => {
     const response = await client.callTool({
       name: "run_subagent",
       arguments: {
         cwd: projectDir,
-        prompt: "USAGE_LIMIT_REACHED",
+        prompt: "USAGE_LIMIT_WITH_RESET",
         run_kind: "quick_noninteractive",
         output_mode: "transcript",
       },
     });
 
     assert.notEqual(response.isError, true);
-    const metadata = response.structuredContent as { reason_code?: string };
+    const metadata = response.structuredContent as {
+      reason_code?: string;
+      provider_error_type?: string;
+      provider_status_code?: number;
+      provider_error_message?: string;
+      usage_limit_plan_type?: string | null;
+      usage_limit_resets_at?: number | null;
+      usage_limit_resets_in_seconds?: number | null;
+      usage_limit_retry_after_seconds?: number | null;
+      usage_limit_primary_used_percent?: number | null;
+      usage_limit_secondary_used_percent?: number | null;
+      usage_limit_primary_reset_after_seconds?: number | null;
+      usage_limit_secondary_reset_after_seconds?: number | null;
+    };
     assert.equal(metadata.reason_code, "usage_limit_reached");
+    assert.equal(metadata.provider_error_type, "usage_limit_reached");
+    assert.equal(metadata.provider_status_code, 429);
+    assert.equal(metadata.provider_error_message, "The usage limit has been reached");
+    assert.equal(metadata.usage_limit_plan_type, "pro");
+    assert.equal(metadata.usage_limit_resets_at, 1782491143);
+    assert.equal(metadata.usage_limit_resets_in_seconds, 205140);
+    assert.equal(metadata.usage_limit_retry_after_seconds, 60);
+    assert.equal(metadata.usage_limit_primary_used_percent, 26);
+    assert.equal(metadata.usage_limit_secondary_used_percent, 100);
+    assert.equal(metadata.usage_limit_primary_reset_after_seconds, 3600);
+    assert.equal(metadata.usage_limit_secondary_reset_after_seconds, 205140);
 
     const failures = await readJsonl<FailureRecord>(failureLogPath);
     assert.equal(failures.length, 1);
     assert.equal(failures[0].tool, "run_subagent");
     assert.equal(failures[0].failure_class, "nonzero_exit");
     assert.equal(failures[0].reason_code, "usage_limit_reached");
+    assert.equal(failures[0].provider_error_type, "usage_limit_reached");
+    assert.equal(failures[0].provider_status_code, 429);
+    assert.equal(failures[0].usage_limit_resets_in_seconds, 205140);
+    assert.equal(failures[0].usage_limit_retry_after_seconds, 60);
+    assert.equal(failures[0].usage_limit_secondary_used_percent, 100);
   });
 });
 

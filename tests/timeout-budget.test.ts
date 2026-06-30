@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -419,7 +420,7 @@ test("runChildProcess clears heartbeat interval after timeout", async () => {
     command: process.execPath,
     args: [scriptPath, "TIMEOUT_SPAWN_CHILD"],
     cwd: projectDir,
-    timeoutBudget: computeTimeoutBudget(220, {
+    timeoutBudget: computeTimeoutBudget(600, {
       minRequestedTimeoutMs: 0,
       responseHeadroomMs: 100,
       killGraceMs: 50,
@@ -440,4 +441,60 @@ test("runChildProcess clears heartbeat interval after timeout", async () => {
   assert.match(await fs.readFile(result.outputPath, "utf8"), /\[subagent007 timeout\]/);
   assert.equal(beatsAtFinish > 0, true);
   assert.equal(beats, beatsAtFinish);
+  const childPid = Number(await fs.readFile(path.join(projectDir, "child.pid"), "utf8"));
+  assert.equal(Number.isInteger(childPid), true);
+  await waitForProcessExit(childPid);
+});
+
+test("runChildProcess kills detached child group when the parent process exits", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-parent-exit-"));
+  const projectDir = path.join(tmp, "project");
+  const scriptPath = await createProcessScript();
+  const parentPath = path.join(tmp, "parent-exit.cjs");
+  const childPidPath = path.join(projectDir, "child.pid");
+  await fs.mkdir(projectDir, { recursive: true });
+  await fs.writeFile(
+    parentPath,
+    [
+      "#!/usr/bin/env node",
+      "const fs = require('fs');",
+      "const path = require('path');",
+      "const { pathToFileURL } = require('url');",
+      "(async () => {",
+      "  const projectRoot = process.argv[2];",
+      "  const scriptPath = process.argv[3];",
+      "  const { runChildProcess } = await import(pathToFileURL(path.join(projectRoot, 'dist/processRunner.js')).href);",
+      "  const { computeTimeoutBudget } = await import(pathToFileURL(path.join(projectRoot, 'dist/timeoutBudget.js')).href);",
+      "  void runChildProcess({ command: process.execPath, args: [scriptPath, 'TIMEOUT_SPAWN_CHILD'], cwd: process.cwd(), timeoutBudget: computeTimeoutBudget(undefined) });",
+      "  const childPidPath = path.join(process.cwd(), 'child.pid');",
+      "  const deadline = Date.now() + 1000;",
+      "  while (!fs.existsSync(childPidPath) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));",
+      "  if (!fs.existsSync(childPidPath)) process.exit(2);",
+      "  process.exit(0);",
+      "})().catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });",
+      "",
+    ].join("\n"),
+  );
+
+  const parent = spawn(process.execPath, [parentPath, path.resolve("."), scriptPath], {
+    cwd: projectDir,
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let stderr = "";
+  parent.stderr.setEncoding("utf8");
+  parent.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  const exit = await withDeadline(
+    new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      parent.on("close", (code, signal) => resolve({ code, signal }));
+    }),
+    2000,
+  );
+
+  assert.equal(exit.code, 0, stderr);
+  assert.equal(exit.signal, null);
+  const childPid = Number(await fs.readFile(childPidPath, "utf8"));
+  assert.equal(Number.isInteger(childPid), true);
+  await waitForProcessExit(childPid);
 });

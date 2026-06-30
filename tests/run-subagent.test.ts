@@ -18,7 +18,7 @@ import { readJsonl, sha256File, withEnv } from "./helpers/testUtils.js";
 
 type RunSubagentMetadata = {
   run_id: string;
-  status: "working" | "input_required" | "completed" | "failed" | "cancelled" | "timed_out";
+  status: "working" | "input_required" | "completed" | "failed" | "cancelled" | "timed_out" | "rejected";
   output_path: string;
   output_references?: Array<{
     kind: "file";
@@ -71,6 +71,9 @@ type RunSubagentMetadata = {
   contract_version?: number;
   error_class?: string;
   reason_code?: string;
+  child_started?: boolean;
+  kind?: string;
+  retry_guidance?: string;
 };
 
 async function connectFakeClient<T>(
@@ -333,6 +336,73 @@ test("runSubagent accepts skill_name and passes a normalized skill to the Pi chi
       assert.equal(logs.length, 1);
       assert.equal(logs[0].request.skill, skillName);
       assert.equal(logs[0].request.skillFilePath, skillPath);
+    },
+  );
+});
+
+test("start_run rejects before child launch when the configured local child fuse is exhausted", async () => {
+  const activeChildrenDir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-active-children-"));
+  await connectFakeClient(
+    async (client, { projectDir }) => {
+      const firstResponse = await client.callTool({
+        name: "start_run",
+        arguments: {
+          cwd: projectDir,
+          prompt: "REQUEST_INPUT_WAIT",
+          output_mode: "final",
+          timeout_ms: 10000,
+        },
+      });
+      assert.notEqual(firstResponse.isError, true);
+      const first = firstResponse.structuredContent as RunSubagentMetadata;
+      await waitForInputRequired(client, first.run_id);
+
+      const rejectedResponse = await client.callTool({
+        name: "start_run",
+        arguments: {
+          cwd: projectDir,
+          prompt: "FAST",
+          output_mode: "final",
+          timeout_ms: 10000,
+        },
+      });
+      assert.notEqual(rejectedResponse.isError, true);
+      const rejected = rejectedResponse.structuredContent as RunSubagentMetadata;
+      assert.equal(rejected.status, "rejected");
+      assert.equal(rejected.kind, "preflight_rejected");
+      assert.equal(rejected.child_started, false);
+      assert.equal(rejected.reason_code, "local_capacity_exhausted");
+      assert.match(rejected.retry_guidance ?? "", /active child run completes/);
+
+      const cancelResponse = await client.callTool({
+        name: "cancel_run",
+        arguments: { run_id: first.run_id },
+      });
+      assert.notEqual(cancelResponse.isError, true);
+      const cancelled = await waitForTerminalRun(client, first.run_id);
+      assert.equal(cancelled.status, "cancelled");
+
+      const afterReleaseResponse = await client.callTool({
+        name: "start_run",
+        arguments: {
+          cwd: projectDir,
+          prompt: "FAST",
+          output_mode: "final",
+          timeout_ms: 10000,
+        },
+      });
+      assert.notEqual(afterReleaseResponse.isError, true);
+      const afterRelease = afterReleaseResponse.structuredContent as RunSubagentMetadata;
+      assert.notEqual(afterRelease.status, "rejected");
+      const completed = await waitForTerminalRun(client, afterRelease.run_id);
+      assert.equal(completed.success, true);
+      assert.equal(completed.status, "completed");
+    },
+    {
+      env: {
+        SUBAGENT007_MAX_ACTIVE_CHILDREN: "1",
+        SUBAGENT007_ACTIVE_CHILDREN_DIR: activeChildrenDir,
+      },
     },
   );
 });
