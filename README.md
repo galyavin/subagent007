@@ -300,6 +300,8 @@ Only probe calls recorded in `campaign_ledger_path` should claim MCP call-attemp
 
 ## Development
 
+For repository work, read `AGENTS.md` and `.mex/ROUTER.md` first; they carry the current project rules and context map. When README or project-memory facts change, run `mex sync` and `mex check`; use `mex log` for rationale future agents need.
+
 ```sh
 npm run build
 npm run typecheck
