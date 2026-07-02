@@ -107,7 +107,7 @@ Child-invocation tools require:
 - `cwd`: absolute directory path
 - `prompt`: nonempty string
 
-Do not pass secrets unless local mailbox, public events, and output artifacts are acceptable. `prompt` is copied into public event history and transcript-rendered artifacts; final-message artifacts may omit it. `answer_run_input.answer` is stored in the local mailbox settlement and omitted from public event views, but child output may contain answer-derived text if the child echoes or uses the answer.
+Do not pass secrets unless the child model/tools may receive them and child output artifacts may contain them if echoed. Server-authored public events and transcript provenance render a redacted caller-prompt marker instead of raw `prompt`; final or transcript artifacts can still contain prompt-derived text emitted by the child. `answer_run_input.answer` is stored in the local mailbox settlement and omitted from public event views, but child output may contain answer-derived text if the child echoes or uses the answer.
 
 Optional common fields:
 
