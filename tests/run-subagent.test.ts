@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { createInputRequest, listInputRequests } from "../src/inputMailbox.js";
+import { PUBLIC_PROMPT_REDACTED_MARKER } from "../src/prompt.js";
 import {
   extractSubagentSessionId,
   partialOutputAvailableForRun,
@@ -286,7 +287,7 @@ test("runSubagent is ephemeral by default and invokes the Pi child request-file 
       assert.equal(logs[0].request.sessionMode, "ephemeral");
       assert.equal(logs[0].request.prompt, "/skill:fixture-pda-lite\n\n<prompt>\nFAST\n</prompt>");
       assert.deepEqual(logs[0].request.promptProvenance, {
-        public_prompt: "FAST",
+        public_prompt: PUBLIC_PROMPT_REDACTED_MARKER,
         skill_name: skillName,
         skill_marker: "[server_contract] skill_name=fixture-pda-lite",
         composed_child_prompt: "/skill:fixture-pda-lite\n\n<prompt>\nFAST\n</prompt>",
@@ -1253,7 +1254,7 @@ test("run_subagent writes public transcripts without thinking event payloads", a
       name: "run_subagent",
       arguments: {
         cwd: projectDir,
-        prompt: "RAW_THINKING_TRANSCRIPT",
+        prompt: "RAW_THINKING_TRANSCRIPT SECRET_PROMPT_SHOULD_NOT_LEAK",
         run_kind: "quick_noninteractive",
       },
     });
@@ -1263,7 +1264,10 @@ test("run_subagent writes public transcripts without thinking event payloads", a
     assert.equal(metadata.written_output_mode, "transcript");
 
     const output = await fs.readFile(metadata.output_path, "utf8");
+    assert.equal(output.includes(PUBLIC_PROMPT_REDACTED_MARKER), true);
     assert.match(output, /PUBLIC ASSISTANT TEXT/);
+    assert.doesNotMatch(output, /SECRET_PROMPT_SHOULD_NOT_LEAK/);
+    assert.doesNotMatch(output, /RAW_THINKING_TRANSCRIPT/);
     assert.doesNotMatch(output, /SECRET_THINKING_SHOULD_NOT_LEAK/);
     assert.doesNotMatch(output, /thinking_delta/);
     assert.doesNotMatch(output, /assistantMessageEvent/);
@@ -1278,16 +1282,24 @@ test("run_subagent raw public event file omits thinking payloads", async () => {
         name: "run_subagent",
         arguments: {
           cwd: projectDir,
-          prompt: "RAW_THINKING_TRANSCRIPT",
+          prompt: "RAW_THINKING_TRANSCRIPT SECRET_PROMPT_SHOULD_NOT_LEAK",
           run_kind: "quick_noninteractive",
         },
       });
       assert.notEqual(response.isError, true);
       const metadata = response.structuredContent as RunSubagentMetadata;
       const rawEvents = await fs.readFile(path.join(runTasksDir, `${metadata.run_id}.events.jsonl`), "utf8");
+      assert.equal(rawEvents.includes(PUBLIC_PROMPT_REDACTED_MARKER), true);
+      assert.doesNotMatch(rawEvents, /SECRET_PROMPT_SHOULD_NOT_LEAK/);
+      assert.doesNotMatch(rawEvents, /RAW_THINKING_TRANSCRIPT/);
       assert.doesNotMatch(rawEvents, /SECRET_THINKING_SHOULD_NOT_LEAK/);
       assert.doesNotMatch(rawEvents, /thinking_delta|assistantMessageEvent/);
-      assert.doesNotMatch(JSON.stringify(metadata.recent_events), /SECRET_THINKING_SHOULD_NOT_LEAK/);
+      const recentEventsText = JSON.stringify(metadata.recent_events);
+      const lastPublicOutputExcerpt = metadata.last_public_output_excerpt ?? "";
+      assert.equal(recentEventsText.includes(PUBLIC_PROMPT_REDACTED_MARKER), true);
+      assert.doesNotMatch(recentEventsText, /SECRET_PROMPT_SHOULD_NOT_LEAK|RAW_THINKING_TRANSCRIPT/);
+      assert.doesNotMatch(recentEventsText, /SECRET_THINKING_SHOULD_NOT_LEAK/);
+      assert.doesNotMatch(lastPublicOutputExcerpt, /SECRET_PROMPT_SHOULD_NOT_LEAK|RAW_THINKING_TRANSCRIPT/);
     },
     {
       env: {

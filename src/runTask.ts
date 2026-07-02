@@ -34,7 +34,7 @@ import {
   validateRunSubagentSessionRequestPreflight,
 } from "./session.js";
 import { DEFAULT_HEARTBEAT_MESSAGE, type HeartbeatNotify } from "./progress.js";
-import { serverContractPacketMarker, serverContractSkillMarker } from "./prompt.js";
+import { PUBLIC_PROMPT_REDACTED_MARKER, serverContractPacketMarker, serverContractSkillMarker } from "./prompt.js";
 import {
   appendRunPublicEvent,
   publicOutputExcerptProjection,
@@ -516,7 +516,7 @@ async function appendRunStartedEvent(
     await appendPublicEvent(state, {
       kind: "user",
       event: "message",
-      text: `[user]\n${request.prompt}`,
+      text: `[user]\n${PUBLIC_PROMPT_REDACTED_MARKER}`,
       occurred_at: state.startedAt,
     });
   }

@@ -1,5 +1,7 @@
 import type { PromptProvenance, SessionPacketPolicy } from "./types.js";
 
+export const PUBLIC_PROMPT_REDACTED_MARKER = "[prompt supplied; content redacted]";
+
 export function composePrompt({
   prompt,
   skill,
@@ -35,7 +37,7 @@ export function createPromptProvenance({
 }): PromptProvenance {
   const promptForChild = childPrompt ?? publicPrompt;
   return {
-    public_prompt: publicPrompt,
+    public_prompt: PUBLIC_PROMPT_REDACTED_MARKER,
     ...(skill ? { skill_name: skill, skill_marker: serverContractSkillMarker(skill) } : {}),
     ...(packetPolicy && packetPolicy !== "none"
       ? { packet_policy: packetPolicy, packet_marker: serverContractPacketMarker(packetPolicy) }

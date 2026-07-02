@@ -55,6 +55,22 @@ async function runHarness(args: string[], env: NodeJS.ProcessEnv = {}, cwd = pat
   }
 }
 
+async function readTextFilesUnder(root: string): Promise<string> {
+  const chunks: string[] = [];
+  async function walk(dir: string): Promise<void> {
+    for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(entryPath);
+      } else if (entry.isFile()) {
+        chunks.push(await fs.readFile(entryPath, "utf8"));
+      }
+    }
+  }
+  await walk(root);
+  return chunks.join("\n");
+}
+
 test("observed campaign harness supplies isolated state paths by default", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-campaign-test-"));
   const envPath = path.join(tmp, "env.json");
@@ -650,6 +666,8 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
 
   const ledgerText = await fs.readFile(path.join(stateDir, "campaign-ledger.jsonl"), "utf8");
   assert.doesNotMatch(ledgerText, /SECRET_CAMPAIGN_INPUT_ANSWER/);
+  const stateText = await readTextFilesUnder(stateDir);
+  assert.doesNotMatch(stateText, /SECRET_LEDGER_PROMPT|SECRET_TRANSCRIPT_PROMPT_SHOULD_NOT_LEAK/);
   const events = ledgerText
     .split(/\r?\n/)
     .filter((line) => line.trim() !== "")

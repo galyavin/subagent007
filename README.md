@@ -154,7 +154,7 @@ Result semantics:
 - Skill-bound terminal results include `requested_skill`, `resolved_skill_path`, and `resolved_skill_sha256`; unbound runs use `null` for those skill audit fields.
 - Valid `run_subagent` requests that are incompatible only with one-shot execution auto-promote and include `auto_promoted_from`, `promotion_reason_code`, `promotion_reason`, `poll_with`, and `cancel_with`.
 - `run_subagent`, `schedule_run`, `start_run`, `start_session_run`, and `run_subagent_session` create durable run-task snapshots inspectable with `get_run` by `run_id`.
-- Active `get_run` views expose sanitized `recent_events` and `last_public_output_excerpt`; raw thinking, private tool payloads, full packet instructions, composed child prompts, and input answer values are not exposed in public event views.
+- Active `get_run` views expose sanitized `recent_events` and `last_public_output_excerpt`; raw thinking, private tool payloads, caller prompt text, full packet instructions, composed child prompts, and input answer values are not exposed in public event views.
 - On timeout, `partial_output_available` is true only when the artifact includes child assistant text, a warning/error, or a captured final message.
 
 ## One-Shot Runs
@@ -248,7 +248,7 @@ Use `packet_policy` only when the caller needs a structured handoff packet. Valu
 
 Session turns execute against a candidate Pi session first. The manifest and ledger advance only when the process succeeds, a Pi session is available, and the packet policy is satisfied. Failed candidate turns are recorded in `attempts.jsonl` instead of mutating the committed session manifest.
 
-When packet policy or skill binding adds server-authored instructions, public events and transcript artifacts render the caller prompt plus compact markers such as `[server_contract] skill_name=pda-lite` or `[server_contract] packet_policy=required contract_packet_v1 instruction applied`. The child still receives the full composed prompt required for current Pi behavior.
+When packet policy or skill binding adds server-authored instructions, public events and transcript artifacts render a redacted caller-prompt marker plus compact markers such as `[server_contract] skill_name=pda-lite` or `[server_contract] packet_policy=required contract_packet_v1 instruction applied`. The child still receives the full composed prompt required for current Pi behavior.
 
 Session results keep `subagent_session_id` and `session_established` as committed-state fields. They also expose `attempt_subagent_session_id` and `attempt_session_established` so packet-required failures can show that Pi created a candidate session even when promotion to the committed session was rejected.
 

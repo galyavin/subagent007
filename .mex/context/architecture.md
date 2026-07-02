@@ -12,7 +12,7 @@ edges:
     condition: when specific technology details are needed
   - target: context/decisions.md
     condition: when understanding why the architecture is structured this way
-last_updated: 2026-07-01
+last_updated: 2026-07-02
 ---
 
 # Architecture
@@ -23,6 +23,7 @@ Run requests go through config/model/skill validation, then `src/runTask.ts` cre
 When configured, `src/activeChildLease.ts` acquires a local active-child lease before task registration can launch child work.
 `src/runSubagent.ts` writes a Pi child request file, then `src/processRunner.ts` spawns and supervises the child process.
 Child output becomes file-backed artifacts through `src/output.ts`, sanitized public events through run-event helpers, and failure records through `src/failureLog.ts`.
+Server-authored prompt provenance uses `src/prompt.ts` to project caller prompt text to a redacted public marker before it reaches public event views or transcript artifacts; child execution still receives the real composed prompt.
 `get_run`, `answer_run_input`, and `cancel_run` operate on local filesystem-backed run snapshots and input mailbox records.
 Operation-only semantic failures from those run-operation tools project as `kind:"operation_rejected"` instead of MCP text errors; child-invocation preflight failures remain `kind:"preflight_rejected"` with `child_started:false`.
 Named sessions add `src/session.ts` manifest/ledger/lock handling around the same child execution path.
@@ -47,4 +48,4 @@ Named sessions add `src/session.ts` manifest/ledger/lock handling around the sam
 - No database, remote worker service, or distributed lock manager; persistence and locks are local files.
 - No public concrete model or thinking-level input; callers use model classes.
 - No tool restriction by `tool_profile`; accepted legacy profile values resolve to all child tools.
-- No exposure of raw thinking, private tool payloads, full composed prompts, or input answer values in public event views.
+- No exposure of raw thinking, private tool payloads, caller prompt text, full composed prompts, or input answer values in public event views.

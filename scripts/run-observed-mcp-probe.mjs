@@ -609,7 +609,7 @@ async function responseSummaryForScenario(response, scenario) {
       ...summary,
       transcript_redacted:
         output.includes("PUBLIC ASSISTANT TEXT") &&
-        !/SECRET_THINKING_SHOULD_NOT_LEAK|thinking_delta|assistantMessageEvent/.test(output),
+        !/SECRET_THINKING_SHOULD_NOT_LEAK|SECRET_TRANSCRIPT_PROMPT_SHOULD_NOT_LEAK|RAW_THINKING_TRANSCRIPT|thinking_delta|assistantMessageEvent/.test(output),
     };
   } catch {
     return { ...summary, transcript_redacted: false };
@@ -698,7 +698,7 @@ function scenarioCall(scenario, cwd) {
     };
   }
   if (scenario === "transcript-redaction") {
-    return runSubagentScenarioCall(cwd, "RAW_THINKING_TRANSCRIPT", {
+    return runSubagentScenarioCall(cwd, "RAW_THINKING_TRANSCRIPT SECRET_TRANSCRIPT_PROMPT_SHOULD_NOT_LEAK", {
       output_mode: "transcript",
     });
   }

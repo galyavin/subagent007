@@ -116,6 +116,9 @@ export interface ResolvedRunSubagentRequest {
 }
 
 export interface PromptProvenance {
+  /**
+   * Safe public projection of the caller prompt. Never store the raw prompt here.
+   */
   public_prompt: string;
   skill_name?: string;
   skill_marker?: string;

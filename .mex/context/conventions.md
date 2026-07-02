@@ -11,7 +11,7 @@ triggers:
 edges:
   - target: context/architecture.md
     condition: when a convention depends on understanding the system structure
-last_updated: 2026-07-01
+last_updated: 2026-07-02
 ---
 
 # Conventions
@@ -34,7 +34,7 @@ last_updated: 2026-07-01
 ## Patterns
 - Semantic preflight rejection must happen before child launch and return structured content with `kind:"preflight_rejected"` and `child_started:false`.
 - Run-operation semantic rejections from `get_run`, `answer_run_input`, and `cancel_run` return structured content with `kind:"operation_rejected"` and a typed `reason_code`; do not include `child_started` because the target run may already have launched.
-- Public event views and transcripts must stay sanitized; never expose raw thinking, private tool payloads, full composed prompts, or answer values.
+- Public event views and transcripts must stay sanitized; never expose raw thinking, private tool payloads, caller prompt text, full composed prompts, or answer values. Use the shared public prompt projection marker instead of writing `request.prompt` into public events or transcript provenance.
 - Required named-session packet failures use distinct reason codes: missing packet -> `packet_required_missing`, malformed packet -> `packet_required_invalid`, parse-valid not-ready packet -> `packet_required_not_ready`.
 - When adding an environment variable, update source constants, README environment docs, and `npm run docs:check` coverage.
 - When changing child execution, verify timeout/cancel/parent-exit cleanup because fake child descendants can otherwise outlive the test run.
