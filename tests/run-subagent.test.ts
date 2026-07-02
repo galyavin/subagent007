@@ -2373,11 +2373,12 @@ test("cancel_run closes pending input requests and rejects late answers", async 
           answer: "late",
         },
       });
-      assert.equal(lateAnswer.isError, true);
-      const content = lateAnswer.content as Array<{ type: string; text?: string }>;
-      assert.match(
-        content[0]?.type === "text" ? (content[0].text ?? "") : "",
-        /not accepting input|already closed/,
+      assert.notEqual(lateAnswer.isError, true);
+      const rejected = lateAnswer.structuredContent as { kind?: string; reason_code?: string };
+      assert.equal(rejected.kind, "operation_rejected");
+      assert.ok(
+        rejected.reason_code === "run_not_accepting_input" ||
+          rejected.reason_code === "input_request_already_closed",
       );
 
       const terminal = await waitForTerminalRun(client, started.run_id);

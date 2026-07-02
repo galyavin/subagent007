@@ -12,12 +12,28 @@ edges:
     condition: when a decision relates to system structure
   - target: context/stack.md
     condition: when a decision relates to technology choice
-last_updated: 2026-06-30
+last_updated: 2026-07-01
 ---
 
 # Decisions
 
 ## Decision Log
+
+### Operation semantic rejections are not preflight rejections
+**Date:** 2026-07-01
+**Status:** Active
+**Decision:** `get_run`, `answer_run_input`, and `cancel_run` ValidationErrors return structured `kind:"operation_rejected"` results with typed `reason_code`; child-invocation validation keeps `kind:"preflight_rejected"` and `child_started:false`.
+**Reasoning:** Operation tools often refer to runs that already launched, so reusing `preflight_rejected` would make the child-start claim ambiguous or false. A separate structured rejection keeps caller adapters from parsing MCP text while preserving the exact preflight invariant.
+**Alternatives considered:** Leave operation errors as MCP text errors (rejected because callers had to infer reason codes), reuse `preflight_rejected` for all semantic errors (rejected because `child_started:false` is not meaningful for operations), and replace the whole error envelope (rejected as broader than the observed failure).
+**Consequences:** Observed campaign probes must require `operation_rejected` for run-operation semantic failures, not text-derived reason-code fallback.
+
+### Required packet failures distinguish not-ready from invalid
+**Date:** 2026-07-01
+**Status:** Active
+**Decision:** Required session packets use `packet_required_not_ready` for parse-valid packets whose verdict/blockers do not satisfy the required policy; malformed packets continue using `packet_required_invalid`, and missing packets use `packet_required_missing`.
+**Reasoning:** A valid packet that honestly says "not ready" is different from a malformed packet. Callers need this distinction to decide whether to repair packet shape or continue task work.
+**Alternatives considered:** Keep `packet_required_invalid` for all unsatisfied packets (rejected as caller-hostile taxonomy collapse), or add a new packet object state machine (rejected as unnecessary for the observed ambiguity).
+**Consequences:** Failure logs, terminal metadata, README, and observed-campaign result matching must stay synchronized with all three packet reason codes.
 
 ### Local capacity exhaustion rejects instead of queues
 **Date:** 2026-06-30

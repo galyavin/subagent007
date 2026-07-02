@@ -147,8 +147,10 @@ Result semantics:
   The default source policy is `require_clean`, which blocks dirty or unknown git state; `allow_dirty` permits dirty checkouts while still blocking unknown source state, and `allow_unknown` permits both dirty and unknown source state for package-style or exploratory probes.
 - `get_run_contract` returns the durable-run lifecycle contract. Version `1` defines non-terminal statuses `working` and `input_required`, terminal statuses `completed`, `failed`, `cancelled`, and `timed_out`, file-backed output references, bounded public excerpts, mailbox addressing by `run_id/request_id`, and fail-closed restart drift behavior.
 - Terminal views after child execution include `output_references` plus legacy `output_path`; read the referenced file for the full answer and check `written_output_mode`, because requested `final` output falls back to transcript when no final message is captured. Schema and preflight rejections do not create output artifacts.
-- Failed, timed-out, and restart-drift terminal views include `error_class` and `reason_code` when the server can classify the failure; adapters should branch on those fields instead of parsing `error`.
-- Expected handler-level semantic rejections return structured content with `kind:"preflight_rejected"`, `success:false`, and `child_started:false`; SDK schema errors remain MCP input validation errors.
+- Failed, timed-out, restart-drift, and structured rejection views include `error_class` and `reason_code` when the server can classify the failure; adapters should branch on those fields instead of parsing `error`.
+- Provider usage-limit failures use `reason_code:"usage_limit_reached"` and may include provider reset/retry fields such as `provider_status_code`, `provider_error_message`, `usage_limit_resets_in_seconds`, `usage_limit_retry_after_seconds`, and primary/secondary usage percentages. The same fields are copied to failure-log records.
+- Child-invocation preflight rejections return structured content with `kind:"preflight_rejected"`, `success:false`, and `child_started:false`; no child model work ran.
+- Operation-only semantic rejections from `get_run`, `answer_run_input`, and `cancel_run` return structured content with `kind:"operation_rejected"`, `success:false`, and a typed `reason_code`; these views do not include `child_started` because the target run may already have launched.
 - Skill-bound terminal results include `requested_skill`, `resolved_skill_path`, and `resolved_skill_sha256`; unbound runs use `null` for those skill audit fields.
 - Valid `run_subagent` requests that are incompatible only with one-shot execution auto-promote and include `auto_promoted_from`, `promotion_reason_code`, `promotion_reason`, `poll_with`, and `cancel_with`.
 - `run_subagent`, `schedule_run`, `start_run`, `start_session_run`, and `run_subagent_session` create durable run-task snapshots inspectable with `get_run` by `run_id`.
@@ -242,7 +244,7 @@ Use `packet_policy` only when the caller needs a structured handoff packet. Valu
 
 - `none`: default; no packet instruction or extraction
 - `best_effort`: ask for a `contract_packet_v1` block and parse it when present; parse status is metadata only
-- `required`: fail the session run unless a valid `contract_packet_v1` block claims `verdict: "ready"` with an empty `blockers` array
+- `required`: fail the session run unless a valid `contract_packet_v1` block claims `verdict: "ready"` with an empty `blockers` array. Missing packets use `reason_code:"packet_required_missing"`, malformed packets use `reason_code:"packet_required_invalid"`, and parse-valid packets that are not ready or still have blockers use `reason_code:"packet_required_not_ready"`.
 
 Session turns execute against a candidate Pi session first. The manifest and ledger advance only when the process succeeds, a Pi session is available, and the packet policy is satisfied. Failed candidate turns are recorded in `attempts.jsonl` instead of mutating the committed session manifest.
 
@@ -294,7 +296,7 @@ npm run observed-campaign -- --campaign-id campaign.example-1 -- npm run observe
 
 Run the probe through `observed-campaign` for isolated temp state. Direct protocol-deterministic `observed-mcp-probe` runs require `SUBAGENT007_FAILURE_LOG_PATH` and either `SUBAGENT007_RECORD_SOURCE=test` or `SUBAGENT007_CAMPAIGN_ID`; their ledger path is `SUBAGENT007_CAMPAIGN_LEDGER_PATH`, or `campaign-ledger.jsonl` beside the failure log or in the current working directory.
 
-Only probe calls recorded in `campaign_ledger_path` should claim MCP call-attempt coverage. Server-side `failures.jsonl` remains handler and child failure telemetry; SDK schema rejections are recorded by the probe ledger as `call_schema_error`, while structured semantic preflight rejections are recorded as `call_preflight_rejected`. The bundled MCP probe defaults to `protocol-core`; use `--profile full-current` for current deterministic surface coverage. Profiles live in `scripts/observed-coverage-manifest.json` and fail closed when required surfaces are unknown, unselected, or covered only by an incompatible evidence class. Use `--mode live-model` only for live provider smoke evidence.
+Only probe calls recorded in `campaign_ledger_path` should claim MCP call-attempt coverage. Server-side `failures.jsonl` remains handler and child failure telemetry; SDK schema rejections are recorded by the probe ledger as `call_schema_error`, structured child-invocation preflight rejections as `call_preflight_rejected`, and structured run-operation rejections as `call_operation_rejected`. The bundled MCP probe defaults to `protocol-core`; use `--profile full-current` for current deterministic surface coverage. Profiles live in `scripts/observed-coverage-manifest.json` and fail closed when required surfaces are unknown, unselected, or covered only by an incompatible evidence class. Use `--mode live-model` only for live provider smoke evidence.
 
 ## Development
 
@@ -309,5 +311,14 @@ npm run models:reconcile
 Run `npm run build` after changing `src/`; the registered MCP command and package tarball use `dist/server.js`.
 Run `npm run docs:check` after changing README model calibration rows, environment-variable docs, `src/modelAllowlist.ts`, or runtime environment-variable handling in `src/` or `scripts/`; it fails when README facts drift from source.
 There is no lint script; use `npm run typecheck`, `npm run docs:check`, and `npm test` as the local gates.
+
+Primary source boundaries:
+
+- `src/server.ts` registers public MCP tools and preflight result shaping.
+- `src/runTask.ts` owns durable task state, polling views, cancellation, promotion, and active-child lease release.
+- `src/runSubagent.ts` owns the Pi child request-file contract, output projection, timeout metadata, and provider error parsing.
+- `src/processRunner.ts` owns child process supervision and timeout/cancel/parent-exit cleanup.
+- `src/session.ts` owns named-session manifests, packet policy, and local session locks.
+- `src/types.ts` is the public type/reason-code source; keep it synchronized with README and tests when public fields change.
 
 Tests use `SUBAGENT007_PI_CHILD_PATH` to replace the real Pi child with a fake child process. Do not set it for normal MCP use. `npm test` injects a private failure ledger unless `SUBAGENT007_FAILURE_LOG_PATH` is already set; explicit paths are preserved and fingerprinted.

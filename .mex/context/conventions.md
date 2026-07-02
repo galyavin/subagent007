@@ -11,7 +11,7 @@ triggers:
 edges:
   - target: context/architecture.md
     condition: when a convention depends on understanding the system structure
-last_updated: 2026-06-30
+last_updated: 2026-07-01
 ---
 
 # Conventions
@@ -33,7 +33,9 @@ last_updated: 2026-06-30
 
 ## Patterns
 - Semantic preflight rejection must happen before child launch and return structured content with `kind:"preflight_rejected"` and `child_started:false`.
+- Run-operation semantic rejections from `get_run`, `answer_run_input`, and `cancel_run` return structured content with `kind:"operation_rejected"` and a typed `reason_code`; do not include `child_started` because the target run may already have launched.
 - Public event views and transcripts must stay sanitized; never expose raw thinking, private tool payloads, full composed prompts, or answer values.
+- Required named-session packet failures use distinct reason codes: missing packet -> `packet_required_missing`, malformed packet -> `packet_required_invalid`, parse-valid not-ready packet -> `packet_required_not_ready`.
 - When adding an environment variable, update source constants, README environment docs, and `npm run docs:check` coverage.
 - When changing child execution, verify timeout/cancel/parent-exit cleanup because fake child descendants can otherwise outlive the test run.
 - Compatibility aliases such as `list_allowed_models`, legacy `skill`, and legacy `tool_profile` are intentional unless a migration explicitly removes them.
@@ -46,4 +48,5 @@ Before presenting code changes:
 - [ ] `npm test` passes for shared lifecycle, public schema, or child-process changes.
 - [ ] `npm run docs:check` passes after README/runtime fact or env-var changes.
 - [ ] Preflight failures still happen before child spawn and preserve `child_started:false`.
+- [ ] Operation-only semantic failures return `operation_rejected` instead of forcing callers to parse MCP error text.
 - [ ] Failure logs and public result metadata remain synchronized when reason codes or provider fields change.

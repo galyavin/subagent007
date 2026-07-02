@@ -309,11 +309,14 @@ function sessionFailureProjection(
     return { failureClass: "missing_session_id", reasonCode: "missing_session_id" };
   }
   if (!packetSatisfied) {
+    const reasonCode = result.packet_parse_status === "missing"
+      ? "packet_required_missing"
+      : result.packet_parse_status === "valid"
+        ? "packet_required_not_ready"
+        : "packet_required_invalid";
     return {
       failureClass: "packet_failed",
-      reasonCode: result.packet_parse_status === "missing"
-        ? "packet_required_missing"
-        : "packet_required_invalid",
+      reasonCode,
     };
   }
   return { failureClass: "unknown_error", reasonCode: "unknown_error" };

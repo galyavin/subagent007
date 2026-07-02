@@ -50,6 +50,7 @@ export type FailureReasonCode =
   | "nonzero_exit"
   | "packet_required_invalid"
   | "packet_required_missing"
+  | "packet_required_not_ready"
   | "prompt_missing"
   | "raw_session_id_unsupported"
   | "run_not_accepting_input"
@@ -300,6 +301,16 @@ export interface PreflightRejectedResult {
   reason_code: FailureReasonCode;
   message: string;
   retry_guidance?: string;
+}
+
+export interface OperationRejectedResult {
+  status: "rejected";
+  kind: "operation_rejected";
+  success: false;
+  error_class: "validation_error";
+  reason_code: FailureReasonCode;
+  message: string;
+  run_id?: string;
 }
 
 export type RunPublicEventKind =

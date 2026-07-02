@@ -657,6 +657,12 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
   for (const tool of ["schedule_run", "start_run", "get_run", "answer_run_input", "cancel_run", "run_subagent_session"]) {
     assert.ok(events.some((event) => event.tool === tool), tool);
   }
+  assert.ok(
+    events.some((event) => event.event === "call_operation_rejected" && event.scenario === "get-run-missing"),
+  );
+  assert.ok(
+    events.some((event) => event.event === "call_operation_rejected" && event.scenario === "caller-input-wrong-request"),
+  );
 });
 
 test("observed MCP probe fails required coverage when selected scenario has wrong result class", async () => {

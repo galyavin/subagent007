@@ -12,7 +12,7 @@ edges:
     condition: when specific technology details are needed
   - target: context/decisions.md
     condition: when understanding why the architecture is structured this way
-last_updated: 2026-06-30
+last_updated: 2026-07-01
 ---
 
 # Architecture
@@ -24,6 +24,7 @@ When configured, `src/activeChildLease.ts` acquires a local active-child lease b
 `src/runSubagent.ts` writes a Pi child request file, then `src/processRunner.ts` spawns and supervises the child process.
 Child output becomes file-backed artifacts through `src/output.ts`, sanitized public events through run-event helpers, and failure records through `src/failureLog.ts`.
 `get_run`, `answer_run_input`, and `cancel_run` operate on local filesystem-backed run snapshots and input mailbox records.
+Operation-only semantic failures from those run-operation tools project as `kind:"operation_rejected"` instead of MCP text errors; child-invocation preflight failures remain `kind:"preflight_rejected"` with `child_started:false`.
 Named sessions add `src/session.ts` manifest/ledger/lock handling around the same child execution path.
 
 ## Key Components
@@ -31,7 +32,7 @@ Named sessions add `src/session.ts` manifest/ledger/lock handling around the sam
 - `runTask.ts` - durable task lifecycle, snapshots, background execution, cancellation, caller input closure, promotion from one-shot, and active-child lease release.
 - `runSubagent.ts` - child request-file contract, Pi child invocation, transcript/final-output handling, timeout metadata, provider error parsing, and skill audit metadata.
 - `processRunner.ts` - detached child process execution, timeout/cancel termination, heartbeat notifications, and parent-exit process-group cleanup.
-- `session.ts` - named-session manifests, candidate ledgers, packet policy, skill/cwd immutability, and local session locks.
+- `session.ts` - named-session manifests, candidate ledgers, packet policy, skill/cwd immutability, and local session locks. Required packet failures distinguish missing, malformed, and parse-valid not-ready packets by reason code.
 - `runtimeReadiness.ts` - built-entrypoint, source-state, contract, and public-tool readiness checks.
 
 ## External Dependencies

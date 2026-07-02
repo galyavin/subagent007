@@ -37,8 +37,10 @@ import {
 } from "./runTask.js";
 import { SERVER_VERSION } from "./runtimeMetadata.js";
 import {
+  type FailureReasonCode,
   OUTPUT_MODES,
   MODEL_CLASSES,
+  type OperationRejectedResult,
   type PreflightRejectedResult,
   RESUME_MODES,
   RUN_KINDS,
@@ -86,23 +88,30 @@ function runIdFromRequest(request: unknown): string | undefined {
 function withRunFailureLogging<TRequest, TResult>(
   tool: Extract<FailureLogTool, "get_run" | "answer_run_input" | "cancel_run">,
   handler: (request: TRequest, extra: ServerExtra) => Promise<TResult>,
-): (request: TRequest, extra: ServerExtra) => Promise<TResult> {
+): (
+  request: TRequest,
+  extra: ServerExtra,
+) => Promise<TResult | ReturnType<typeof jsonToolResult<Record<string, unknown>>>> {
   return async (request, extra) => {
     const runId = runIdFromRequest(request);
     const context = runId ? await resolveRunOperationContext(runId) : undefined;
     try {
       return await handler(request, extra);
     } catch (error) {
+      const reasonCode = failureReasonCodeForError(error);
       await logFailure({
         tool,
         failure_class: failureClassForToolHandlerError(tool, error),
-        reason_code: failureReasonCodeForError(error),
+        reason_code: reasonCode,
         cwd: context?.cwd,
         run_id: runId,
         task_kind: context?.taskKind,
         session_key: context?.sessionKey,
         success: false,
       });
+      if (error instanceof ValidationError) {
+        return jsonObjectToolResult(operationRejectedResult(runId, error, reasonCode));
+      }
       throw error;
     }
   };
@@ -139,6 +148,22 @@ async function preflightRejectedResult(
     reason_code: reasonCode,
     message: error.message,
     ...(retryGuidance ? { retry_guidance: retryGuidance } : {}),
+  };
+}
+
+function operationRejectedResult(
+  runId: string | undefined,
+  error: ValidationError,
+  reasonCode: FailureReasonCode,
+): OperationRejectedResult {
+  return {
+    status: "rejected",
+    kind: "operation_rejected",
+    success: false,
+    error_class: "validation_error",
+    reason_code: reasonCode,
+    message: error.message,
+    ...(runId ? { run_id: runId } : {}),
   };
 }
 

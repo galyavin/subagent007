@@ -11,3 +11,4 @@ For a multi-section pattern, add one row per task anchor.
 
 | Pattern | Use when |
 |---------|----------|
+| [observed-campaign-saf.md](observed-campaign-saf.md) | Running customer-style observed MCP campaigns and turning findings into SAF repairs |

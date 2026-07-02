@@ -229,8 +229,10 @@ function responseMatchesResultClass(response, resultClass) {
   if (resultClass === "nonzero_exit") {
     return response.success === false && typeof response.exit_code === "number" && response.exit_code !== 0;
   }
-  if (resultClass === "packet_failed") {
-    return response.success === false && typeof response.packet_parse_status === "string";
+  if (resultClass === "packet_required_not_ready") {
+    return response.success === false &&
+      response.reason_code === "packet_required_not_ready" &&
+      response.packet_parse_status === "valid";
   }
   if (resultClass === "transcript_redacted") {
     return response.success === true && response.transcript_redacted === true;
@@ -266,10 +268,13 @@ function responseMatchesResultClass(response, resultClass) {
       response.packet_closure_valid === true;
   }
   if (resultClass === "run_not_found") {
-    return response.is_error === true && response.reason_code === "run_not_found";
+    return response.kind === "operation_rejected" && response.reason_code === "run_not_found";
   }
   if (resultClass === "input_wrong_rejected") {
-    return response.input_wrong_rejected === true;
+    return response.input_wrong_rejected === true &&
+      response.kind === "operation_rejected" &&
+      response.is_error === false &&
+      response.reason_code === "input_request_not_part_of_run";
   }
   if (resultClass === "terminal_cancel_idempotent") {
     return response.terminal_cancel_idempotent === true;
@@ -548,12 +553,6 @@ function responseSummary(response) {
   const structured = response.structuredContent && typeof response.structuredContent === "object"
     ? response.structuredContent
     : {};
-  const text = responseText(response);
-  const inferredReasonCode = /run not found/.test(text)
-    ? "run_not_found"
-    : /input request is not part of run/.test(text)
-      ? "input_request_not_part_of_run"
-      : undefined;
   return {
     is_error: response.isError === true,
     success: typeof structured.success === "boolean" ? structured.success : null,
@@ -562,7 +561,7 @@ function responseSummary(response) {
     ready: typeof structured.ready === "boolean" ? structured.ready : undefined,
     contract_name: typeof structured.contract_name === "string" ? structured.contract_name : undefined,
     error_class: typeof structured.error_class === "string" ? structured.error_class : undefined,
-    reason_code: typeof structured.reason_code === "string" ? structured.reason_code : inferredReasonCode,
+    reason_code: typeof structured.reason_code === "string" ? structured.reason_code : undefined,
     run_id: typeof structured.run_id === "string" ? structured.run_id : undefined,
     child_started: typeof structured.child_started === "boolean" ? structured.child_started : undefined,
     exit_code: typeof structured.exit_code === "number" || structured.exit_code === null
@@ -788,6 +787,14 @@ async function runCall(client, ledgerPath, evidenceClass, scenario, call) {
         tool: call.tool,
         result: summary,
       });
+    } else if (summary.kind === "operation_rejected") {
+      await appendLedger(ledgerPath, evidenceClass, {
+        event: "call_operation_rejected",
+        call_id: callId,
+        scenario,
+        tool: call.tool,
+        result: summary,
+      });
     } else if (response.isError === true) {
       await appendLedger(ledgerPath, evidenceClass, {
         event: "call_handler_error",
@@ -1007,7 +1014,10 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
       tool: "answer_run_input",
       response: {
         ...(answered.response ?? {}),
-        input_wrong_rejected: answered.response?.reason_code === "input_request_not_part_of_run",
+        input_wrong_rejected:
+          answered.response?.kind === "operation_rejected" &&
+          answered.response?.is_error === false &&
+          answered.response?.reason_code === "input_request_not_part_of_run",
         cleanup_status: terminal.response?.status ?? cancelled.response?.status,
       },
       failure_log_delta_count:

@@ -14,7 +14,7 @@ edges:
     condition: when setting up the dev environment or running the project for the first time
   - target: patterns/INDEX.md
     condition: when starting a task — check the pattern index for a matching pattern file
-last_updated: 2026-06-30
+last_updated: 2026-07-01
 ---
 
 # Session Bootstrap
@@ -28,7 +28,7 @@ Then read this file fully before doing anything else in this session.
 - MCP public tools expose one-shot, durable run, scheduler, named-session, mailbox, contract, readiness, and model-class surfaces.
 - Durable runs persist snapshots and public event ledgers, support cancellation and caller input, and fail closed on restart drift.
 - Model classes, config migration, model-health probes, observed campaign/probe tooling, and failure-log archival are implemented.
-- SAF repairs are in place for provider usage-limit metadata, parent-exit child-process cleanup, and opt-in active-child launch fusing.
+- SAF repairs are in place for provider usage-limit metadata, parent-exit child-process cleanup, opt-in active-child launch fusing, structured run-operation semantic rejections, and packet-required not-ready taxonomy.
 - README runtime facts are checked against source with `npm run docs:check`; full source/test verification is `npm test`.
 
 **Not Built:**

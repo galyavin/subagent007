@@ -716,7 +716,7 @@ test("run_subagent_session logs non-ready required packets as packet failures", 
     assert.equal(failures.length, 1);
     assert.equal(failures[0].tool, "run_subagent_session");
     assert.equal(failures[0].failure_class, "packet_failed");
-    assert.equal(failures[0].reason_code, "packet_required_invalid");
+    assert.equal(failures[0].reason_code, "packet_required_not_ready");
   });
 });
 
@@ -980,7 +980,12 @@ test("run-scoped input failures log resolved run context", async () => {
           answer: "second",
         },
       });
-      assert.equal(duplicateAnswer.isError, true);
+      assert.notEqual(duplicateAnswer.isError, true);
+      assert.equal((duplicateAnswer.structuredContent as { kind?: string }).kind, "operation_rejected");
+      assert.equal(
+        (duplicateAnswer.structuredContent as { reason_code?: string }).reason_code,
+        "input_request_already_answered",
+      );
 
       const failures = await readJsonl<FailureRecord>(failureLogPath);
       assert.equal(failures.length, 1);
@@ -1011,7 +1016,9 @@ test("unknown run-scoped tools log run_not_found without cwd", async () => {
       name: "get_run",
       arguments: { run_id: "missing-run" },
     });
-    assert.equal(response.isError, true);
+    assert.notEqual(response.isError, true);
+    assert.equal((response.structuredContent as { kind?: string }).kind, "operation_rejected");
+    assert.equal((response.structuredContent as { reason_code?: string }).reason_code, "run_not_found");
 
     const failures = await readJsonl<FailureRecord>(failureLogPath);
     assert.equal(failures.length, 1);
