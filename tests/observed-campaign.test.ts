@@ -297,8 +297,10 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
         observed_result?: {
           transcript_redacted?: boolean;
           tool_surface_complete?: boolean;
+          tool_surface_exact?: boolean;
           skill_alias_guidance_clear?: boolean;
           missing_tools?: string[];
+          unexpected_tools?: string[];
           unclear_skill_alias_tools?: string[];
         };
       }>;
@@ -350,7 +352,9 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
   );
   assert.equal(toolListingScenario?.evidence_satisfied, true);
   assert.equal(toolListingScenario?.observed_result?.tool_surface_complete, true);
+  assert.equal(toolListingScenario?.observed_result?.tool_surface_exact, true);
   assert.deepEqual(toolListingScenario?.observed_result?.missing_tools, []);
+  assert.deepEqual(toolListingScenario?.observed_result?.unexpected_tools, []);
   assert.equal(toolListingScenario?.observed_result?.skill_alias_guidance_clear, true);
   assert.deepEqual(toolListingScenario?.observed_result?.unclear_skill_alias_tools, []);
   const redactionScenario = summary.coverage_summary.scenarios.find((scenario) =>
@@ -654,8 +658,10 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
         evidence_satisfied: boolean;
         observed_result?: {
           tool_surface_complete?: boolean;
+          tool_surface_exact?: boolean;
           skill_alias_guidance_clear?: boolean;
           missing_tools?: string[];
+          unexpected_tools?: string[];
           unclear_skill_alias_tools?: string[];
         };
       }>;
@@ -691,7 +697,9 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
     scenario.scenario === "tool-listing"
   );
   assert.equal(toolListingScenario?.observed_result?.tool_surface_complete, true);
+  assert.equal(toolListingScenario?.observed_result?.tool_surface_exact, true);
   assert.deepEqual(toolListingScenario?.observed_result?.missing_tools, []);
+  assert.deepEqual(toolListingScenario?.observed_result?.unexpected_tools, []);
   assert.equal(toolListingScenario?.observed_result?.skill_alias_guidance_clear, true);
   assert.deepEqual(toolListingScenario?.observed_result?.unclear_skill_alias_tools, []);
 
@@ -817,6 +825,86 @@ test("observed MCP probe fails tool-listing coverage when required public tools 
       `import { McpServer } from ${JSON.stringify(pathToFileURL(path.resolve("node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js")).href)};`,
       `import { StdioServerTransport } from ${JSON.stringify(pathToFileURL(path.resolve("node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js")).href)};`,
       "const server = new McpServer({ name: 'empty-mcp-server', version: '0.0.0' });",
+      "await server.connect(new StdioServerTransport());",
+    ].join("\n"),
+  );
+
+  await assert.rejects(
+    execFileAsync(
+      process.execPath,
+      [
+        probePath,
+        "--server",
+        fakeServerPath,
+        "--cwd",
+        projectDir,
+        "--profile",
+        "protocol-core",
+      ],
+      {
+        cwd: path.resolve("."),
+        env: {
+          ...process.env,
+          SUBAGENT007_COVERAGE_MANIFEST_PATH: manifestPath,
+          SUBAGENT007_FAILURE_LOG_PATH: path.join(stateDir, "failures.jsonl"),
+          SUBAGENT007_CAMPAIGN_LEDGER_PATH: path.join(stateDir, "campaign-ledger.jsonl"),
+          SUBAGENT007_RECORD_SOURCE: "test",
+        },
+        maxBuffer: 8 * 1024 * 1024,
+      },
+    ),
+    /missing required coverage surfaces: tool-listing/,
+  );
+});
+
+test("observed MCP probe fails tool-listing coverage when unexpected public tools are exposed", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-probe-extra-tools-"));
+  const projectDir = path.join(tmp, "project");
+  const stateDir = path.join(tmp, "state");
+  const manifestPath = path.join(tmp, "tool-listing-manifest.json");
+  const fakeServerPath = path.join(tmp, "noisy-mcp-server.mjs");
+  await fs.mkdir(projectDir, { recursive: true });
+  await fs.mkdir(stateDir, { recursive: true });
+  await fs.writeFile(
+    manifestPath,
+    JSON.stringify({
+      saf_required_surfaces: ["tool-listing"],
+      surfaces: {
+        "tool-listing": { evidence_classes: ["protocol-deterministic"] },
+      },
+      scenarios: {
+        "tool-listing": {
+          tool: "__list_tools",
+          lifecycle_phases: ["tool-discovery"],
+          result_classes: ["expected_tool_surface"],
+          surfaces: ["tool-listing"],
+        },
+      },
+      profiles: {
+        "protocol-core": {
+          mode: "protocol-deterministic",
+          scenarios: ["tool-listing"],
+          required_surfaces: ["tool-listing"],
+        },
+      },
+      aliases: {},
+    }),
+  );
+  await fs.writeFile(
+    fakeServerPath,
+    [
+      `import { McpServer } from ${JSON.stringify(pathToFileURL(path.resolve("node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js")).href)};`,
+      `import { StdioServerTransport } from ${JSON.stringify(pathToFileURL(path.resolve("node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js")).href)};`,
+      `import { z } from ${JSON.stringify(pathToFileURL(path.resolve("node_modules/zod/index.js")).href)};`,
+      "const server = new McpServer({ name: 'noisy-mcp-server', version: '0.0.0' });",
+      "const expectedTools = ['answer_run_input','cancel_run','get_run','get_run_contract','get_runtime_readiness','list_allowed_models','list_model_classes','run_subagent','run_subagent_session','schedule_run','start_run','start_session_run'];",
+      "const skillBindingTools = new Set(['run_subagent','run_subagent_session','schedule_run','start_run','start_session_run']);",
+      "const skillName = z.string().nullable().optional().describe('Preferred bare skill name only, such as pda-lite or plugin:skill-name; null means no skill.');",
+      "const skill = z.string().nullable().optional().describe('Legacy alias for skill_name; prefer skill_name for new callers. Bare skill name only, such as pda-lite or plugin:skill-name; null means no skill.');",
+      "for (const name of expectedTools) {",
+      "  server.registerTool(name, { inputSchema: skillBindingTools.has(name) ? { skill_name: skillName, skill } : {} }, async () => ({ content: [{ type: 'text', text: 'ok' }] }));",
+      "}",
+      "server.registerTool('surprise_debug_tool', { inputSchema: {} }, async () => ({ content: [{ type: 'text', text: 'ok' }] }));",
       "await server.connect(new StdioServerTransport());",
     ].join("\n"),
   );

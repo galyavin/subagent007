@@ -238,6 +238,7 @@ function responseMatchesResultClass(response, resultClass) {
   if (resultClass === "expected_tool_surface") {
     return response.is_error === false &&
       response.tool_surface_complete === true &&
+      response.tool_surface_exact === true &&
       response.skill_alias_guidance_clear === true;
   }
   if (resultClass === "success") {
@@ -585,6 +586,7 @@ function toolListingSummary(response) {
   const tools = Array.isArray(response?.tools) ? response.tools : [];
   const toolNames = unique(tools.map((tool) => tool?.name).filter((name) => typeof name === "string"));
   const missingTools = EXPECTED_PUBLIC_TOOLS.filter((name) => !toolNames.includes(name));
+  const unexpectedTools = toolNames.filter((name) => !EXPECTED_PUBLIC_TOOLS.includes(name));
   const skillGuidance = SKILL_BINDING_TOOLS.map((toolName) => {
     const tool = tools.find((entry) => entry?.name === toolName);
     const skillNameDescription = toolInputDescription(tool, "skill_name");
@@ -610,7 +612,9 @@ function toolListingSummary(response) {
     tool_names: toolNames,
     expected_tool_count: EXPECTED_PUBLIC_TOOLS.length,
     missing_tools: missingTools,
+    unexpected_tools: unexpectedTools,
     tool_surface_complete: missingTools.length === 0,
+    tool_surface_exact: missingTools.length === 0 && unexpectedTools.length === 0,
     skill_alias_guidance_clear: unclearSkillTools.length === 0,
     unclear_skill_alias_tools: unclearSkillTools,
   };
