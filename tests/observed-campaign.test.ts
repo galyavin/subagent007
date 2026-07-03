@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { createFakePiChild } from "./helpers/fakePiChild.js";
 import { readJsonl } from "./helpers/testUtils.js";
@@ -293,7 +294,13 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
         surfaces: string[];
         evidence_class: string;
         evidence_satisfied?: boolean;
-        observed_result?: { transcript_redacted?: boolean };
+        observed_result?: {
+          transcript_redacted?: boolean;
+          tool_surface_complete?: boolean;
+          skill_alias_guidance_clear?: boolean;
+          missing_tools?: string[];
+          unclear_skill_alias_tools?: string[];
+        };
       }>;
       evidence_classes: string[];
     };
@@ -338,6 +345,14 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
   assert.ok(summary.coverage_summary.uncovered_surfaces.includes("installed-pi-integration"));
   assert.deepEqual(summary.coverage_summary.missing_required_surfaces, []);
   assert.equal(summary.coverage_summary.scenarios.every((scenario) => scenario.tool.length > 0), true);
+  const toolListingScenario = summary.coverage_summary.scenarios.find((scenario) =>
+    scenario.scenario === "tool-listing"
+  );
+  assert.equal(toolListingScenario?.evidence_satisfied, true);
+  assert.equal(toolListingScenario?.observed_result?.tool_surface_complete, true);
+  assert.deepEqual(toolListingScenario?.observed_result?.missing_tools, []);
+  assert.equal(toolListingScenario?.observed_result?.skill_alias_guidance_clear, true);
+  assert.deepEqual(toolListingScenario?.observed_result?.unclear_skill_alias_tools, []);
   const redactionScenario = summary.coverage_summary.scenarios.find((scenario) =>
     scenario.scenario === "transcript-redaction"
   );
@@ -634,7 +649,16 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
       covered_surfaces: string[];
       missing_required_surfaces: string[];
       uncovered_surfaces: string[];
-      scenarios: Array<{ scenario: string; evidence_satisfied: boolean }>;
+      scenarios: Array<{
+        scenario: string;
+        evidence_satisfied: boolean;
+        observed_result?: {
+          tool_surface_complete?: boolean;
+          skill_alias_guidance_clear?: boolean;
+          missing_tools?: string[];
+          unclear_skill_alias_tools?: string[];
+        };
+      }>;
     };
   };
 
@@ -663,6 +687,13 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
   }
   assert.ok(summary.coverage_summary.uncovered_surfaces.includes("installed-pi-integration"));
   assert.equal(summary.coverage_summary.scenarios.every((scenario) => scenario.evidence_satisfied), true);
+  const toolListingScenario = summary.coverage_summary.scenarios.find((scenario) =>
+    scenario.scenario === "tool-listing"
+  );
+  assert.equal(toolListingScenario?.observed_result?.tool_surface_complete, true);
+  assert.deepEqual(toolListingScenario?.observed_result?.missing_tools, []);
+  assert.equal(toolListingScenario?.observed_result?.skill_alias_guidance_clear, true);
+  assert.deepEqual(toolListingScenario?.observed_result?.unclear_skill_alias_tools, []);
 
   const ledgerText = await fs.readFile(path.join(stateDir, "campaign-ledger.jsonl"), "utf8");
   assert.doesNotMatch(ledgerText, /SECRET_CAMPAIGN_INPUT_ANSWER/);
@@ -744,6 +775,77 @@ test("observed MCP probe fails required coverage when selected scenario has wron
       },
     ),
     /missing required coverage surfaces: run_subagent-success/,
+  );
+});
+
+test("observed MCP probe fails tool-listing coverage when required public tools are absent", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-probe-missing-tools-"));
+  const projectDir = path.join(tmp, "project");
+  const stateDir = path.join(tmp, "state");
+  const manifestPath = path.join(tmp, "tool-listing-manifest.json");
+  const fakeServerPath = path.join(tmp, "empty-mcp-server.mjs");
+  await fs.mkdir(projectDir, { recursive: true });
+  await fs.mkdir(stateDir, { recursive: true });
+  await fs.writeFile(
+    manifestPath,
+    JSON.stringify({
+      saf_required_surfaces: ["tool-listing"],
+      surfaces: {
+        "tool-listing": { evidence_classes: ["protocol-deterministic"] },
+      },
+      scenarios: {
+        "tool-listing": {
+          tool: "__list_tools",
+          lifecycle_phases: ["tool-discovery"],
+          result_classes: ["expected_tool_surface"],
+          surfaces: ["tool-listing"],
+        },
+      },
+      profiles: {
+        "protocol-core": {
+          mode: "protocol-deterministic",
+          scenarios: ["tool-listing"],
+          required_surfaces: ["tool-listing"],
+        },
+      },
+      aliases: {},
+    }),
+  );
+  await fs.writeFile(
+    fakeServerPath,
+    [
+      `import { McpServer } from ${JSON.stringify(pathToFileURL(path.resolve("node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js")).href)};`,
+      `import { StdioServerTransport } from ${JSON.stringify(pathToFileURL(path.resolve("node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js")).href)};`,
+      "const server = new McpServer({ name: 'empty-mcp-server', version: '0.0.0' });",
+      "await server.connect(new StdioServerTransport());",
+    ].join("\n"),
+  );
+
+  await assert.rejects(
+    execFileAsync(
+      process.execPath,
+      [
+        probePath,
+        "--server",
+        fakeServerPath,
+        "--cwd",
+        projectDir,
+        "--profile",
+        "protocol-core",
+      ],
+      {
+        cwd: path.resolve("."),
+        env: {
+          ...process.env,
+          SUBAGENT007_COVERAGE_MANIFEST_PATH: manifestPath,
+          SUBAGENT007_FAILURE_LOG_PATH: path.join(stateDir, "failures.jsonl"),
+          SUBAGENT007_CAMPAIGN_LEDGER_PATH: path.join(stateDir, "campaign-ledger.jsonl"),
+          SUBAGENT007_RECORD_SOURCE: "test",
+        },
+        maxBuffer: 8 * 1024 * 1024,
+      },
+    ),
+    /missing required coverage surfaces: tool-listing/,
   );
 });
 

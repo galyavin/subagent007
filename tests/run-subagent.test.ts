@@ -689,6 +689,22 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       Object.hasOwn(runSubagentSessionTool.inputSchema.properties ?? {}, "continuity"),
       false,
     );
+    for (const toolName of [
+      "start_run",
+      "schedule_run",
+      "run_subagent",
+      "start_session_run",
+      "run_subagent_session",
+    ]) {
+      const tool = response.tools.find((entry) => entry.name === toolName);
+      assert.ok(tool, toolName);
+      const properties = tool.inputSchema.properties as Record<string, { description?: string }>;
+      const skillNameDescription = properties.skill_name?.description ?? "";
+      const legacySkillDescription = properties.skill?.description ?? "";
+      assert.match(skillNameDescription, /Preferred bare skill name/);
+      assert.match(legacySkillDescription, /Legacy alias for skill_name/);
+      assert.notEqual(skillNameDescription, legacySkillDescription);
+    }
     const contractResponse = await client.callTool({
       name: "get_run_contract",
       arguments: {},

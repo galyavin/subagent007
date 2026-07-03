@@ -11,7 +11,7 @@ triggers:
 edges:
   - target: context/architecture.md
     condition: when a convention depends on understanding the system structure
-last_updated: 2026-07-02
+last_updated: 2026-07-03
 ---
 
 # Conventions
@@ -39,6 +39,7 @@ last_updated: 2026-07-02
 - When adding an environment variable, update source constants, README environment docs, and `npm run docs:check` coverage.
 - When changing child execution, verify timeout/cancel/parent-exit cleanup because fake child descendants can otherwise outlive the test run.
 - Compatibility aliases such as `list_allowed_models`, legacy `skill`, and legacy `tool_profile` are intentional unless a migration explicitly removes them.
+- Observed campaign result classes must prove the caller-visible contract they name. For `tool-listing`, assert the required public tools and schema guidance; do not count a generic non-error `listTools()` response as full discovery coverage.
 
 ## Verify Checklist
 Before presenting code changes:

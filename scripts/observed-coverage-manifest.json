@@ -57,7 +57,7 @@
     "tool-listing": {
       "tool": "__list_tools",
       "lifecycle_phases": ["tool-discovery"],
-      "result_classes": ["success"],
+      "result_classes": ["expected_tool_surface"],
       "surfaces": ["tool-listing"]
     },
     "model-listing": {

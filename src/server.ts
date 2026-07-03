@@ -244,11 +244,17 @@ const modelClassSchema = z
   .optional()
   .describe("Capability class A-E. A is simplest; E is highest-abstraction/deepest technical work.");
 
-const skillInputSchema = z
+const skillNameInputSchema = z
   .string()
   .nullable()
   .optional()
-  .describe("Bare skill name only, such as pda-lite or plugin:skill-name; null means no skill.");
+  .describe("Preferred bare skill name only, such as pda-lite or plugin:skill-name; null means no skill.");
+
+const legacySkillInputSchema = z
+  .string()
+  .nullable()
+  .optional()
+  .describe("Legacy alias for skill_name; prefer skill_name for new callers. Bare skill name only, such as pda-lite or plugin:skill-name; null means no skill.");
 
 const runKindSchema = z
   .enum(RUN_KINDS, {
@@ -260,8 +266,8 @@ const baseRunInputSchema = {
   prompt: z.string().min(1),
   cwd: z.string().min(1),
   model_class: modelClassSchema,
-  skill_name: skillInputSchema,
-  skill: skillInputSchema,
+  skill_name: skillNameInputSchema,
+  skill: legacySkillInputSchema,
   output_mode: z.enum(OUTPUT_MODES).optional(),
   tool_profile: z
     .enum(TOOL_PROFILES)

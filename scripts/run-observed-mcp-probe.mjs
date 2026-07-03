@@ -17,6 +17,27 @@ const SCENARIO_REGISTRY = MANIFEST.scenarios;
 const SCENARIOS = new Set(Object.keys(SCENARIO_REGISTRY));
 const PROFILES = new Set(Object.keys(MANIFEST.profiles));
 const PROBE_MODES = new Set(["protocol-deterministic", "live-model"]);
+const EXPECTED_PUBLIC_TOOLS = [
+  "answer_run_input",
+  "cancel_run",
+  "get_run",
+  "get_run_contract",
+  "get_runtime_readiness",
+  "list_allowed_models",
+  "list_model_classes",
+  "run_subagent",
+  "run_subagent_session",
+  "schedule_run",
+  "start_run",
+  "start_session_run",
+].sort();
+const SKILL_BINDING_TOOLS = [
+  "run_subagent",
+  "run_subagent_session",
+  "schedule_run",
+  "start_run",
+  "start_session_run",
+].sort();
 const RETIRED_BUNDLED_ALIAS = "all-bundled";
 const RETIRED_BUNDLED_ALIAS_MESSAGE =
   "all-bundled is retired; use --profile protocol-core for the historical bundled protocol-core scenario set";
@@ -214,6 +235,11 @@ function responseMatchesResultClass(response, resultClass) {
   }
   const completedAfterPolling =
     response.success === true && response.status === "completed" && response.polled === true;
+  if (resultClass === "expected_tool_surface") {
+    return response.is_error === false &&
+      response.tool_surface_complete === true &&
+      response.skill_alias_guidance_clear === true;
+  }
   if (resultClass === "success") {
     return response.is_error === false && response.success !== false;
   }
@@ -549,6 +575,47 @@ function isSchemaError(response) {
   return response?.isError === true && /Input validation error/.test(responseText(response));
 }
 
+function toolInputDescription(tool, fieldName) {
+  const properties = tool?.inputSchema?.properties;
+  const field = properties && typeof properties === "object" ? properties[fieldName] : undefined;
+  return typeof field?.description === "string" ? field.description : "";
+}
+
+function toolListingSummary(response) {
+  const tools = Array.isArray(response?.tools) ? response.tools : [];
+  const toolNames = unique(tools.map((tool) => tool?.name).filter((name) => typeof name === "string"));
+  const missingTools = EXPECTED_PUBLIC_TOOLS.filter((name) => !toolNames.includes(name));
+  const skillGuidance = SKILL_BINDING_TOOLS.map((toolName) => {
+    const tool = tools.find((entry) => entry?.name === toolName);
+    const skillNameDescription = toolInputDescription(tool, "skill_name");
+    const skillDescription = toolInputDescription(tool, "skill");
+    return {
+      tool: toolName,
+      skill_name_preferred: /prefer/i.test(skillNameDescription),
+      skill_legacy_alias: /legacy alias/i.test(skillDescription),
+      descriptions_distinct: skillNameDescription !== "" &&
+        skillDescription !== "" &&
+        skillNameDescription !== skillDescription,
+    };
+  });
+  const unclearSkillTools = skillGuidance
+    .filter((entry) =>
+      !entry.skill_name_preferred ||
+      !entry.skill_legacy_alias ||
+      !entry.descriptions_distinct
+    )
+    .map((entry) => entry.tool);
+  return {
+    tool_count: toolNames.length,
+    tool_names: toolNames,
+    expected_tool_count: EXPECTED_PUBLIC_TOOLS.length,
+    missing_tools: missingTools,
+    tool_surface_complete: missingTools.length === 0,
+    skill_alias_guidance_clear: unclearSkillTools.length === 0,
+    unclear_skill_alias_tools: unclearSkillTools,
+  };
+}
+
 function responseSummary(response) {
   const structured = response.structuredContent && typeof response.structuredContent === "object"
     ? response.structuredContent
@@ -600,6 +667,12 @@ function responseSummary(response) {
 
 async function responseSummaryForScenario(response, scenario) {
   const summary = responseSummary(response);
+  if (scenario === "tool-listing") {
+    return {
+      ...summary,
+      ...toolListingSummary(response),
+    };
+  }
   if (scenario !== "transcript-redaction" || typeof summary.output_path !== "string") {
     return summary;
   }
