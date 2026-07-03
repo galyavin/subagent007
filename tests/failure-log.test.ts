@@ -40,9 +40,8 @@ type FailureRecord = {
   auto_promoted_from?: "run_subagent";
   promotion_reason_code?: string;
   promotion_reason?: string;
-  model?: string;
+  model_class?: string;
   calibration_era?: string;
-  thinking_level?: string;
   output_mode?: string;
   provider_error_type?: string;
   provider_status_code?: number;
@@ -205,8 +204,9 @@ test("run_subagent appends one central record for a nonzero child failure", asyn
     assert.equal(failures[0].partial_output_available, false);
     assert.equal(failures[0].resume_possible, false);
     assert.equal(failures[0].resolved_timeout_ms, 110000);
-    assert.equal(failures[0].model, "openai-codex/gpt-5.4-mini");
-    assert.equal(failures[0].thinking_level, "high");
+    assert.equal(failures[0].model_class, "C");
+    assert.equal(Object.hasOwn(failures[0], "model"), false);
+    assert.equal(Object.hasOwn(failures[0], "thinking_level"), false);
     assert.equal(failures[0].output_mode, "transcript");
     assert.equal(typeof failures[0].output_path, "string");
     assert.doesNotMatch(JSON.stringify(failures[0]), /do not log this prompt/);

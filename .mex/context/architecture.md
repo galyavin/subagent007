@@ -12,7 +12,7 @@ edges:
     condition: when specific technology details are needed
   - target: context/decisions.md
     condition: when understanding why the architecture is structured this way
-last_updated: 2026-07-02
+last_updated: 2026-07-03
 ---
 
 # Architecture
@@ -38,7 +38,7 @@ Named sessions add `src/session.ts` manifest/ledger/lock handling around the sam
 
 ## External Dependencies
 - Pi agent/runtime - child execution backend; Pi auth and model config must be visible to the MCP server process.
-- Model providers via Pi/OpenRouter/Ollama inventory probes - reconciled by scripts, but concrete model ids are internal calibration behind public model classes.
+- Model providers via Pi/OpenRouter/Ollama inventory probes - reconciled by scripts, but concrete model ids and thinking levels are internal calibration behind public model classes.
 - `@modelcontextprotocol/sdk` - public server/client protocol for tool listing and tool calls.
 - Local filesystem - durable run snapshots, failure logs, input mailbox, sessions, model health, and active-child leases live under the state root.
 - Git/source tree - runtime readiness can fail closed on dirty, unknown, or stale built source state.
@@ -46,6 +46,6 @@ Named sessions add `src/session.ts` manifest/ledger/lock handling around the sam
 ## What Does NOT Exist Here
 - No queue behind local capacity rejection; exhausted active-child capacity returns `preflight_rejected` with `child_started:false`.
 - No database, remote worker service, or distributed lock manager; persistence and locks are local files.
-- No public concrete model or thinking-level input; callers use model classes.
+- No public concrete model or thinking-level input, result field, failure-log field, session ledger field, or README calibration table; callers use model classes and class-level health/migration guidance.
 - No tool restriction by `tool_profile`; accepted legacy profile values resolve to all child tools.
 - No exposure of raw thinking, private tool payloads, caller prompt text, full composed prompts, or input answer values in public event views.

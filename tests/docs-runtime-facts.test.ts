@@ -48,13 +48,13 @@ function fixtureReadme(envKeys: string[]): string {
   const envText = envKeys.map((key) => `\`${key}\``).join(", ");
   return `# Fixture
 
-| Class | Use when | Current calibration |
-| --- | --- | --- |
-| \`A\` | A | \`openrouter/qwen/qwen3.6-35b-a3b\`, \`high\` |
-| \`B\` | B | \`openrouter/deepseek/deepseek-v4-pro\`, \`high\` |
-| \`C\` | C | \`openai-codex/gpt-5.4-mini\`, \`high\` |
-| \`D\` | D | \`openai-codex/gpt-5.5\`, \`high\` |
-| \`E\` | E | \`openai-codex/gpt-5.5\`, \`xhigh\` |
+| Class | Use when |
+| --- | --- |
+| \`A\` | A |
+| \`B\` | B |
+| \`C\` | C |
+| \`D\` | D |
+| \`E\` | E |
 
 Environment overrides:
 
@@ -137,4 +137,20 @@ test("docs runtime fact guard fails when README documents stale env key", async 
   assert.equal(result.code, 1);
   assert.match(result.stderr, /README documents environment keys not used by runtime\/script source/);
   assert.match(result.stderr, /SUBAGENT007_STALE_KEY/);
+});
+
+test("docs runtime fact guard fails when README publishes internal model calibration", async () => {
+  const root = await createFixture({
+    readmeEnvKeys: [],
+    sourceText: "\n",
+  });
+  await fs.appendFile(
+    path.join(root, "README.md"),
+    "\nInternal detail that should not be public: openai-codex/gpt-5.4-mini\n",
+    "utf8",
+  );
+  const result = await runDocsCheck(["--root", root]);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /README publishes internal model calibration values/);
+  assert.match(result.stderr, /openai-codex\/gpt-5\.4-mini/);
 });

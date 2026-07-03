@@ -13,7 +13,6 @@ import {
   DEFAULT_MODEL_CLASS,
   MODEL_CLASS_CALIBRATIONS,
   modelClassChoices,
-  resolveModelClass,
 } from "./modelAllowlist.js";
 import { modelHealthForClass, modelHealthProbeCommand } from "./modelHealth.js";
 import { loadConfigRecord, normalizeConfigRecord } from "./config.js";
@@ -365,7 +364,6 @@ async function listModelClassesResult(): Promise<ReturnType<typeof jsonToolResul
     ? configRecord.default_model_class
     : null;
   const defaultModelClass = config.default_model_class ?? DEFAULT_MODEL_CLASS;
-  const defaultResolution = resolveModelClass(defaultModelClass);
   const defaultOneShotHealth = await modelHealthForClass(defaultModelClass);
   const legacyConfigDetected =
     configRecord.default_model !== undefined || configRecord.default_thinking_level !== undefined;
@@ -390,8 +388,6 @@ async function listModelClassesResult(): Promise<ReturnType<typeof jsonToolResul
     default_model_class_effective: defaultModelClass,
     default_model_class_repaired: rawDefaultModelClass !== null && rawDefaultModelClass !== defaultModelClass,
     config_migration: configMigration,
-    resolved_default_model: defaultResolution.model,
-    resolved_default_thinking_level: defaultResolution.thinkingLevel,
     default_one_shot_health_status: defaultOneShotHealth.status,
     default_one_shot_health_basis: defaultOneShotHealth.health_basis,
     model_health_probe_command: modelHealthProbeCommand(defaultModelClass),

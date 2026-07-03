@@ -77,6 +77,35 @@ type RunSubagentMetadata = {
   retry_guidance?: string;
 };
 
+const FORBIDDEN_PUBLIC_CALIBRATION_FIELDS = new Set([
+  "resolved_model",
+  "resolved_thinking_level",
+  "resolved_default_model",
+  "resolved_default_thinking_level",
+]);
+
+function forbiddenPublicCalibrationFields(value: unknown, pathParts: string[] = []): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry, index) =>
+      forbiddenPublicCalibrationFields(entry, [...pathParts, String(index)]),
+    );
+  }
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+  return Object.entries(value).flatMap(([key, child]) => {
+    const path = [...pathParts, key];
+    return [
+      ...(FORBIDDEN_PUBLIC_CALIBRATION_FIELDS.has(key) ? [path.join(".")] : []),
+      ...forbiddenPublicCalibrationFields(child, path),
+    ];
+  });
+}
+
+function assertNoPublicCalibrationFields(value: unknown): void {
+  assert.deepEqual(forbiddenPublicCalibrationFields(value), []);
+}
+
 async function connectFakeClient<T>(
   run: (client: Client, dirs: {
     projectDir: string;
@@ -944,12 +973,11 @@ test("MCP list_model_classes exposes curated model classes", async () => {
         to: string;
         command: string;
       };
-      resolved_default_model: string;
-      resolved_default_thinking_level: string;
       default_one_shot_health_status: string;
       default_one_shot_health_basis: string;
       model_health_probe_command: string;
     };
+    assertNoPublicCalibrationFields(metadata);
     assert.deepEqual(metadata.model_classes.map((entry) => entry.class), ["A", "B", "C", "D", "E"]);
     assert.equal(metadata.model_classes.every((entry) => entry.description.length > 0), true);
     assert.equal(
@@ -967,8 +995,6 @@ test("MCP list_model_classes exposes curated model classes", async () => {
     assert.equal(metadata.default_model_class_effective, "C");
     assert.equal(metadata.default_model_class_repaired, false);
     assert.equal(metadata.config_migration, null);
-    assert.equal(metadata.resolved_default_model, "openai-codex/gpt-5.4-mini");
-    assert.equal(metadata.resolved_default_thinking_level, "high");
     assert.equal(metadata.default_one_shot_health_status, "unknown");
     assert.equal(metadata.default_one_shot_health_basis, "never_probed");
     assert.match(metadata.model_health_probe_command, /--model-class C/);
@@ -995,9 +1021,8 @@ test("MCP list_model_classes falls back to class C for unsupported legacy defaul
           to: string;
           command: string;
         };
-        resolved_default_model: string;
-        resolved_default_thinking_level: string;
       };
+      assertNoPublicCalibrationFields(metadata);
       assert.equal(metadata.default_model_class, "C");
       assert.equal(metadata.default_model_class_configured, null);
       assert.equal(metadata.default_model_class_effective, "C");
@@ -1009,8 +1034,6 @@ test("MCP list_model_classes falls back to class C for unsupported legacy defaul
         to: "C",
         command: "npm run config:migrate",
       });
-      assert.equal(metadata.resolved_default_model, "openai-codex/gpt-5.4-mini");
-      assert.equal(metadata.resolved_default_thinking_level, "high");
     },
     {
       config: {
@@ -1112,6 +1135,7 @@ test("MCP list_model_classes exposes cached healthy one-shot health basis", asyn
       default_one_shot_health_status: string;
       default_one_shot_health_basis: string;
     };
+    assertNoPublicCalibrationFields(metadata);
     const classC = metadata.model_classes.find((entry) => entry.class === "C");
     assert.equal(classC?.one_shot_health?.status, "healthy");
     assert.equal(classC?.one_shot_health?.usable_for_one_shot, true);
@@ -1135,6 +1159,7 @@ test("MCP run_subagent uses the configured fake Pi child", async () => {
     });
     assert.notEqual(response.isError, true);
     const metadata = response.structuredContent as RunSubagentMetadata;
+    assertNoPublicCalibrationFields(metadata);
     assert.equal(metadata.success, true);
     assert.equal(metadata.session_id, null);
     assert.equal(await fs.readFile(metadata.output_path, "utf8"), "FAST FINAL");
@@ -1182,6 +1207,7 @@ test("MCP run_subagent auto-promotes skill-bound work without one-shot health ga
       });
       assert.notEqual(response.isError, true);
       const metadata = response.structuredContent as RunSubagentMetadata;
+      assertNoPublicCalibrationFields(metadata);
       assert.equal(metadata.status, "completed");
       assert.equal(metadata.success, true);
       assert.equal(metadata.auto_promoted_from, "run_subagent");
@@ -1211,6 +1237,7 @@ test("MCP run_subagent auto-promotes skill-bound work without one-shot health ga
         arguments: { run_id: metadata.run_id },
       });
       assert.notEqual(runView.isError, true);
+      assertNoPublicCalibrationFields(runView.structuredContent);
       assert.equal(
         (runView.structuredContent as RunSubagentMetadata).promotion_reason_code,
         "skill_bound",

@@ -54,28 +54,14 @@ function calibrationBlockFor(modelSource, modelClass) {
   return classMatch[1];
 }
 
-function sourceCalibrations(modelSource) {
-  return new Map(MODEL_CLASSES.map((modelClass) => {
+function sourceCalibrationModels(modelSource) {
+  return uniqueSorted(MODEL_CLASSES.map((modelClass) => {
     const block = calibrationBlockFor(modelSource, modelClass);
     const model = /\bmodel:\s*"([^"]+)"/.exec(block)?.[1];
-    const thinkingLevel = /\bthinkingLevel:\s*"([^"]+)"/.exec(block)?.[1];
-    if (!model || !thinkingLevel) {
-      throw new Error(`Could not parse model/thinkingLevel for class ${modelClass}`);
+    if (!model) {
+      throw new Error(`Could not parse model for class ${modelClass}`);
     }
-    return [modelClass, { model, thinkingLevel }];
-  }));
-}
-
-function readmeCalibrations(readme) {
-  return new Map(MODEL_CLASSES.map((modelClass) => {
-    const rowMatch = new RegExp(
-      `^\\| \`${modelClass}\` \\|[^\\n]*\\| \`([^\`]+)\`, \`([^\`]+)\` \\|$`,
-      "m",
-    ).exec(readme);
-    if (!rowMatch) {
-      throw new Error(`Could not find README model class ${modelClass} calibration row`);
-    }
-    return [modelClass, { model: rowMatch[1], thinkingLevel: rowMatch[2] }];
+    return model;
   }));
 }
 
@@ -132,20 +118,13 @@ function formatList(values) {
   return values.length === 0 ? "(none)" : values.map((value) => `  - ${value}`).join("\n");
 }
 
-function checkModelCalibrations(readme, modelSource) {
-  const expected = sourceCalibrations(modelSource);
-  const documented = readmeCalibrations(readme);
-  const failures = [];
-  for (const modelClass of MODEL_CLASSES) {
-    const source = expected.get(modelClass);
-    const docs = documented.get(modelClass);
-    if (source.model !== docs.model || source.thinkingLevel !== docs.thinkingLevel) {
-      failures.push(
-        `README model class ${modelClass} is ${docs.model}/${docs.thinkingLevel}, expected ${source.model}/${source.thinkingLevel}`,
-      );
-    }
-  }
-  return failures;
+function checkInternalCalibrationsNotPublished(readme, modelSource) {
+  const leakedModels = uniqueSorted(
+    sourceCalibrationModels(modelSource).filter((model) => readme.includes(model)),
+  );
+  return leakedModels.length === 0
+    ? []
+    : [`README publishes internal model calibration values:\n${formatList(leakedModels)}`];
 }
 
 async function checkEnvKeys(readme) {
@@ -168,7 +147,7 @@ async function checkEnvKeys(readme) {
 const readme = await readText("README.md");
 const modelSource = await readText("src/modelAllowlist.ts");
 const failures = [
-  ...checkModelCalibrations(readme, modelSource),
+  ...checkInternalCalibrationsNotPublished(readme, modelSource),
   ...await checkEnvKeys(readme),
 ];
 

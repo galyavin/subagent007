@@ -72,8 +72,6 @@ export interface FailureLogRecord {
   promotion_reason_code?: string;
   promotion_reason?: string;
   model_class?: string;
-  model?: string;
-  thinking_level?: string;
   skill?: string | null;
   output_mode?: string;
   tool_profile?: string;

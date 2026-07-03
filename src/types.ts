@@ -144,8 +144,6 @@ interface SubagentRunResultBase {
   kill_grace_ms: number;
   force_grace_ms: number;
   size_bytes: number;
-  resolved_model: string;
-  resolved_thinking_level: string;
   resolved_model_class: ModelClass;
   requested_skill: string | null;
   resolved_skill_path: string | null;
@@ -243,9 +241,9 @@ export interface SessionRunRecord {
   timeout_headroom_ms?: number;
   kill_grace_ms?: number;
   force_grace_ms?: number;
-  resolved_model: string;
-  resolved_thinking_level: string;
   resolved_model_class?: ModelClass;
+  resolved_model?: string;
+  resolved_thinking_level?: string;
   requested_skill: string | null;
   resolved_skill_path?: string | null;
   resolved_skill_sha256?: string | null;
@@ -262,9 +260,9 @@ export interface SessionManifest {
   session_key: string;
   cwd: string;
   skill: string | null;
-  initial_model: string;
-  initial_thinking_level: string;
   initial_model_class?: ModelClass;
+  initial_model?: string;
+  initial_thinking_level?: string;
   subagent_session_id: string;
   created_at: string;
   last_run_at: string;

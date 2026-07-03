@@ -702,8 +702,6 @@ async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
         }
       : {}),
     model_class: result.resolved_model_class,
-    model: result.resolved_model,
-    thinking_level: result.resolved_thinking_level,
     skill: result.requested_skill,
     output_mode: result.requested_output_mode,
     tool_profile: result.resolved_tool_profile,
@@ -1126,8 +1124,6 @@ async function persistRestartDriftSnapshot(
     stop_reason: "failed",
     stop_signal: null,
     model_class: staleView.resolved_model_class,
-    model: staleView.resolved_model,
-    thinking_level: staleView.resolved_thinking_level,
     skill: staleView.requested_skill,
     output_mode: staleView.requested_output_mode,
     tool_profile: staleView.resolved_tool_profile,

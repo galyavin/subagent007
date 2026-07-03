@@ -45,9 +45,9 @@ const sessionManifestSchema = z.object({
   session_key: z.string(),
   cwd: z.string(),
   skill: z.string().nullable(),
-  initial_model: z.string(),
-  initial_thinking_level: z.string(),
   initial_model_class: z.enum(MODEL_CLASSES).optional(),
+  initial_model: z.string().optional(),
+  initial_thinking_level: z.string().optional(),
   subagent_session_id: z.string(),
   created_at: z.string(),
   last_run_at: z.string(),
@@ -85,8 +85,8 @@ const sessionRunRecordSchema = z.object({
   kill_grace_ms: z.number().int().nonnegative().optional(),
   force_grace_ms: z.number().int().nonnegative().optional(),
   resolved_model_class: z.enum(MODEL_CLASSES).optional(),
-  resolved_model: z.string(),
-  resolved_thinking_level: z.string(),
+  resolved_model: z.string().optional(),
+  resolved_thinking_level: z.string().optional(),
   requested_skill: z.string().nullable(),
   requested_output_mode: z.enum(OUTPUT_MODES),
   written_output_mode: z.enum(OUTPUT_MODES),
@@ -492,16 +492,17 @@ function modelChangedFromManifest(
   if (!manifest) {
     return false;
   }
-  return manifest.initial_model_class
-    ? manifest.initial_model_class !== resolved.modelClass
-    : modelRefForComparison(manifest.initial_model) !== resolved.model;
+  if (manifest.initial_model_class) {
+    return manifest.initial_model_class !== resolved.modelClass;
+  }
+  return manifest.initial_model ? modelRefForComparison(manifest.initial_model) !== resolved.model : false;
 }
 
 function thinkingLevelChangedFromManifest(
   manifest: SessionManifest | null,
   resolved: Awaited<ReturnType<typeof validateAndResolveRequest>>,
 ): boolean {
-  return Boolean(manifest && manifest.initial_thinking_level !== resolved.thinkingLevel);
+  return Boolean(manifest?.initial_thinking_level && manifest.initial_thinking_level !== resolved.thinkingLevel);
 }
 
 async function copyDirectoryContents(sourceDir: string, targetDir: string): Promise<void> {
@@ -698,8 +699,6 @@ export async function runSubagentSession(
       kill_grace_ms: runResult.kill_grace_ms,
       force_grace_ms: runResult.force_grace_ms,
       resolved_model_class: runResult.resolved_model_class,
-      resolved_model: runResult.resolved_model,
-      resolved_thinking_level: runResult.resolved_thinking_level,
       requested_skill: runResult.requested_skill,
       resolved_skill_path: runResult.resolved_skill_path,
       resolved_skill_sha256: runResult.resolved_skill_sha256,
@@ -716,8 +715,6 @@ export async function runSubagentSession(
         session_key: sessionKey,
         cwd,
         skill: resolved.skill ?? null,
-        initial_model: manifest?.initial_model ?? resolved.model,
-        initial_thinking_level: manifest?.initial_thinking_level ?? resolved.thinkingLevel,
         initial_model_class: manifest?.initial_model_class ?? resolved.modelClass,
         subagent_session_id: committedSubagentSessionId,
         created_at: manifest?.created_at ?? startedAt,
@@ -750,8 +747,6 @@ export async function runSubagentSession(
       force_grace_ms: runResult.force_grace_ms,
       size_bytes: runResult.size_bytes,
       resolved_model_class: runResult.resolved_model_class,
-      resolved_model: runResult.resolved_model,
-      resolved_thinking_level: runResult.resolved_thinking_level,
       requested_skill: runResult.requested_skill,
       resolved_skill_path: runResult.resolved_skill_path,
       resolved_skill_sha256: runResult.resolved_skill_sha256,
@@ -805,8 +800,6 @@ export async function runSubagentSession(
         kill_grace_ms: result.kill_grace_ms,
         force_grace_ms: result.force_grace_ms,
         model_class: result.resolved_model_class,
-        model: result.resolved_model,
-        thinking_level: result.resolved_thinking_level,
         skill: result.requested_skill,
         output_mode: result.requested_output_mode,
         tool_profile: result.resolved_tool_profile,

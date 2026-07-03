@@ -545,8 +545,6 @@ export async function runSubagentCore(
       force_grace_ms: timeoutBudget.forceGraceMs,
       size_bytes: output.sizeBytes,
       resolved_model_class: resolved.modelClass,
-      resolved_model: resolved.model,
-      resolved_thinking_level: resolved.thinkingLevel,
       requested_skill: resolved.skill ?? null,
       resolved_skill_path: skillAudit.resolvedSkillPath,
       resolved_skill_sha256: skillAudit.resolvedSkillSha256,

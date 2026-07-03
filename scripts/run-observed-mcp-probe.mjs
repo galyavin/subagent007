@@ -38,6 +38,16 @@ const SKILL_BINDING_TOOLS = [
   "start_run",
   "start_session_run",
 ].sort();
+const FORBIDDEN_PUBLIC_CALIBRATION_FIELDS = new Set([
+  "resolved_model",
+  "resolved_thinking_level",
+  "resolved_default_model",
+  "resolved_default_thinking_level",
+]);
+const FORBIDDEN_FAILURE_LOG_CALIBRATION_FIELDS = new Set([
+  "model",
+  "thinking_level",
+]);
 const RETIRED_BUNDLED_ALIAS = "all-bundled";
 const RETIRED_BUNDLED_ALIAS_MESSAGE =
   "all-bundled is retired; use --profile protocol-core for the historical bundled protocol-core scenario set";
@@ -229,7 +239,13 @@ function assertManifestComplete() {
   }
 }
 
-function responseMatchesResultClass(response, resultClass) {
+function responseHasNoForbiddenCalibrationFields(response) {
+  return Boolean(response) &&
+    response.public_calibration_fields_absent === true &&
+    response.failure_log_calibration_fields_absent === true;
+}
+
+function responseMatchesResultShape(response, resultClass) {
   if (!response) {
     return false;
   }
@@ -245,7 +261,10 @@ function responseMatchesResultClass(response, resultClass) {
     return response.is_error === false && response.success !== false;
   }
   if (resultClass === "run_success") {
-    return response.is_error === false && response.success === true && response.status === "completed" && response.timed_out === false;
+    return response.is_error === false &&
+      response.success === true &&
+      response.status === "completed" &&
+      response.timed_out === false;
   }
   if (resultClass === "schema_error") {
     return response.is_error === true;
@@ -254,7 +273,9 @@ function responseMatchesResultClass(response, resultClass) {
     return response.kind === "preflight_rejected" && response.child_started === false;
   }
   if (resultClass === "nonzero_exit") {
-    return response.success === false && typeof response.exit_code === "number" && response.exit_code !== 0;
+    return response.success === false &&
+      typeof response.exit_code === "number" &&
+      response.exit_code !== 0;
   }
   if (resultClass === "packet_required_not_ready") {
     return response.success === false &&
@@ -265,7 +286,9 @@ function responseMatchesResultClass(response, resultClass) {
     return response.success === true && response.transcript_redacted === true;
   }
   if (resultClass === "timeout_recovered") {
-    return response.success === false && response.timed_out === true && response.timeout_recovery_hint === true;
+    return response.success === false &&
+      response.timed_out === true &&
+      response.timeout_recovery_hint === true;
   }
   if (resultClass === "async_polling") {
     return completedAfterPolling;
@@ -280,10 +303,14 @@ function responseMatchesResultClass(response, resultClass) {
     return response.status === "cancelled" && response.cancellation_settled === true;
   }
   if (resultClass === "valid_packet_closure") {
-    return response.success === true && response.packet_parse_status === "valid" && response.packet_closure_valid === true;
+    return response.success === true &&
+      response.packet_parse_status === "valid" &&
+      response.packet_closure_valid === true;
   }
   if (resultClass === "invalid_packet_closure") {
-    return response.success === false && response.packet_parse_status === "invalid" && response.packet_closure_invalid === true;
+    return response.success === false &&
+      response.packet_parse_status === "invalid" &&
+      response.packet_closure_invalid === true;
   }
   if (resultClass === "auto_promoted") {
     return response.auto_promoted_from === "run_subagent" && completedAfterPolling;
@@ -295,7 +322,8 @@ function responseMatchesResultClass(response, resultClass) {
       response.packet_closure_valid === true;
   }
   if (resultClass === "run_not_found") {
-    return response.kind === "operation_rejected" && response.reason_code === "run_not_found";
+    return response.kind === "operation_rejected" &&
+      response.reason_code === "run_not_found";
   }
   if (resultClass === "input_wrong_rejected") {
     return response.input_wrong_rejected === true &&
@@ -318,6 +346,11 @@ function responseMatchesResultClass(response, resultClass) {
       response.contract_name === "subagent007.runtime_readiness";
   }
   return false;
+}
+
+function responseMatchesResultClass(response, resultClass) {
+  return responseHasNoForbiddenCalibrationFields(response) &&
+    responseMatchesResultShape(response, resultClass);
 }
 
 function coverageSummary(scenarios, mode, profileName, calls = []) {
@@ -572,6 +605,24 @@ function responseText(response) {
     : "";
 }
 
+function forbiddenFieldPaths(value, forbiddenFields, pathParts = []) {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry, index) =>
+      forbiddenFieldPaths(entry, forbiddenFields, [...pathParts, String(index)]),
+    );
+  }
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+  return Object.entries(value).flatMap(([key, child]) => {
+    const path = [...pathParts, key];
+    return [
+      ...(forbiddenFields.has(key) ? [path.join(".")] : []),
+      ...forbiddenFieldPaths(child, forbiddenFields, path),
+    ];
+  });
+}
+
 function isSchemaError(response) {
   return response?.isError === true && /Input validation error/.test(responseText(response));
 }
@@ -624,8 +675,11 @@ function responseSummary(response) {
   const structured = response.structuredContent && typeof response.structuredContent === "object"
     ? response.structuredContent
     : {};
+  const forbiddenPublicCalibrationFields = forbiddenFieldPaths(structured, FORBIDDEN_PUBLIC_CALIBRATION_FIELDS);
   return {
     is_error: response.isError === true,
+    public_calibration_fields_absent: forbiddenPublicCalibrationFields.length === 0,
+    forbidden_public_calibration_fields: forbiddenPublicCalibrationFields,
     success: typeof structured.success === "boolean" ? structured.success : null,
     status: typeof structured.status === "string" ? structured.status : null,
     kind: typeof structured.kind === "string" ? structured.kind : null,
@@ -893,6 +947,11 @@ async function runCall(client, ledgerPath, evidenceClass, scenario, call) {
 
   const failuresAfter = await readFailureRecords();
   const delta = failuresAfter.slice(failuresBefore.length);
+  const forbiddenFailureLogCalibrationFields = forbiddenFieldPaths(delta, FORBIDDEN_FAILURE_LOG_CALIBRATION_FIELDS);
+  if (observedSummary) {
+    observedSummary.failure_log_calibration_fields_absent = forbiddenFailureLogCalibrationFields.length === 0;
+    observedSummary.forbidden_failure_log_calibration_fields = forbiddenFailureLogCalibrationFields;
+  }
   if (delta.length > 0) {
     await appendLedger(ledgerPath, evidenceClass, {
       event: "failure_log_delta",
@@ -903,6 +962,8 @@ async function runCall(client, ledgerPath, evidenceClass, scenario, call) {
       failure_classes: uniqueRecordValues(delta, "failure_class"),
       reason_codes: uniqueRecordValues(delta, "reason_code"),
       tools: uniqueRecordValues(delta, "tool"),
+      failure_log_calibration_fields_absent: forbiddenFailureLogCalibrationFields.length === 0,
+      forbidden_failure_log_calibration_fields: forbiddenFailureLogCalibrationFields,
     });
   }
 

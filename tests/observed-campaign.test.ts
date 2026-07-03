@@ -302,6 +302,10 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
           missing_tools?: string[];
           unexpected_tools?: string[];
           unclear_skill_alias_tools?: string[];
+          public_calibration_fields_absent?: boolean;
+          forbidden_public_calibration_fields?: string[];
+          failure_log_calibration_fields_absent?: boolean;
+          forbidden_failure_log_calibration_fields?: string[];
         };
       }>;
       evidence_classes: string[];
@@ -362,6 +366,15 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
   );
   assert.equal(redactionScenario?.evidence_satisfied, true);
   assert.equal(redactionScenario?.observed_result?.transcript_redacted, true);
+  assert.equal(
+    summary.coverage_summary.scenarios.every((scenario) =>
+      scenario.observed_result?.public_calibration_fields_absent !== false &&
+        scenario.observed_result?.failure_log_calibration_fields_absent !== false &&
+        (scenario.observed_result?.forbidden_public_calibration_fields?.length ?? 0) === 0 &&
+        (scenario.observed_result?.forbidden_failure_log_calibration_fields?.length ?? 0) === 0
+    ),
+    true,
+  );
   assert.deepEqual(summary.coverage_summary.evidence_classes, ["protocol-deterministic"]);
   assert.equal(
     summary.coverage_summary.scenarios.every((scenario) => scenario.evidence_class === "protocol-deterministic"),
@@ -663,6 +676,10 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
           missing_tools?: string[];
           unexpected_tools?: string[];
           unclear_skill_alias_tools?: string[];
+          public_calibration_fields_absent?: boolean;
+          forbidden_public_calibration_fields?: string[];
+          failure_log_calibration_fields_absent?: boolean;
+          forbidden_failure_log_calibration_fields?: string[];
         };
       }>;
     };
@@ -702,15 +719,34 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
   assert.deepEqual(toolListingScenario?.observed_result?.unexpected_tools, []);
   assert.equal(toolListingScenario?.observed_result?.skill_alias_guidance_clear, true);
   assert.deepEqual(toolListingScenario?.observed_result?.unclear_skill_alias_tools, []);
+  assert.equal(
+    summary.coverage_summary.scenarios.every((scenario) =>
+      scenario.observed_result?.public_calibration_fields_absent !== false &&
+        scenario.observed_result?.failure_log_calibration_fields_absent !== false &&
+        (scenario.observed_result?.forbidden_public_calibration_fields?.length ?? 0) === 0 &&
+        (scenario.observed_result?.forbidden_failure_log_calibration_fields?.length ?? 0) === 0
+    ),
+    true,
+  );
 
   const ledgerText = await fs.readFile(path.join(stateDir, "campaign-ledger.jsonl"), "utf8");
   assert.doesNotMatch(ledgerText, /SECRET_CAMPAIGN_INPUT_ANSWER/);
   const stateText = await readTextFilesUnder(stateDir);
   assert.doesNotMatch(stateText, /SECRET_LEDGER_PROMPT|SECRET_TRANSCRIPT_PROMPT_SHOULD_NOT_LEAK/);
+  assert.doesNotMatch(
+    stateText,
+    /"resolved_model"|"resolved_thinking_level"|"resolved_default_model"|"resolved_default_thinking_level"|"model":|"thinking_level":/,
+  );
   const events = ledgerText
     .split(/\r?\n/)
     .filter((line) => line.trim() !== "")
-    .map((line) => JSON.parse(line)) as Array<{ event: string; scenario: string; tool: string }>;
+    .map((line) => JSON.parse(line)) as Array<{
+      event: string;
+      scenario: string;
+      tool: string;
+      failure_log_calibration_fields_absent?: boolean;
+      forbidden_failure_log_calibration_fields?: string[];
+    }>;
   for (const tool of ["schedule_run", "start_run", "get_run", "answer_run_input", "cancel_run", "run_subagent_session"]) {
     assert.ok(events.some((event) => event.tool === tool), tool);
   }
@@ -719,6 +755,15 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
   );
   assert.ok(
     events.some((event) => event.event === "call_operation_rejected" && event.scenario === "caller-input-wrong-request"),
+  );
+  assert.equal(
+    events
+      .filter((event) => event.event === "failure_log_delta")
+      .every((event) =>
+        event.failure_log_calibration_fields_absent === true &&
+          (event.forbidden_failure_log_calibration_fields?.length ?? 0) === 0
+      ),
+    true,
   );
 });
 

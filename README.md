@@ -59,15 +59,15 @@ mkdir -p ~/.codex/subagent007-pi
 printf '%s\n' '{"default_model_class":"C"}' > ~/.codex/subagent007-pi/config.json
 ```
 
-Use model classes instead of concrete model IDs. The default class is `C`; callers may pass `model_class` when a specific capability tier matters. Concrete model and `thinking_level` selection is internal calibration and is returned in metadata as `resolved_model` and `resolved_thinking_level`.
+Use model classes instead of concrete model IDs. The default class is `C`; callers may pass `model_class` when a specific capability tier matters. Concrete model and `thinking_level` selection is internal calibration and is not part of the public MCP contract.
 
-| Class | Use when | Current calibration |
-| --- | --- | --- |
-| `A` | Lowest-complexity class for narrow read-only audits, low-risk probes, and concise first-pass judgment. Prefer `B` or `C` when implementation, broad repo-grounded investigation, architectural judgment, or predictable tool use matters. | `openrouter/qwen/qwen3.6-35b-a3b`, `high` |
-| `B` | Simple coding, review, or search tasks with limited ambiguity. Use strict prompts/timeouts for anything exploratory because tool loops can stall. | `openrouter/deepseek/deepseek-v4-pro`, `high` |
-| `C` | Default for bounded implementation, repo-grounded fixes, and ordinary technical reasoning. Prefer `D` or `E` for security-heavy audits, broad architectural synthesis, or work where hidden edge-case coverage matters. | `openai-codex/gpt-5.4-mini`, `high` |
-| `D` | Complex multi-file debugging, planning, synthesis, and high-abstraction work | `openai-codex/gpt-5.5`, `high` |
-| `E` | Highest-abstraction, highest-difficulty work requiring deepest technical judgment | `openai-codex/gpt-5.5`, `xhigh` |
+| Class | Use when |
+| --- | --- |
+| `A` | Lowest-complexity class for narrow read-only audits, low-risk probes, and concise first-pass judgment. Prefer `B` or `C` when implementation, broad repo-grounded investigation, architectural judgment, or predictable tool use matters. |
+| `B` | Simple coding, review, or search tasks with limited ambiguity. Use strict prompts/timeouts for anything exploratory because tool loops can stall. |
+| `C` | Default for bounded implementation, repo-grounded fixes, and ordinary technical reasoning. Prefer `D` or `E` for security-heavy audits, broad architectural synthesis, or work where hidden edge-case coverage matters. |
+| `D` | Complex multi-file debugging, planning, synthesis, and high-abstraction work. |
+| `E` | Highest-abstraction, highest-difficulty work requiring deepest technical judgment. |
 
 Run `npm run models:reconcile` to compare calibrated concrete models with fresh source data from `pi --list-models`, OpenRouter `GET /api/v1/models`, and local Ollama `GET /api/tags`. The command exits nonzero when a calibrated model is missing or has drifted from a source; unavailable sources are reported as unverified instead of drift. Inventory reconciliation is separate from one-shot health.
 
@@ -75,7 +75,7 @@ Run `npm run model-health:probe -- --model-class A --cwd /absolute/project/path`
 
 Run `npm run config:migrate` to canonicalize `default_model_class` or migrate a legacy `default_model` plus `default_thinking_level` pair when it exactly matches a known class calibration. The command honors `SUBAGENT007_CONFIG_PATH`, writes atomically, preserves unknown fields, and is not run automatically by server startup or model-class listing.
 
-`list_model_classes` reports the configured default class, effective default class, whether migration is needed, the resolved internal default model/thinking pair, and one-shot health for each class. Legacy public `model` and `thinking_level` inputs are rejected; use `model_class`.
+`list_model_classes` reports the configured default class, effective default class, whether migration is needed, and one-shot health for each class. Legacy public `model` and `thinking_level` inputs are rejected; use `model_class`.
 
 ## Register With Codex
 
@@ -311,7 +311,7 @@ npm run models:reconcile
 ```
 
 Run `npm run build` after changing `src/`; the registered MCP command and package tarball use `dist/server.js`.
-Run `npm run docs:check` after changing README model calibration rows, environment-variable docs, `src/modelAllowlist.ts`, or runtime environment-variable handling in `src/` or `scripts/`; it fails when README facts drift from source.
+Run `npm run docs:check` after changing README environment-variable docs, public model-class/internal-calibration guidance, `src/modelAllowlist.ts`, or runtime environment-variable handling in `src/` or `scripts/`; it fails when README leaks internal model IDs or environment-variable facts drift from source.
 There is no lint script; use `npm run typecheck`, `npm run docs:check`, and `npm test` as the local gates.
 
 Primary source boundaries:
