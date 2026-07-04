@@ -1348,7 +1348,9 @@ export async function startSessionRunTask(
   } = {},
 ): Promise<RunTaskView> {
   const failureLogTool = options.failureLogTool ?? "start_session_run";
-  await validateRunSubagentSessionRequestPreflight(request, failureLogTool);
+  await validateRunSubagentSessionRequestPreflight(request, failureLogTool, {
+    sessionsDir: options.sessionsDir,
+  });
 
   const state = createRunTaskState(
     "session",

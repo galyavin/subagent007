@@ -12,12 +12,20 @@ edges:
     condition: when a decision relates to system structure
   - target: context/stack.md
     condition: when a decision relates to technology choice
-last_updated: 2026-07-03
+last_updated: 2026-07-04
 ---
 
 # Decisions
 
 ## Decision Log
+
+### Named-session manifest eligibility preflights before durable task registration
+**Date:** 2026-07-04
+**Status:** Active
+**Decision:** Session tools reject deterministic manifest eligibility failures before creating a durable run task when the failure is knowable without launching a child, for example `resume_mode:"require_existing"` with no matching session.
+**Reasoning:** These failures are front-door caller errors, not child execution outcomes. Returning a `run_id` and requiring polling was ambiguous because no child started, yet callers could not see `child_started:false`.
+**Alternatives considered:** Leave missing sessions as background terminal failures (rejected as caller-hostile), or move all session locking/reconciliation into preflight (rejected because the locked execution path must remain the race authority and preflight should stay read-only).
+**Consequences:** Such failures return `kind:"preflight_rejected"`, `child_started:false`, and a typed `reason_code`, and they log one validation failure. The locked session path still repeats checks to handle races and stale state.
 
 ### Operation semantic rejections are not preflight rejections
 **Date:** 2026-07-01

@@ -14,7 +14,7 @@ edges:
     condition: when setting up the dev environment or running the project for the first time
   - target: patterns/INDEX.md
     condition: when starting a task — check the pattern index for a matching pattern file
-last_updated: 2026-07-03
+last_updated: 2026-07-04
 ---
 
 # Session Bootstrap
@@ -31,7 +31,7 @@ Then read this file fully before doing anything else in this session.
 - Observed campaign tool-listing asserts the exact 12-tool public MCP surface and `skill_name` vs legacy `skill` schema guidance instead of treating `listTools()` as liveness-only.
 - Public run views and transcript provenance render a redacted caller-prompt marker instead of raw caller prompt text; observed campaign redaction checks include prompt sentinels in public artifacts/state.
 - Public MCP result/list/session surfaces, failure logs, and README expose model classes and health/migration guidance without concrete model IDs or thinking levels; observed campaign result matching asserts absence of forbidden calibration fields.
-- SAF repairs are in place for provider usage-limit metadata, parent-exit child-process cleanup, opt-in active-child launch fusing, structured run-operation semantic rejections, packet-required not-ready taxonomy, and public prompt projection.
+- SAF repairs are in place for provider usage-limit metadata, parent-exit child-process cleanup, opt-in active-child launch fusing, structured run-operation semantic rejections, packet-required not-ready taxonomy, public prompt projection, and named-session manifest preflight eligibility.
 - README runtime facts are checked against source with `npm run docs:check`; full source/test verification is `npm test`.
 
 **Not Built:**

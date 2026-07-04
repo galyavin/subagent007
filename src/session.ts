@@ -183,14 +183,24 @@ function assertNoRawSessionId(request: RunSubagentSessionRequest): void {
 export async function validateRunSubagentSessionRequestPreflight(
   request: RunSubagentSessionRequest,
   toolName: "start_session_run" | "run_subagent_session" = "run_subagent_session",
+  options: { sessionsDir?: string } = {},
 ): Promise<void> {
   assertNoRawSessionId(request);
-  validateSessionKey(request.session_key);
-  validateResumeMode(request.resume_mode);
+  const sessionKey = validateSessionKey(request.session_key);
+  const resumeMode = validateResumeMode(request.resume_mode);
   validateSessionPacketPolicy(request.packet_policy);
   const config = await loadConfig();
   const resolved = await validateAndResolveRequest(request, config);
   assertDeadlineRiskTimeoutBudget(request, resolved, toolName);
+  const cwd = await fs.realpath(resolved.cwd);
+  const sessionsDir = options.sessionsDir ?? defaultSessionsDir();
+  const sessionDir = sessionDirFor(sessionsDir, cwd, sessionKey);
+  const manifest = await readManifest(path.join(sessionDir, "manifest.json"));
+  assertNewSessionAllowed(manifest, resumeMode, sessionKey);
+  assertExistingSession(manifest, resumeMode, sessionKey);
+  if (manifest) {
+    assertManifestCompatible(manifest, cwd, resolved.skill);
+  }
 }
 
 function identityHash(cwd: string, sessionKey: string): string {

@@ -238,6 +238,8 @@ Use `start_session_run` when the caller wants durable continuity by semantic key
 - `new`: fail if a session already exists
 - `require_existing`: fail if no session exists
 
+Session existence and compatibility failures that are known before child launch reject at the front door with `kind:"preflight_rejected"` and `child_started:false`; for example, `require_existing` with no matching session returns `reason_code:"session_does_not_exist"` without a `run_id`.
+
 The first successful run locks in `cwd` and the normalized skill binding from `skill_name` or legacy `skill`. Later runs with the same `session_key` must use the same real `cwd` and same normalized skill binding. Do not pass raw `continuity` or top-level `session_id` to named-session tools; named sessions derive Pi continuity from the manifest.
 
 Use `packet_policy` only when the caller needs a structured handoff packet. Values:

@@ -12,7 +12,7 @@ edges:
     condition: when specific technology details are needed
   - target: context/decisions.md
     condition: when understanding why the architecture is structured this way
-last_updated: 2026-07-03
+last_updated: 2026-07-04
 ---
 
 # Architecture
@@ -26,14 +26,14 @@ Child output becomes file-backed artifacts through `src/output.ts`, sanitized pu
 Server-authored prompt provenance uses `src/prompt.ts` to project caller prompt text to a redacted public marker before it reaches public event views or transcript artifacts; child execution still receives the real composed prompt.
 `get_run`, `answer_run_input`, and `cancel_run` operate on local filesystem-backed run snapshots and input mailbox records.
 Operation-only semantic failures from those run-operation tools project as `kind:"operation_rejected"` instead of MCP text errors; child-invocation preflight failures remain `kind:"preflight_rejected"` with `child_started:false`.
-Named sessions add `src/session.ts` manifest/ledger/lock handling around the same child execution path.
+Named sessions add `src/session.ts` manifest/ledger/lock handling around the same child execution path. Manifest eligibility failures known before launch, such as missing `require_existing` sessions, reject before durable task registration with `preflight_rejected` and `child_started:false`; locked execution checks still run later as race protection.
 
 ## Key Components
 - `server.ts` - MCP tool surface, schema/preflight rejection shape, retry guidance, and failure logging for handler-level failures.
 - `runTask.ts` - durable task lifecycle, snapshots, background execution, cancellation, caller input closure, promotion from one-shot, and active-child lease release.
 - `runSubagent.ts` - child request-file contract, Pi child invocation, transcript/final-output handling, timeout metadata, provider error parsing, and skill audit metadata.
 - `processRunner.ts` - detached child process execution, timeout/cancel termination, heartbeat notifications, and parent-exit process-group cleanup.
-- `session.ts` - named-session manifests, candidate ledgers, packet policy, skill/cwd immutability, and local session locks. Required packet failures distinguish missing, malformed, and parse-valid not-ready packets by reason code.
+- `session.ts` - named-session manifests, read-only preflight eligibility checks, candidate ledgers, packet policy, skill/cwd immutability, and local session locks. Required packet failures distinguish missing, malformed, and parse-valid not-ready packets by reason code.
 - `runtimeReadiness.ts` - built-entrypoint, source-state, contract, and public-tool readiness checks.
 
 ## External Dependencies

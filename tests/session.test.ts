@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { runSubagentSession } from "../src/session.js";
 import type { SessionManifest, SessionRunRecord } from "../src/types.js";
 import { createFakePiChild } from "./helpers/fakePiChild.js";
@@ -34,6 +36,41 @@ async function createSessionFixture(): Promise<{
     skillsRoot,
     sessionSkillPath,
   };
+}
+
+async function withMcpSessionClient<T>(
+  run: (client: Client, fixture: Awaited<ReturnType<typeof createSessionFixture>>) => Promise<T>,
+): Promise<T> {
+  const fixture = await createSessionFixture();
+  const stateDir = path.join(path.dirname(fixture.projectDir), "state");
+  const configPath = path.join(stateDir, "config.json");
+  await fs.mkdir(stateDir, { recursive: true });
+  await fs.writeFile(configPath, `${JSON.stringify({ default_model_class: "C" })}\n`);
+  const client = new Client({ name: "subagent007-session-test", version: "0.1.0" });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [path.resolve("dist/server.js")],
+    env: {
+      ...process.env,
+      SUBAGENT007_CONFIG_PATH: configPath,
+      SUBAGENT007_PI_CHILD_PATH: fixture.fakeChildPath,
+      FAKE_PI_LOG_PATH: fixture.fakeLogPath,
+      SUBAGENT007_FAILURE_LOG_PATH: fixture.failureLogPath,
+      SUBAGENT007_RECORD_SOURCE: "test",
+      SUBAGENT007_PI_SKILL_PATHS: fixture.skillsRoot,
+      SUBAGENT007_RUNS_DIR: path.join(stateDir, "runs"),
+      SUBAGENT007_RUN_TASKS_DIR: path.join(stateDir, "run-tasks"),
+      SUBAGENT007_INPUT_REQUESTS_DIR: path.join(stateDir, "input-requests"),
+      SUBAGENT007_SESSIONS_DIR: fixture.sessionsDir,
+      SUBAGENT007_PI_RAW_SESSIONS_DIR: path.join(stateDir, "raw-sessions"),
+    },
+  });
+  await client.connect(transport);
+  try {
+    return await run(client, fixture);
+  } finally {
+    await client.close();
+  }
 }
 
 async function writeSkillFixture(root: string, name: string): Promise<string> {
@@ -149,6 +186,54 @@ test("run_subagent_session rejects invalid resume mode and packet policy", async
       );
     },
   );
+});
+
+test("MCP session tools preflight reject require_existing when the session is missing", async () => {
+  for (const tool of ["start_session_run", "run_subagent_session"] as const) {
+    await withMcpSessionClient(async (client, fixture) => {
+      const response = await client.callTool({
+        name: tool,
+        arguments: {
+          cwd: fixture.projectDir,
+          prompt: "FAST",
+          session_key: `missing-session-${tool}`,
+          resume_mode: "require_existing",
+          packet_policy: "none",
+          timeout_ms: 10_000,
+        },
+      });
+
+      assert.notEqual(response.isError, true);
+      const metadata = response.structuredContent as {
+        kind?: string;
+        status?: string;
+        success?: boolean;
+        child_started?: boolean;
+        reason_code?: string;
+        run_id?: string;
+      };
+      assert.equal(metadata.kind, "preflight_rejected");
+      assert.equal(metadata.status, "rejected");
+      assert.equal(metadata.success, false);
+      assert.equal(metadata.child_started, false);
+      assert.equal(metadata.reason_code, "session_does_not_exist");
+      assert.equal(metadata.run_id, undefined);
+
+      const failures = await readJsonl<{
+        tool: string;
+        failure_class: string;
+        reason_code: string;
+        cwd: string;
+      }>(fixture.failureLogPath);
+      assert.equal(failures.length, 1);
+      assert.equal(failures[0].tool, tool);
+      assert.equal(failures[0].failure_class, "validation_error");
+      assert.equal(failures[0].reason_code, "session_does_not_exist");
+      assert.equal(failures[0].cwd, fixture.projectDir);
+
+      await assert.rejects(fs.stat(fixture.fakeLogPath), /ENOENT/);
+    });
+  }
 });
 
 test("run_subagent_session creates, resumes, and appends an auditable Pi ledger", async () => {
