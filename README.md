@@ -137,7 +137,7 @@ Tool authority:
 - Required web tools: `web_search` and `web_read`. Child startup fails clearly if either tool is missing from the Pi environment.
 - Legacy profile inputs `inspect`, `web_search`, `shell`, and `workspace_write` are still accepted so older callers do not fail validation, but they resolve to `all`.
 
-This server does not enumerate Codex MCP servers directly. It exposes what the embedded Pi session registers as tools. To add a new capability, install or configure it in the Pi environment so it appears in `session.getAllTools()`.
+This server does not enumerate Codex MCP servers directly. It exposes what the embedded Pi session registers as tools. To add a new capability, install or configure it in the Pi environment so it appears in `session.getAllTools()`. Each server-launched Subagent007 child also receives a native `delegate` tool for recursive delegation; the tool calls back to the original parent server, which creates the descendant as a normal durable run.
 
 Bind skills with `skill_name`, not prompt syntax. It must be a bare name such as `pda-lite` or `google-drive:google-docs`, not `$skill`, `/skill:name`, markdown, prose, or a path. A provided name must resolve to exactly one skill before model invocation; unknown or ambiguous skills return `preflight_rejected` with `child_started:false`. Terminal metadata includes `resolved_skill_path` and `resolved_skill_sha256`.
 
@@ -145,7 +145,7 @@ Result semantics:
 
 - `get_runtime_readiness` returns the concrete runtime snapshot from inside the running MCP server: resolved project root, server entrypoint, build/dist facts, git/source facts, durable-run contract compatibility, and public tool/capability surface. For pre-launch checks, use `npm run runtime:readiness`; it verifies `dist/server.js` exists before launching MCP, then calls `get_runtime_readiness`. A blocked result includes `status:"blocked"`, `ready:false`, and machine-readable `blocks[].class`.
   The default source policy is `require_clean`, which blocks dirty or unknown git state; `allow_dirty` permits dirty checkouts while still blocking unknown source state, and `allow_unknown` permits both dirty and unknown source state for package-style or exploratory probes.
-- `get_run_contract` returns the durable-run lifecycle contract. Version `1` defines non-terminal statuses `working` and `input_required`, terminal statuses `completed`, `failed`, `cancelled`, and `timed_out`, file-backed output references, bounded public excerpts, mailbox addressing by `run_id/request_id`, and fail-closed restart drift behavior.
+- `get_run_contract` returns the durable-run lifecycle contract. Version `1` defines non-terminal statuses `working` and `input_required`, terminal statuses `completed`, `failed`, `cancelled`, and `timed_out`, file-backed output references, bounded public excerpts, mailbox addressing by `run_id/request_id`, recursive lineage fields, and fail-closed restart drift behavior.
 - Terminal views after child execution include `output_references` plus legacy `output_path`; read the referenced file for the full answer and check `written_output_mode`, because requested `final` output falls back to transcript when no final message is captured. Schema and preflight rejections do not create output artifacts.
 - Failed, timed-out, restart-drift, and structured rejection views include `error_class` and `reason_code` when the server can classify the failure; adapters should branch on those fields instead of parsing `error`.
 - Provider usage-limit failures use `reason_code:"usage_limit_reached"` and may include provider reset/retry fields such as `provider_status_code`, `provider_error_message`, `usage_limit_resets_in_seconds`, `usage_limit_retry_after_seconds`, and primary/secondary usage percentages. The same fields are copied to failure-log records.
@@ -154,6 +154,7 @@ Result semantics:
 - Skill-bound terminal results include `requested_skill`, `resolved_skill_path`, and `resolved_skill_sha256`; unbound runs use `null` for those skill audit fields.
 - Valid `run_subagent` requests that are incompatible only with one-shot execution auto-promote and include `auto_promoted_from`, `promotion_reason_code`, `promotion_reason`, `poll_with`, and `cancel_with`.
 - `run_subagent`, `schedule_run`, `start_run`, `start_session_run`, and `run_subagent_session` create durable run-task snapshots inspectable with `get_run` by `run_id`.
+- Recursive descendant runs created through a child `delegate` tool are also durable root-visible runs. Run views include `root_run_id`, `recursion_depth`, `child_run_ids`, and `parent_run_id` for non-root descendants.
 - Active `get_run` views expose sanitized `recent_events` and `last_public_output_excerpt`; raw thinking, private tool payloads, caller prompt text, full packet instructions, composed child prompts, and input answer values are not exposed in public event views.
 - On timeout, `partial_output_available` is true only when the artifact includes child assistant text, a warning/error, or a captured final message.
 
@@ -214,6 +215,8 @@ Input requests are stored under `~/.codex/subagent007-pi/input-requests` by defa
 
 Run task snapshots and public event ledgers are stored under `~/.codex/subagent007-pi/run-tasks` by default. Active runs expose progress fields, `active_phase`, `last_phase_at`, lifecycle fields such as `last_child_lifecycle_event`, no-output timing via `no_public_output_elapsed_ms`, and bounded public events immediately after task creation; `running_silent` means the child process has spawned or emitted status-only lifecycle events while the server is still waiting for first public child output. `status` reflects pending input immediately. Terminal `run_subagent`, `schedule_run`, `start_run`, and session task snapshots can still be inspected by `get_run` after an MCP server restart. A run that was active during a restart is persisted as terminal `status:"failed"` with `error_class:"restart_drift"` and `reason_code:"server_restarted_active_run"` because the new server process cannot safely reattach to the old child process, while previously persisted public events are preserved.
 
+Inside a Subagent007 child, use the native `delegate` tool for recursive subtasks. Its inputs intentionally mirror the durable-first path: `prompt` is required, `cwd` defaults to the current child cwd, and optional `model_class`, `skill_name`, `output_mode`, `wait_ms`, and `timeout_ms` are passed to the parent scheduler. The tool does not require `run_kind` and does not expose the private control token. If the depth limit is reached, it returns `kind:"recursive_delegate_rejected"` with `reason_code:"recursive_depth_exceeded"` before any descendant child is launched.
+
 ## Named Sessions
 
 Use `start_session_run` when the caller wants durable continuity by semantic key and pollable task behavior:
@@ -268,13 +271,15 @@ Environment overrides:
 
 - Paths: `SUBAGENT007_CONFIG_PATH`, `SUBAGENT007_RUNS_DIR`, `SUBAGENT007_RUN_TASKS_DIR`, `SUBAGENT007_PI_RAW_SESSIONS_DIR`, `SUBAGENT007_SESSIONS_DIR`, `SUBAGENT007_INPUT_REQUESTS_DIR`, `SUBAGENT007_FAILURE_LOG_PATH`, `SUBAGENT007_MODEL_HEALTH_PATH`, `SUBAGENT007_ACTIVE_CHILDREN_DIR`
 - Timeouts/progress: `SUBAGENT007_INPUT_REQUEST_TIMEOUT_MS`, `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`, `SUBAGENT007_SCHEDULE_RUN_MAX_WAIT_MS`, `SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS`, `SUBAGENT007_DEADLINE_RISK_TIMEOUT_FLOOR_MS`, `SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS`, `SUBAGENT007_TIMEOUT_KILL_GRACE_MS`, `SUBAGENT007_TIMEOUT_FORCE_GRACE_MS`, `SUBAGENT007_HEARTBEAT_INTERVAL_MS`, `SUBAGENT007_MAX_TRANSCRIPT_BYTES`, `SUBAGENT007_SESSION_LOCK_LEASE_MS`
-- Pi/runtime: `SUBAGENT007_PI_AGENT_DIR`, `PI_CODING_AGENT_DIR`, `SUBAGENT007_PI_SKILL_PATHS`, `SUBAGENT007_PI_CHILD_PATH`, `SUBAGENT007_MAX_ACTIVE_CHILDREN`
+- Pi/runtime: `SUBAGENT007_PI_AGENT_DIR`, `PI_CODING_AGENT_DIR`, `SUBAGENT007_PI_SKILL_PATHS`, `SUBAGENT007_PI_CHILD_PATH`, `SUBAGENT007_MAX_ACTIVE_CHILDREN`, `SUBAGENT007_MAX_RECURSION_DEPTH`
 - Failure logging and campaigns: `SUBAGENT007_FAILURE_LOG=off`, `SUBAGENT007_BUILD_SHA`, `GIT_COMMIT`, `SUBAGENT007_RECORD_SOURCE`, `SUBAGENT007_CAMPAIGN_ID`, `SUBAGENT007_CAMPAIGN_LEDGER_PATH`, `SUBAGENT007_COVERAGE_MANIFEST_PATH`
 
 `SUBAGENT007_PI_AGENT_DIR` wins over Pi's native `PI_CODING_AGENT_DIR`; otherwise the Pi agent directory defaults to `~/.pi/agent`. The resolved agent directory is used for Pi auth, custom models, settings/resources, and session behavior.
 `SUBAGENT007_PI_CHILD_PATH` overrides the built child entrypoint and is intended for tests or controlled probes; do not set it for normal MCP use.
 
 `SUBAGENT007_MAX_ACTIVE_CHILDREN` is an opt-in local launch fuse. When unset or `0`, it is disabled. When set to a positive integer, child launches acquire an active lease under `SUBAGENT007_ACTIVE_CHILDREN_DIR` and reject before starting a child with `reason_code:"local_capacity_exhausted"` once the local active-child ceiling is reached. This is a rejection guard only; it does not queue work.
+
+`SUBAGENT007_MAX_RECURSION_DEPTH` bounds child-to-child delegation depth; the default is 8 and `0` disables descendant launch. The parent server validates the private recursive control token and depth before scheduling a descendant run.
 
 `SUBAGENT007_SCHEDULE_RUN_MAX_WAIT_MS` caps how long `schedule_run` may keep the MCP call open before returning a pollable active run view; the default is 30000. `SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS`, `SUBAGENT007_TIMEOUT_KILL_GRACE_MS`, and `SUBAGENT007_TIMEOUT_FORCE_GRACE_MS` reserve time inside caller-provided `timeout_ms` so the MCP server can terminate the child process and return metadata before the caller deadline. `SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS` can raise the accepted floor for timed tools. `SUBAGENT007_DEADLINE_RISK_TIMEOUT_FLOOR_MS` sets the preflight floor for deadline-risk run requests that provide a hard `timeout_ms`; the default is 600000. `SUBAGENT007_HEARTBEAT_INTERVAL_MS` controls active-run snapshot cadence and MCP progress notification cadence when the client provides a progress token.
 

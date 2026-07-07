@@ -27,6 +27,7 @@ import {
   answerRunTaskInput,
   cancelRunTask,
   getRunTask,
+  lineageForRecursiveDelegate,
   resolveRunOperationContext,
   runSubagentSessionTaskAndWait,
   scheduleRunTask,
@@ -34,6 +35,7 @@ import {
   startSessionRunTask,
   startRunTask,
 } from "./runTask.js";
+import { startRecursiveControlServer } from "./recursiveControl.js";
 import { SERVER_VERSION } from "./runtimeMetadata.js";
 import {
   type FailureReasonCode,
@@ -570,6 +572,28 @@ server.registerTool(
     runSubagentSessionTaskAndWait(request, taskHeartbeatOptions(extra)),
   ),
 );
+
+await startRecursiveControlServer(async ({ caller, params }) => {
+  const view = await scheduleRunTask(
+    {
+      prompt: params.prompt,
+      cwd: params.cwd,
+      ...(params.model_class ? { model_class: params.model_class } : {}),
+      ...(params.skill_name !== undefined ? { skill_name: params.skill_name } : {}),
+      ...(params.output_mode ? { output_mode: params.output_mode } : {}),
+      ...(params.timeout_ms !== undefined ? { timeout_ms: params.timeout_ms } : {}),
+      ...(params.wait_ms !== undefined ? { wait_ms: params.wait_ms } : {}),
+    },
+    {
+      lineage: lineageForRecursiveDelegate({
+        parentRunId: caller.parent_run_id,
+        rootRunId: caller.root_run_id,
+        recursionDepth: caller.recursion_depth,
+      }),
+    },
+  );
+  return { ...view };
+});
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

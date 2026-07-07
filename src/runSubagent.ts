@@ -37,6 +37,10 @@ import type {
 } from "./types.js";
 import { ValidationError } from "./types.js";
 import { validateAndResolveRequest } from "./validate.js";
+import {
+  recursiveControlConfigForChild,
+  type RecursiveControlChildConfig,
+} from "./recursiveControl.js";
 
 const DEFAULT_RUN_SUBAGENT_TIMEOUT_MS = 110_000;
 const FAILURE_OUTPUT_TAIL_BYTES = 64 * 1024;
@@ -85,6 +89,7 @@ interface PiChildRequestFile {
   sessionMode: "ephemeral" | "fresh" | "resume";
   sessionFile?: string;
   sessionDir?: string;
+  recursiveControl?: RecursiveControlChildConfig;
 }
 
 function defaultInputRequestTimeoutMs(): number {
@@ -405,6 +410,8 @@ export async function runSubagentCore(
     onOutputLine?: (line: string) => void | Promise<void>;
     promptProvenance?: PromptProvenance;
     skillFilePath?: string;
+    rootRunId?: string;
+    recursionDepth?: number;
   } = {},
 ): Promise<RunSubagentResult> {
   if (!options.allowTimeout && request.timeout_ms !== undefined) {
@@ -457,6 +464,11 @@ export async function runSubagentCore(
         : sessionMode.kind === "resume"
           ? path.dirname(sessionMode.sessionId)
           : undefined,
+      recursiveControl: recursiveControlConfigForChild({
+        runId,
+        rootRunId: options.rootRunId,
+        recursionDepth: options.recursionDepth,
+      }),
     };
     childRequest = await writeChildRequestFile(childPayload);
     let parsedSessionId: string | null = null;

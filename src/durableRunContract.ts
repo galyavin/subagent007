@@ -20,6 +20,7 @@ export const DURABLE_RUN_CAPABILITIES = [
   "bounded_public_output_excerpt",
   "run_input_mailbox",
   "restart_drift_fail_closed",
+  "recursive_delegate_lineage",
 ] as const;
 
 export function durableRunContractView(): {

@@ -563,6 +563,8 @@ export async function runSubagentSession(
     mailboxRoot?: string;
     childRunId?: string;
     taskId?: string;
+    rootRunId?: string;
+    recursionDepth?: number;
     onOutputLine?: (line: string) => void | Promise<void>;
   } = {},
 ): Promise<RunSubagentSessionResult> {
@@ -629,6 +631,8 @@ export async function runSubagentSession(
       onOutputLine: options.onOutputLine,
       promptProvenance,
       skillFilePath,
+      rootRunId: options.rootRunId,
+      recursionDepth: options.recursionDepth,
     });
     const outputText = await fs.readFile(runResult.output_path, "utf8");
     const attemptSubagentSessionId = attemptSession.runManifest?.subagent_session_id ?? runResult.session_id;

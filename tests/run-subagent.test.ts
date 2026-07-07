@@ -75,6 +75,10 @@ type RunSubagentMetadata = {
   child_started?: boolean;
   kind?: string;
   retry_guidance?: string;
+  parent_run_id?: string;
+  root_run_id?: string;
+  recursion_depth?: number;
+  child_run_ids?: string[];
 };
 
 const FORBIDDEN_PUBLIC_CALIBRATION_FIELDS = new Set([
@@ -761,6 +765,7 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.deepEqual(contract.statuses?.non_terminal, ["working", "input_required"]);
     assert.equal(contract.capabilities?.includes("file_backed_output_references"), true);
     assert.equal(contract.capabilities?.includes("restart_drift_fail_closed"), true);
+    assert.equal(contract.capabilities?.includes("recursive_delegate_lineage"), true);
     assert.equal(contract.input_mailbox?.waiting_status_terminal, false);
     assert.equal(contract.input_mailbox?.pending_cardinality, "zero_or_more");
     assert.equal(contract.input_mailbox?.safe_auto_answer, "exactly_one_pending");
@@ -1548,6 +1553,143 @@ test("MCP schedule_run returns completed output when the durable task finishes w
     assert.equal(metadata.status, "completed");
     assert.equal(metadata.success, true);
     assert.equal(await fs.readFile(metadata.output_path, "utf8"), "FAST FINAL");
+  });
+});
+
+test("MCP schedule_run lets a child delegate a root-visible recursive run", async () => {
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    const response = await client.callTool({
+      name: "schedule_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "RECURSIVE_DELEGATE_FAST",
+        wait_ms: 1000,
+      },
+    });
+    assert.notEqual(response.isError, true);
+    const root = response.structuredContent as RunSubagentMetadata;
+    assert.equal(root.status, "completed");
+    assert.equal(root.success, true);
+    assert.equal(root.root_run_id, root.run_id);
+    assert.equal(root.recursion_depth, 0);
+
+    const output = JSON.parse(await fs.readFile(root.output_path, "utf8")) as {
+      delegated: RunSubagentMetadata;
+    };
+    const delegated = output.delegated;
+    assert.equal(delegated.status, "completed");
+    assert.equal(delegated.success, true);
+    assert.equal(delegated.parent_run_id, root.run_id);
+    assert.equal(delegated.root_run_id, root.run_id);
+    assert.equal(delegated.recursion_depth, 1);
+
+    const rootViewResponse = await client.callTool({
+      name: "get_run",
+      arguments: { run_id: root.run_id },
+    });
+    assert.notEqual(rootViewResponse.isError, true);
+    const rootView = rootViewResponse.structuredContent as RunSubagentMetadata;
+    assert.deepEqual(rootView.child_run_ids, [delegated.run_id]);
+
+    const delegatedViewResponse = await client.callTool({
+      name: "get_run",
+      arguments: { run_id: delegated.run_id },
+    });
+    assert.notEqual(delegatedViewResponse.isError, true);
+    const delegatedView = delegatedViewResponse.structuredContent as RunSubagentMetadata;
+    assert.equal(delegatedView.status, "completed");
+    assert.equal(delegatedView.parent_run_id, root.run_id);
+    assert.equal(delegatedView.root_run_id, root.run_id);
+    assert.equal(delegatedView.recursion_depth, 1);
+    assert.equal(await fs.readFile(delegatedView.output_path, "utf8"), "FAST FINAL");
+
+    const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
+    assert.equal(logs.length, 2);
+    assert.equal((logs[0].request.recursiveControl as { parent_run_id?: string }).parent_run_id, root.run_id);
+    assert.equal((logs[0].request.recursiveControl as { root_run_id?: string }).root_run_id, root.run_id);
+    assert.equal((logs[0].request.recursiveControl as { recursion_depth?: number }).recursion_depth, 0);
+    assert.equal((logs[1].request.recursiveControl as { parent_run_id?: string }).parent_run_id, delegated.run_id);
+    assert.equal((logs[1].request.recursiveControl as { root_run_id?: string }).root_run_id, root.run_id);
+    assert.equal((logs[1].request.recursiveControl as { recursion_depth?: number }).recursion_depth, 1);
+  });
+});
+
+test("MCP recursive delegate rejects at max depth before launching a descendant", async () => {
+  await connectFakeClient(
+    async (client, { projectDir, fakeLogPath }) => {
+      const response = await client.callTool({
+        name: "schedule_run",
+        arguments: {
+          cwd: projectDir,
+          prompt: "RECURSIVE_DELEGATE_DEPTH_LIMIT",
+          wait_ms: 1000,
+        },
+      });
+      assert.notEqual(response.isError, true);
+      const root = response.structuredContent as RunSubagentMetadata;
+      assert.equal(root.status, "completed");
+      assert.equal(root.success, true);
+      assert.deepEqual(root.child_run_ids, []);
+
+      const output = JSON.parse(await fs.readFile(root.output_path, "utf8")) as {
+        delegated: RunSubagentMetadata;
+      };
+      assert.equal(output.delegated.status, "rejected");
+      assert.equal(output.delegated.kind, "recursive_delegate_rejected");
+      assert.equal(output.delegated.reason_code, "recursive_depth_exceeded");
+
+      const rootViewResponse = await client.callTool({
+        name: "get_run",
+        arguments: { run_id: root.run_id },
+      });
+      assert.notEqual(rootViewResponse.isError, true);
+      const rootView = rootViewResponse.structuredContent as RunSubagentMetadata;
+      assert.deepEqual(rootView.child_run_ids, []);
+
+      const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
+      assert.equal(logs.length, 1);
+    },
+    {
+      env: {
+        SUBAGENT007_MAX_RECURSION_DEPTH: "0",
+      },
+    },
+  );
+});
+
+test("MCP recursive delegate rejects forged caller lineage before launching a descendant", async () => {
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    const response = await client.callTool({
+      name: "schedule_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "RECURSIVE_DELEGATE_FORGED_PARENT",
+        wait_ms: 1000,
+      },
+    });
+    assert.notEqual(response.isError, true);
+    const root = response.structuredContent as RunSubagentMetadata;
+    assert.equal(root.status, "completed");
+    assert.equal(root.success, true);
+    assert.deepEqual(root.child_run_ids, []);
+
+    const output = JSON.parse(await fs.readFile(root.output_path, "utf8")) as {
+      delegated: RunSubagentMetadata;
+    };
+    assert.equal(output.delegated.status, "rejected");
+    assert.equal(output.delegated.kind, "recursive_delegate_rejected");
+    assert.equal(output.delegated.reason_code, "recursive_control_invalid");
+
+    const rootViewResponse = await client.callTool({
+      name: "get_run",
+      arguments: { run_id: root.run_id },
+    });
+    assert.notEqual(rootViewResponse.isError, true);
+    const rootView = rootViewResponse.structuredContent as RunSubagentMetadata;
+    assert.deepEqual(rootView.child_run_ids, []);
+
+    const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
+    assert.equal(logs.length, 1);
   });
 });
 

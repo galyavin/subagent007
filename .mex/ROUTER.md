@@ -32,12 +32,14 @@ Then read this file fully before doing anything else in this session.
 - Public run views and transcript provenance render a redacted caller-prompt marker instead of raw caller prompt text; observed campaign redaction checks include prompt sentinels in public artifacts/state.
 - Public MCP result/list/session surfaces, failure logs, and README expose model classes and health/migration guidance without concrete model IDs or thinking-level calibration values; observed campaign result matching asserts absence of forbidden calibration fields and thinking-level field-name variants.
 - SAF repairs are in place for provider usage-limit metadata, parent-exit child-process cleanup, opt-in active-child launch fusing, structured run-operation semantic rejections, packet-required not-ready taxonomy, public prompt projection, and named-session manifest preflight eligibility.
+- Server-launched children receive a native `delegate` tool backed by private parent-owned recursive control IPC; recursive descendants are normal durable runs with `parent_run_id`, `root_run_id`, `recursion_depth`, and direct `child_run_ids` in run views.
 - README runtime facts are checked against source with `npm run docs:check`; full source/test verification is `npm test`.
 
 **Not Built:**
 - There is no queue behind `SUBAGENT007_MAX_ACTIVE_CHILDREN`; capacity exhaustion is a front-door rejection guard.
 - There is no database or remote job manager; state is local filesystem-backed.
 - Tool profiles are compatibility inputs only and do not restrict child tools.
+- Recursive delegation currently provides one child-facing `delegate` tool and direct lineage metadata only; full descendant-tree management and cascade cancel are not built.
 
 **Known Issues:**
 - Local focused test commands that bypass `npm test` do not rebuild `dist/`; run `npm run build` first after source edits.

@@ -12,9 +12,16 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { createInputRequest, waitForInputAnswer } from "./inputMailbox.js";
 import { resolvePiAgentDir } from "./piAgentDir.js";
+import { createRecursiveDelegateTool } from "./recursiveDelegateTool.js";
 import { createSkillScopedResourceLoader } from "./skillResources.js";
 import { activateAllRegisteredTools } from "./toolProfile.js";
-import type { OutputMode, PromptProvenance, ThinkingLevel, ToolProfile } from "./types.js";
+import type {
+  OutputMode,
+  PromptProvenance,
+  ThinkingLevel,
+  ToolProfile,
+} from "./types.js";
+import type { RecursiveControlChildConfig } from "./recursiveControl.js";
 
 interface PiChildRequest {
   prompt: string;
@@ -33,6 +40,7 @@ interface PiChildRequest {
   sessionMode: "ephemeral" | "fresh" | "resume";
   sessionFile?: string;
   sessionDir?: string;
+  recursiveControl?: RecursiveControlChildConfig;
 }
 
 const requestInputParameters = Type.Object({
@@ -194,6 +202,14 @@ async function main(): Promise<void> {
         : SessionManager.create(request.cwd, request.sessionDir);
 
   await resourceLoader.reload();
+  const customTools: ToolDefinition<any>[] = [createRequestInputTool(request)];
+  const recursiveDelegateTool = createRecursiveDelegateTool({
+    cwd: request.cwd,
+    recursiveControl: request.recursiveControl,
+  });
+  if (recursiveDelegateTool) {
+    customTools.push(recursiveDelegateTool);
+  }
 
   const { session, modelFallbackMessage } = await createAgentSession({
     cwd: request.cwd,
@@ -204,7 +220,7 @@ async function main(): Promise<void> {
     authStorage,
     sessionManager,
     resourceLoader,
-    customTools: [createRequestInputTool(request)],
+    customTools,
   });
   activateAllRegisteredTools(session);
   if (modelFallbackMessage) {

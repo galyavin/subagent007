@@ -88,6 +88,10 @@ export interface RunTaskView extends Partial<RunSubagentResult>, Partial<RunSuba
   contract_name: typeof DURABLE_RUN_CONTRACT_NAME;
   contract_version: typeof DURABLE_RUN_CONTRACT_VERSION;
   task_kind?: "run" | "session";
+  parent_run_id?: string;
+  root_run_id: string;
+  recursion_depth: number;
+  child_run_ids: string[];
   status: DurableRunStatus;
   started_at: string;
   finished_at?: string;
@@ -111,6 +115,18 @@ export interface RunTaskView extends Partial<RunSubagentResult>, Partial<RunSuba
   error?: string;
   error_class?: string;
   reason_code?: FailureReasonCode;
+}
+
+export interface RunTaskLineage {
+  parentRunId?: string;
+  rootRunId?: string;
+  recursionDepth?: number;
+}
+
+export interface RecursiveCallerLineage {
+  parentRunId: string;
+  rootRunId: string;
+  recursionDepth: number;
 }
 
 interface RunTaskState {
@@ -140,6 +156,10 @@ interface RunTaskState {
   failureLogTool?: RunTaskFailureLogTool;
   sessionKey?: string;
   promotion?: RunSubagentPromotion;
+  parentRunId?: string;
+  rootRunId: string;
+  recursionDepth: number;
+  childRunIds: string[];
 }
 
 type RunTaskProgressView = Pick<
@@ -204,7 +224,11 @@ function taskNotFound(runId: string): ValidationError {
   return new ValidationError(`run not found: ${runId}`, "run_not_found");
 }
 
-function createRunTaskState(taskKind: "run" | "session", sessionKey?: string): RunTaskState {
+function createRunTaskState(
+  taskKind: "run" | "session",
+  sessionKey?: string,
+  lineage: RunTaskLineage = {},
+): RunTaskState {
   const runId = newRunId();
   const mailboxRoot = defaultInputRequestsDir();
   const startedAt = new Date().toISOString();
@@ -223,6 +247,10 @@ function createRunTaskState(taskKind: "run" | "session", sessionKey?: string): R
     terminalSnapshotStarted: false,
     promise: Promise.resolve(),
     ...(sessionKey ? { sessionKey } : {}),
+    ...(lineage.parentRunId ? { parentRunId: lineage.parentRunId } : {}),
+    rootRunId: lineage.rootRunId ?? runId,
+    recursionDepth: lineage.recursionDepth ?? 0,
+    childRunIds: [],
   };
   setTaskProgress(state, DEFAULT_HEARTBEAT_MESSAGE, 0);
   return state;
@@ -406,6 +434,18 @@ function promotionView(state: RunTaskState): Partial<RunSubagentPromotion> {
   return state.promotion ?? {};
 }
 
+function lineageView(state: RunTaskState): Pick<
+  RunTaskView,
+  "parent_run_id" | "root_run_id" | "recursion_depth" | "child_run_ids"
+> {
+  return {
+    ...(state.parentRunId ? { parent_run_id: state.parentRunId } : {}),
+    root_run_id: state.rootRunId,
+    recursion_depth: state.recursionDepth,
+    child_run_ids: state.childRunIds,
+  };
+}
+
 function activeProgressView(state: RunTaskState): RunTaskProgressView {
   return progressView(state, Math.max(0, Date.now() - Date.parse(state.startedAt)));
 }
@@ -420,6 +460,7 @@ function activeRunTaskView(state: RunTaskState, inputRequests: InputRequestView[
     run_id: state.runId,
     task_id: state.runId,
     task_kind: state.taskKind,
+    ...lineageView(state),
     ...promotionView(state),
     ...(state.sessionKey ? { session_key: state.sessionKey } : {}),
     status: hasPendingInput
@@ -570,6 +611,42 @@ async function registerRunTaskState(
   await writeTaskSnapshot(await getRunTask(state.runId));
 }
 
+async function recordParentChildRun(state: RunTaskState): Promise<void> {
+  if (!state.parentRunId) {
+    return;
+  }
+  const parent = tasks.get(state.parentRunId);
+  if (!parent || parent.childRunIds.includes(state.runId)) {
+    return;
+  }
+  parent.childRunIds = [...parent.childRunIds, state.runId];
+  await writeTaskSnapshot(await getRunTask(parent.runId));
+}
+
+export function lineageForRecursiveDelegate(caller: RecursiveCallerLineage): RunTaskLineage {
+  const parent = tasks.get(caller.parentRunId);
+  if (!parent) {
+    throw new ValidationError(
+      `recursive delegate parent run is not active: ${caller.parentRunId}`,
+      "recursive_control_invalid",
+    );
+  }
+  if (
+    parent.rootRunId !== caller.rootRunId ||
+    parent.recursionDepth !== caller.recursionDepth
+  ) {
+    throw new ValidationError(
+      "recursive delegate caller lineage does not match the active parent run",
+      "recursive_control_invalid",
+    );
+  }
+  return {
+    parentRunId: parent.runId,
+    rootRunId: parent.rootRunId,
+    recursionDepth: parent.recursionDepth + 1,
+  };
+}
+
 async function registerRunTaskStateWithChildLease(
   state: RunTaskState,
   request: RunSubagentRequest | RunSubagentSessionRequest,
@@ -577,6 +654,7 @@ async function registerRunTaskStateWithChildLease(
   const childLease = await acquireActiveChildLease(state.runId);
   try {
     await registerRunTaskState(state, request);
+    await recordParentChildRun(state);
     return childLease;
   } catch (error) {
     await releaseChildLease(childLease);
@@ -984,6 +1062,16 @@ function taskChildRuntimeOptions(
   };
 }
 
+function taskRecursiveRuntimeOptions(state: RunTaskState): {
+  rootRunId: string;
+  recursionDepth: number;
+} {
+  return {
+    rootRunId: state.rootRunId,
+    recursionDepth: state.recursionDepth,
+  };
+}
+
 async function loadSnapshotEvents(
   snapshot: RunTaskView,
 ): Promise<Pick<RunTaskView, "recent_events" | "last_public_output_excerpt">> {
@@ -1159,6 +1247,7 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
       run_id: state.runId,
       task_id: state.runId,
       task_kind: state.taskKind,
+      ...lineageView(state),
       status: terminalRunTaskStatus(state.result),
       started_at: state.startedAt,
       finished_at: state.finishedAt,
@@ -1182,6 +1271,7 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
       run_id: state.runId,
       task_id: state.runId,
       task_kind: state.taskKind,
+      ...lineageView(state),
       ...promotionView(state),
       ...(state.sessionKey ? { session_key: state.sessionKey } : {}),
       status: state.cancelRequested ? "cancelled" : "failed",
@@ -1204,6 +1294,7 @@ export async function startRunTask(
     heartbeat?: HeartbeatNotify;
     heartbeatIntervalMs?: number;
     failureLogTool?: Extract<FailureLogTool, "schedule_run" | "start_run">;
+    lineage?: RunTaskLineage;
   } = {},
 ): Promise<RunTaskView> {
   const failureLogTool = options.failureLogTool ?? "start_run";
@@ -1213,7 +1304,7 @@ export async function startRunTask(
   const skillFilePath = resolveSkillFilePathForRequest(resolved);
   await assertPiChildEntrypointAvailable();
 
-  const state = createRunTaskState("run");
+  const state = createRunTaskState("run", undefined, options.lineage);
   state.failureLogTool = failureLogTool;
   const childLease = await registerRunTaskStateWithChildLease(state, request);
 
@@ -1226,6 +1317,7 @@ export async function startRunTask(
         runsDir: options.runsDir,
         allowTimeout: true,
         skillFilePath,
+        ...taskRecursiveRuntimeOptions(state),
         ...taskChildRuntimeOptions(state, options),
       });
     } catch (error) {
@@ -1325,6 +1417,7 @@ export async function scheduleRunTask(
     runsDir?: string;
     heartbeat?: HeartbeatNotify;
     heartbeatIntervalMs?: number;
+    lineage?: RunTaskLineage;
   } = {},
 ): Promise<RunTaskView> {
   const waitMs = scheduleWaitMs(request.wait_ms);
@@ -1345,6 +1438,7 @@ export async function startSessionRunTask(
     heartbeat?: HeartbeatNotify;
     heartbeatIntervalMs?: number;
     failureLogTool?: Extract<FailureLogTool, "start_session_run" | "run_subagent_session">;
+    lineage?: RunTaskLineage;
   } = {},
 ): Promise<RunTaskView> {
   const failureLogTool = options.failureLogTool ?? "start_session_run";
@@ -1355,6 +1449,7 @@ export async function startSessionRunTask(
   const state = createRunTaskState(
     "session",
     typeof request.session_key === "string" ? request.session_key : undefined,
+    options.lineage,
   );
   state.failureLogTool = failureLogTool;
   const childLease = await registerRunTaskStateWithChildLease(state, request);
@@ -1367,6 +1462,7 @@ export async function startSessionRunTask(
         mailboxRoot: state.mailboxRoot,
         childRunId: state.runId,
         taskId: state.runId,
+        ...taskRecursiveRuntimeOptions(state),
         ...taskChildRuntimeOptions(state, options),
       });
     } catch (error) {
@@ -1457,6 +1553,7 @@ async function runSubagentPromotedTask(
         runsDir: options.runsDir,
         allowTimeout: true,
         skillFilePath,
+        ...taskRecursiveRuntimeOptions(state),
         ...taskChildRuntimeOptions(state, options),
       });
       state.result = {
@@ -1510,6 +1607,7 @@ export async function runSubagentOneShotTask(
         mailboxRoot: state.mailboxRoot,
         runsDir: options.runsDir,
         skillFilePath,
+        ...taskRecursiveRuntimeOptions(state),
         ...taskChildRuntimeOptions(state, options),
       });
     } catch (error) {

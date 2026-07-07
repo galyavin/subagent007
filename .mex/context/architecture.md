@@ -12,7 +12,7 @@ edges:
     condition: when specific technology details are needed
   - target: context/decisions.md
     condition: when understanding why the architecture is structured this way
-last_updated: 2026-07-04
+last_updated: 2026-07-07
 ---
 
 # Architecture
@@ -24,6 +24,7 @@ When configured, `src/activeChildLease.ts` acquires a local active-child lease b
 `src/runSubagent.ts` writes a Pi child request file, then `src/processRunner.ts` spawns and supervises the child process.
 Child output becomes file-backed artifacts through `src/output.ts`, sanitized public events through run-event helpers, and failure records through `src/failureLog.ts`.
 Server-authored prompt provenance uses `src/prompt.ts` to project caller prompt text to a redacted public marker before it reaches public event views or transcript artifacts; child execution still receives the real composed prompt.
+Server-launched children receive a private recursive control payload in the child request file. `src/piChild.ts` exposes it only as a native `delegate` tool; `src/recursiveControl.ts` validates the private token and recursion depth, then `src/runTask.ts` validates caller lineage against active parent run state before the parent scheduler creates a descendant.
 `get_run`, `answer_run_input`, and `cancel_run` operate on local filesystem-backed run snapshots and input mailbox records.
 Operation-only semantic failures from those run-operation tools project as `kind:"operation_rejected"` instead of MCP text errors; child-invocation preflight failures remain `kind:"preflight_rejected"` with `child_started:false`.
 Named sessions add `src/session.ts` manifest/ledger/lock handling around the same child execution path. Manifest eligibility failures known before launch, such as missing `require_existing` sessions, reject before durable task registration with `preflight_rejected` and `child_started:false`; locked execution checks still run later as race protection.
@@ -31,7 +32,9 @@ Named sessions add `src/session.ts` manifest/ledger/lock handling around the sam
 ## Key Components
 - `server.ts` - MCP tool surface, schema/preflight rejection shape, retry guidance, and failure logging for handler-level failures.
 - `runTask.ts` - durable task lifecycle, snapshots, background execution, cancellation, caller input closure, promotion from one-shot, and active-child lease release.
-- `runSubagent.ts` - child request-file contract, Pi child invocation, transcript/final-output handling, timeout metadata, provider error parsing, and skill audit metadata.
+- `runTask.ts` also records recursive lineage metadata: `parent_run_id` for descendants, `root_run_id`, `recursion_depth`, and direct `child_run_ids`.
+- `runSubagent.ts` - child request-file contract, Pi child invocation, transcript/final-output handling, timeout metadata, provider error parsing, recursive control payload injection, and skill audit metadata.
+- `recursiveControl.ts` / `recursiveDelegateTool.ts` - private local IPC and child-facing `delegate` tool for recursive Subagent007 calls; the child tool is a client, not an owner of durable task state.
 - `processRunner.ts` - detached child process execution, timeout/cancel termination, heartbeat notifications, and parent-exit process-group cleanup.
 - `session.ts` - named-session manifests, read-only preflight eligibility checks, candidate ledgers, packet policy, skill/cwd immutability, and local session locks. Required packet failures distinguish missing, malformed, and parse-valid not-ready packets by reason code.
 - `runtimeReadiness.ts` - built-entrypoint, source-state, contract, and public-tool readiness checks.
@@ -48,4 +51,5 @@ Named sessions add `src/session.ts` manifest/ledger/lock handling around the sam
 - No database, remote worker service, or distributed lock manager; persistence and locks are local files.
 - No public concrete model or thinking-level input, result field, failure-log field, session ledger field, or README calibration table; callers use model classes and class-level health/migration guidance.
 - No tool restriction by `tool_profile`; accepted legacy profile values resolve to all child tools.
+- No full recursive descendant tree manager or cascade cancellation; the first recursive slice is one child-facing delegate tool plus direct lineage metadata.
 - No exposure of raw thinking, private tool payloads, caller prompt text, full composed prompts, or input answer values in public event views.

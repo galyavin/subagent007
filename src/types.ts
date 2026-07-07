@@ -53,6 +53,8 @@ export type FailureReasonCode =
   | "packet_required_not_ready"
   | "prompt_missing"
   | "raw_session_id_unsupported"
+  | "recursive_control_invalid"
+  | "recursive_depth_exceeded"
   | "run_not_accepting_input"
   | "run_not_found"
   | "run_subagent_incompatible_workload"
