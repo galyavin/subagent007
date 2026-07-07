@@ -259,7 +259,7 @@ test("run_subagent_session creates, resumes, and appends an auditable Pi ledger"
       assert.equal(created.success, true);
       assert.equal(created.created_or_resumed, "created");
       assert.equal(created.model_changed_from_manifest, false);
-      assert.equal(created.thinking_level_changed_from_manifest, false);
+      assert.equal(Object.hasOwn(created, "thinking_level_changed_from_manifest"), false);
       assert.match(created.subagent_session_id ?? "", /pi-session\/fake-pi-session\.jsonl$/);
       assert.match(created.attempt_subagent_session_id ?? "", /attempt-pi-sessions\/0001-/);
       assert.equal(created.attempt_session_established, true);
@@ -291,7 +291,7 @@ test("run_subagent_session creates, resumes, and appends an auditable Pi ledger"
       assert.equal(resumedLegacy.success, true);
       assert.equal(resumedLegacy.created_or_resumed, "resumed");
       assert.equal(resumedLegacy.model_changed_from_manifest, false);
-      assert.equal(resumedLegacy.thinking_level_changed_from_manifest, false);
+      assert.equal(Object.hasOwn(resumedLegacy, "thinking_level_changed_from_manifest"), false);
 
       const resumedLegacyManifest = JSON.parse(await fs.readFile(created.manifest_path, "utf8")) as SessionManifest;
       await fs.writeFile(
@@ -315,7 +315,9 @@ test("run_subagent_session creates, resumes, and appends an auditable Pi ledger"
       assert.match(resumed.attempt_subagent_session_id ?? "", /attempt-pi-sessions\/0003-/);
       assert.equal(resumed.attempt_session_established, true);
       assert.equal(resumed.model_changed_from_manifest, true);
-      assert.equal(resumed.thinking_level_changed_from_manifest, true);
+      assert.equal(Object.hasOwn(resumed, "thinking_level_changed_from_manifest"), false);
+      const finalManifest = JSON.parse(await fs.readFile(created.manifest_path, "utf8")) as Record<string, unknown>;
+      assert.equal(Object.hasOwn(finalManifest, "initial_thinking_level"), false);
 
       const records = await readJsonl<SessionRunRecord>(created.ledger_path);
       assert.equal(records.length, 3);

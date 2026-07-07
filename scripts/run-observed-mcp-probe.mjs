@@ -617,7 +617,7 @@ function forbiddenFieldPaths(value, forbiddenFields, pathParts = []) {
   return Object.entries(value).flatMap(([key, child]) => {
     const path = [...pathParts, key];
     return [
-      ...(forbiddenFields.has(key) ? [path.join(".")] : []),
+      ...(forbiddenFields.has(key) || key.includes("thinking_level") ? [path.join(".")] : []),
       ...forbiddenFieldPaths(child, forbiddenFields, path),
     ];
   });

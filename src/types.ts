@@ -242,8 +242,6 @@ export interface SessionRunRecord {
   kill_grace_ms?: number;
   force_grace_ms?: number;
   resolved_model_class?: ModelClass;
-  resolved_model?: string;
-  resolved_thinking_level?: string;
   requested_skill: string | null;
   resolved_skill_path?: string | null;
   resolved_skill_sha256?: string | null;
@@ -262,7 +260,6 @@ export interface SessionManifest {
   skill: string | null;
   initial_model_class?: ModelClass;
   initial_model?: string;
-  initial_thinking_level?: string;
   subagent_session_id: string;
   created_at: string;
   last_run_at: string;
@@ -290,7 +287,6 @@ export interface RunSubagentSessionResult extends SubagentRunResultBase {
   claimed_packet: ContractPacketV1 | null;
   run_record: SessionRunRecord;
   model_changed_from_manifest: boolean;
-  thinking_level_changed_from_manifest: boolean;
 }
 
 export interface PreflightRejectedResult {

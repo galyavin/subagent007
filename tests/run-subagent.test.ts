@@ -96,7 +96,7 @@ function forbiddenPublicCalibrationFields(value: unknown, pathParts: string[] = 
   return Object.entries(value).flatMap(([key, child]) => {
     const path = [...pathParts, key];
     return [
-      ...(FORBIDDEN_PUBLIC_CALIBRATION_FIELDS.has(key) ? [path.join(".")] : []),
+      ...(FORBIDDEN_PUBLIC_CALIBRATION_FIELDS.has(key) || key.includes("thinking_level") ? [path.join(".")] : []),
       ...forbiddenPublicCalibrationFields(child, path),
     ];
   });

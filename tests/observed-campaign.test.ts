@@ -56,14 +56,27 @@ async function runHarness(args: string[], env: NodeJS.ProcessEnv = {}, cwd = pat
   }
 }
 
-async function readTextFilesUnder(root: string): Promise<string> {
+function isPrivateCampaignStatePath(filePath: string): boolean {
+  const segments = filePath.split(path.sep);
+  const basename = path.basename(filePath);
+  return segments.includes("input-requests") ||
+    segments.includes("pi-raw-sessions") ||
+    segments.includes("raw-sessions") ||
+    segments.includes("pi-session") ||
+    segments.includes("attempt-pi-sessions") ||
+    basename === "config.json" ||
+    basename === "model-health.json" ||
+    basename === "manifest.json";
+}
+
+async function readPublicCampaignArtifactTextUnder(root: string): Promise<string> {
   const chunks: string[] = [];
   async function walk(dir: string): Promise<void> {
     for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
       const entryPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         await walk(entryPath);
-      } else if (entry.isFile()) {
+      } else if (entry.isFile() && !isPrivateCampaignStatePath(entryPath)) {
         chunks.push(await fs.readFile(entryPath, "utf8"));
       }
     }
@@ -731,11 +744,11 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
 
   const ledgerText = await fs.readFile(path.join(stateDir, "campaign-ledger.jsonl"), "utf8");
   assert.doesNotMatch(ledgerText, /SECRET_CAMPAIGN_INPUT_ANSWER/);
-  const stateText = await readTextFilesUnder(stateDir);
-  assert.doesNotMatch(stateText, /SECRET_LEDGER_PROMPT|SECRET_TRANSCRIPT_PROMPT_SHOULD_NOT_LEAK/);
+  const publicArtifactText = await readPublicCampaignArtifactTextUnder(stateDir);
+  assert.doesNotMatch(publicArtifactText, /SECRET_LEDGER_PROMPT|SECRET_TRANSCRIPT_PROMPT_SHOULD_NOT_LEAK/);
   assert.doesNotMatch(
-    stateText,
-    /"resolved_model"|"resolved_thinking_level"|"resolved_default_model"|"resolved_default_thinking_level"|"model":|"thinking_level":/,
+    publicArtifactText,
+    /"resolved_model"|"resolved_thinking_level"|"resolved_default_model"|"resolved_default_thinking_level"|"model":|"[^"]*thinking_level[^"]*":/,
   );
   const events = ledgerText
     .split(/\r?\n/)

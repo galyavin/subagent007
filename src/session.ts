@@ -47,7 +47,6 @@ const sessionManifestSchema = z.object({
   skill: z.string().nullable(),
   initial_model_class: z.enum(MODEL_CLASSES).optional(),
   initial_model: z.string().optional(),
-  initial_thinking_level: z.string().optional(),
   subagent_session_id: z.string(),
   created_at: z.string(),
   last_run_at: z.string(),
@@ -85,8 +84,6 @@ const sessionRunRecordSchema = z.object({
   kill_grace_ms: z.number().int().nonnegative().optional(),
   force_grace_ms: z.number().int().nonnegative().optional(),
   resolved_model_class: z.enum(MODEL_CLASSES).optional(),
-  resolved_model: z.string().optional(),
-  resolved_thinking_level: z.string().optional(),
   requested_skill: z.string().nullable(),
   requested_output_mode: z.enum(OUTPUT_MODES),
   written_output_mode: z.enum(OUTPUT_MODES),
@@ -508,13 +505,6 @@ function modelChangedFromManifest(
   return manifest.initial_model ? modelRefForComparison(manifest.initial_model) !== resolved.model : false;
 }
 
-function thinkingLevelChangedFromManifest(
-  manifest: SessionManifest | null,
-  resolved: Awaited<ReturnType<typeof validateAndResolveRequest>>,
-): boolean {
-  return Boolean(manifest?.initial_thinking_level && manifest.initial_thinking_level !== resolved.thinkingLevel);
-}
-
 async function copyDirectoryContents(sourceDir: string, targetDir: string): Promise<void> {
   await fs.rm(targetDir, { recursive: true, force: true });
   await fs.mkdir(path.dirname(targetDir), { recursive: true });
@@ -784,7 +774,6 @@ export async function runSubagentSession(
       claimed_packet: packet.claimedPacket,
       run_record: runRecord,
       model_changed_from_manifest: modelChangedFromManifest(manifest, resolved),
-      thinking_level_changed_from_manifest: thinkingLevelChangedFromManifest(manifest, resolved),
     };
     if (!result.success && result.run_record.stop_reason !== "cancelled") {
       const failureInput = { ...result, session_established: attemptSessionEstablished };
