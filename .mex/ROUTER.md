@@ -35,6 +35,7 @@ Then read this file fully before doing anything else in this session.
 - SAF repairs are in place for provider usage-limit metadata, parent-exit child-process cleanup, opt-in active-child launch fusing, structured run-operation semantic rejections, packet-required not-ready taxonomy, public prompt projection, and named-session manifest preflight eligibility.
 - Requested `final` output is a hard contract: a clean child exit without a captured final message fails as `missing_final_output` and writes the public transcript only as diagnostic output.
 - Server-launched children receive a native `delegate` tool backed by private parent-owned recursive control IPC; recursive descendants are normal durable runs with `parent_run_id`, `root_run_id`, `recursion_depth`, and direct `child_run_ids` in run views.
+- Parent run views now also project recursive child lifecycle through sanitized `recursive_child_started` and `recursive_child_finished` public events, including child run id, lineage, terminal status, and success metadata without private recursive-control payloads.
 - README runtime facts are checked against source with `npm run docs:check`; full source/test verification is `npm test`.
 
 **Not Built:**

@@ -14,6 +14,7 @@ export type RunTaskActivePhase =
   | "failed";
 
 export type RunTaskTerminalEventName = "cancellation_settled" | "timeout" | "completed" | "failed";
+export type RunTaskTerminalStatus = Extract<DurableRunStatus, "completed" | "failed" | "cancelled" | "timed_out">;
 
 export interface RunTaskTerminalStatusInput {
   success: boolean;
@@ -29,7 +30,7 @@ export interface RunTaskTerminalEventDetails {
   progressMessage: string;
 }
 
-export function terminalRunTaskStatus(result: RunTaskTerminalStatusInput): DurableRunStatus {
+export function terminalRunTaskStatus(result: RunTaskTerminalStatusInput): RunTaskTerminalStatus {
   if (result.stop_reason === "cancelled" || result.status === "cancelled") {
     return "cancelled";
   }

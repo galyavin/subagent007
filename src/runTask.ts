@@ -46,6 +46,7 @@ import {
   terminalRunTaskEventDetails,
   terminalRunTaskStatus,
   type RunTaskActivePhase,
+  type RunTaskTerminalStatus,
 } from "./runLifecycle.js";
 import type {
   RunPublicEvent,
@@ -518,6 +519,77 @@ async function appendPublicEvent(state: RunTaskState, event: RunPublicEvent): Pr
   return written;
 }
 
+function recursiveChildMetadata(child: RunTaskState): Record<string, unknown> {
+  return {
+    child_run_id: child.runId,
+    parent_run_id: child.parentRunId,
+    root_run_id: child.rootRunId,
+    recursion_depth: child.recursionDepth,
+  };
+}
+
+async function appendParentRecursiveChildEvent(
+  parent: RunTaskState,
+  event: RunPublicEvent,
+  progressMessage: string,
+): Promise<void> {
+  if (parent.result || parent.error || parent.terminalSnapshotStarted) {
+    await appendPublicEvent(parent, event);
+  } else {
+    await appendStatusEvent(parent, event, progressMessage);
+  }
+  await writeTaskSnapshot(await getRunTask(parent.runId));
+}
+
+async function appendParentRecursiveChildStartedEvent(child: RunTaskState): Promise<void> {
+  if (!child.parentRunId) {
+    return;
+  }
+  const parent = tasks.get(child.parentRunId);
+  if (!parent) {
+    return;
+  }
+  const occurredAt = new Date().toISOString();
+  await appendParentRecursiveChildEvent(parent, {
+    kind: "task",
+    event: "recursive_child_started",
+    text: `[recursive_child_started] child run ${child.runId}`,
+    occurred_at: occurredAt,
+    metadata: recursiveChildMetadata(child),
+  }, "recursive child started");
+}
+
+function terminalStatusForRecursiveChild(child: RunTaskState): RunTaskTerminalStatus {
+  if (child.result) {
+    return terminalRunTaskStatus(child.result);
+  }
+  return child.cancelRequested ? "cancelled" : "failed";
+}
+
+async function appendParentRecursiveChildFinishedEvent(child: RunTaskState): Promise<void> {
+  if (!child.parentRunId) {
+    return;
+  }
+  const parent = tasks.get(child.parentRunId);
+  if (!parent) {
+    return;
+  }
+  const status = terminalStatusForRecursiveChild(child);
+  const success = child.result?.success ?? false;
+  const occurredAt = child.finishedAt ?? new Date().toISOString();
+  await appendParentRecursiveChildEvent(parent, {
+    kind: "task",
+    event: "recursive_child_finished",
+    text: `[recursive_child_finished] child run ${child.runId} status=${status}`,
+    occurred_at: occurredAt,
+    metadata: {
+      ...recursiveChildMetadata(child),
+      status,
+      success,
+    },
+  }, `recursive child ${status}`);
+}
+
 async function handleTaskHeartbeat(
   state: RunTaskState,
   beat: number,
@@ -621,6 +693,7 @@ async function recordParentChildRun(state: RunTaskState): Promise<void> {
   }
   parent.childRunIds = [...parent.childRunIds, state.runId];
   await writeTaskSnapshot(await getRunTask(parent.runId));
+  await appendParentRecursiveChildStartedEvent(state);
 }
 
 export function lineageForRecursiveDelegate(caller: RecursiveCallerLineage): RunTaskLineage {
@@ -815,6 +888,7 @@ async function finalizeRunTask(state: RunTaskState, closeReason: string): Promis
   state.terminalSnapshotStarted = true;
   await logTerminalRunTaskFailure(state);
   await writeTaskSnapshot(await getRunTask(state.runId));
+  await appendParentRecursiveChildFinishedEvent(state);
 }
 
 function durableTaskCloseReason(state: RunTaskState): string {

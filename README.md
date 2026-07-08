@@ -154,7 +154,7 @@ Result semantics:
 - Skill-bound terminal results include `requested_skill`, `resolved_skill_path`, and `resolved_skill_sha256`; unbound runs use `null` for those skill audit fields.
 - Valid `run_subagent` requests that are incompatible only with one-shot execution auto-promote and include `auto_promoted_from`, `promotion_reason_code`, `promotion_reason`, `poll_with`, and `cancel_with`.
 - `run_subagent`, `schedule_run`, `start_run`, `start_session_run`, and `run_subagent_session` create durable run-task snapshots inspectable with `get_run` by `run_id`.
-- Recursive descendant runs created through a child `delegate` tool are also durable root-visible runs. Run views include `root_run_id`, `recursion_depth`, direct `child_run_ids`, and `parent_run_id` for non-root descendants. There is no full descendant-tree manager or cascade cancellation; cancel each returned child run explicitly when needed.
+- Recursive descendant runs created through a child `delegate` tool are also durable root-visible runs. Run views include `root_run_id`, `recursion_depth`, direct `child_run_ids`, and `parent_run_id` for non-root descendants. Parent `recent_events` include sanitized `recursive_child_started` and `recursive_child_finished` events with child run id and terminal status/success metadata. There is no full descendant-tree manager or cascade cancellation; cancel each returned child run explicitly when needed.
 - Active `get_run` views expose sanitized `recent_events` and `last_public_output_excerpt`; raw thinking, private tool payloads, caller prompt text, full packet instructions, composed child prompts, and input answer values are not exposed in public event views.
 - On timeout, `partial_output_available` is true only when the artifact includes child assistant text, a warning/error, or a captured final message.
 
@@ -307,7 +307,7 @@ Only probe calls recorded in `campaign_ledger_path` should claim MCP call-attemp
 
 ## Development
 
-For repository work, read `AGENTS.md` and `.mex/ROUTER.md` first; they carry the current project rules and context map. When README or project-memory facts change, run `mex sync` and `mex check`; use `mex log` for rationale future agents need.
+For repository work, read `AGENTS.md` and `.mex/ROUTER.md` first; they carry the current project rules and context map. In a fresh clone or new project-memory environment, run `mex setup` once before relying on `.mex/`. When README or project-memory facts change, run `mex sync` and `mex check`; use `mex log` for rationale future agents need.
 
 ```sh
 npm run build

@@ -26,6 +26,7 @@
     "run_subagent_session-invalid-packet-closure",
     "installed-pi-integration",
     "recursive-delegate-success-lineage",
+    "recursive-delegate-parent-terminal-child-finish-event",
     "recursive-delegate-depth-limit",
     "recursive-delegate-forged-lineage"
   ],
@@ -56,6 +57,7 @@
     "run_subagent_session-invalid-packet-closure": { "evidence_classes": ["protocol-deterministic"] },
     "installed-pi-integration": { "evidence_classes": ["live-model-smoke"] },
     "recursive-delegate-success-lineage": { "evidence_classes": ["protocol-deterministic"] },
+    "recursive-delegate-parent-terminal-child-finish-event": { "evidence_classes": ["protocol-deterministic"] },
     "recursive-delegate-depth-limit": { "evidence_classes": ["protocol-deterministic"] },
     "recursive-delegate-forged-lineage": { "evidence_classes": ["protocol-deterministic"] }
   },
@@ -222,6 +224,12 @@
       "result_classes": ["recursive_delegate_depth_rejected"],
       "surfaces": ["recursive-delegate-depth-limit"]
     },
+    "recursive-delegate-parent-terminal-child-finish": {
+      "tool": "schedule_run",
+      "lifecycle_phases": ["scheduler-start", "async-start", "recursive-delegate", "polling", "terminal-snapshot"],
+      "result_classes": ["recursive_delegate_parent_terminal_child_finish_event"],
+      "surfaces": ["recursive-delegate-parent-terminal-child-finish-event"]
+    },
     "recursive-delegate-forged-lineage": {
       "tool": "schedule_run",
       "lifecycle_phases": ["scheduler-start", "async-start", "recursive-delegate", "recursive-lineage-guard", "polling", "terminal-snapshot"],
@@ -272,6 +280,7 @@
         "session-invalid-closure",
         "transcript-redaction",
         "recursive-delegate-success",
+        "recursive-delegate-parent-terminal-child-finish",
         "recursive-delegate-depth-limit",
         "recursive-delegate-forged-lineage"
       ],
@@ -301,6 +310,7 @@
         "run_subagent_session-valid-packet-closure",
         "run_subagent_session-invalid-packet-closure",
         "recursive-delegate-success-lineage",
+        "recursive-delegate-parent-terminal-child-finish-event",
         "recursive-delegate-depth-limit",
         "recursive-delegate-forged-lineage"
       ]

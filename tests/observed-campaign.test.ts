@@ -319,7 +319,9 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
           forbidden_public_calibration_fields?: string[];
           failure_log_calibration_fields_absent?: boolean;
           forbidden_failure_log_calibration_fields?: string[];
+          run_id?: string;
           delegated_status?: string;
+          delegated_run_id?: string;
           delegated_kind?: string;
           delegated_reason_code?: string;
           delegated_parent_run_id?: string;
@@ -331,6 +333,24 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
           delegated_view_recursion_depth?: number;
           root_child_contains_delegated?: boolean;
           root_child_run_count?: number;
+          recursive_child_started_event?: boolean;
+          recursive_child_finished_event?: boolean;
+          recursive_child_started_events?: Array<{
+            child_run_id?: string;
+            parent_run_id?: string;
+            root_run_id?: string;
+            recursion_depth?: number;
+          }>;
+          recursive_child_finished_events?: Array<{
+            child_run_id?: string;
+            parent_run_id?: string;
+            root_run_id?: string;
+            recursion_depth?: number;
+            status?: string;
+            success?: boolean;
+          }>;
+          recursive_child_finished_status?: string;
+          recursive_child_finished_success?: boolean;
         };
       }>;
       evidence_classes: string[];
@@ -355,6 +375,7 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
   assert.ok(summary.scenarios.includes("session-valid-closure"));
   assert.ok(summary.scenarios.includes("session-invalid-closure"));
   assert.ok(summary.scenarios.includes("recursive-delegate-success"));
+  assert.ok(summary.scenarios.includes("recursive-delegate-parent-terminal-child-finish"));
   assert.ok(summary.scenarios.includes("recursive-delegate-depth-limit"));
   assert.ok(summary.scenarios.includes("recursive-delegate-forged-lineage"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("run_subagent-success"));
@@ -377,6 +398,7 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
   assert.ok(summary.coverage_summary.covered_surfaces.includes("get_run-restart-drift"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("transcript-redaction"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("recursive-delegate-success-lineage"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("recursive-delegate-parent-terminal-child-finish-event"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("recursive-delegate-depth-limit"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("recursive-delegate-forged-lineage"));
   assert.ok(summary.coverage_summary.uncovered_surfaces.includes("installed-pi-integration"));
@@ -404,6 +426,46 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
   assert.equal(recursiveSuccess?.observed_result?.root_child_contains_delegated, true);
   assert.equal(recursiveSuccess?.observed_result?.delegated_recursion_depth, 1);
   assert.equal(recursiveSuccess?.observed_result?.delegated_view_status, "completed");
+  assert.equal(recursiveSuccess?.observed_result?.recursive_child_started_event, true);
+  assert.equal(recursiveSuccess?.observed_result?.recursive_child_finished_event, true);
+  assert.equal(recursiveSuccess?.observed_result?.recursive_child_finished_status, "completed");
+  assert.equal(recursiveSuccess?.observed_result?.recursive_child_finished_success, true);
+  const recursiveSuccessStartedEvent = recursiveSuccess?.observed_result?.recursive_child_started_events?.find((event) =>
+    event.child_run_id === recursiveSuccess.observed_result?.delegated_run_id
+  );
+  const recursiveSuccessFinishedEvent = recursiveSuccess?.observed_result?.recursive_child_finished_events?.find((event) =>
+    event.child_run_id === recursiveSuccess.observed_result?.delegated_run_id
+  );
+  assert.deepEqual(recursiveSuccessStartedEvent, {
+    child_run_id: recursiveSuccess?.observed_result?.delegated_run_id,
+    parent_run_id: recursiveSuccess?.observed_result?.run_id,
+    root_run_id: recursiveSuccess?.observed_result?.run_id,
+    recursion_depth: 1,
+  });
+  assert.deepEqual(recursiveSuccessFinishedEvent, {
+    child_run_id: recursiveSuccess?.observed_result?.delegated_run_id,
+    parent_run_id: recursiveSuccess?.observed_result?.run_id,
+    root_run_id: recursiveSuccess?.observed_result?.run_id,
+    recursion_depth: 1,
+    status: "completed",
+    success: true,
+  });
+  const recursiveWait0 = summary.coverage_summary.scenarios.find((scenario) =>
+    scenario.scenario === "recursive-delegate-parent-terminal-child-finish"
+  );
+  assert.equal(recursiveWait0?.evidence_satisfied, true);
+  assert.equal(recursiveWait0?.observed_result?.delegated_status, "working");
+  assert.equal(recursiveWait0?.observed_result?.delegated_view_status, "completed");
+  assert.equal(recursiveWait0?.observed_result?.recursive_child_started_event, true);
+  assert.equal(recursiveWait0?.observed_result?.recursive_child_finished_event, true);
+  assert.equal(
+    recursiveWait0?.observed_result?.recursive_child_finished_events?.some((event) =>
+      event.child_run_id === recursiveWait0.observed_result?.delegated_run_id &&
+      event.status === "completed" &&
+      event.success === true
+    ),
+    true,
+  );
   const recursiveDepthLimit = summary.coverage_summary.scenarios.find((scenario) =>
     scenario.scenario === "recursive-delegate-depth-limit"
   );
@@ -411,6 +473,8 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
   assert.equal(recursiveDepthLimit?.observed_result?.delegated_kind, "recursive_delegate_rejected");
   assert.equal(recursiveDepthLimit?.observed_result?.delegated_reason_code, "recursive_depth_exceeded");
   assert.equal(recursiveDepthLimit?.observed_result?.root_child_run_count, 0);
+  assert.notEqual(recursiveDepthLimit?.observed_result?.recursive_child_started_event, true);
+  assert.notEqual(recursiveDepthLimit?.observed_result?.recursive_child_finished_event, true);
   const recursiveForgedLineage = summary.coverage_summary.scenarios.find((scenario) =>
     scenario.scenario === "recursive-delegate-forged-lineage"
   );
@@ -418,6 +482,8 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
   assert.equal(recursiveForgedLineage?.observed_result?.delegated_kind, "recursive_delegate_rejected");
   assert.equal(recursiveForgedLineage?.observed_result?.delegated_reason_code, "recursive_control_invalid");
   assert.equal(recursiveForgedLineage?.observed_result?.root_child_run_count, 0);
+  assert.notEqual(recursiveForgedLineage?.observed_result?.recursive_child_started_event, true);
+  assert.notEqual(recursiveForgedLineage?.observed_result?.recursive_child_finished_event, true);
   assert.equal(
     summary.coverage_summary.scenarios.every((scenario) =>
       scenario.observed_result?.public_calibration_fields_absent !== false &&

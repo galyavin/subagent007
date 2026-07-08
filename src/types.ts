@@ -331,6 +331,8 @@ export type RunPublicEventName =
   | "child_bridge_started"
   | "child_session_established"
   | "child_prompt_submitted"
+  | "recursive_child_started"
+  | "recursive_child_finished"
   | "input_required"
   | "input_answered"
   | "input_timed_out"

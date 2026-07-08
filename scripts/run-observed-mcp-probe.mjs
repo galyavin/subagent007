@@ -53,6 +53,7 @@ const RETIRED_BUNDLED_ALIAS_MESSAGE =
   "all-bundled is retired; use --profile protocol-core for the historical bundled protocol-core scenario set";
 const RECURSIVE_DELEGATE_SCENARIO_PROMPTS = {
   "recursive-delegate-success": "RECURSIVE_DELEGATE_FAST",
+  "recursive-delegate-parent-terminal-child-finish": "RECURSIVE_DELEGATE_WAIT0_CHILD_FINISH",
   "recursive-delegate-depth-limit": "RECURSIVE_DELEGATE_DEPTH_LIMIT",
   "recursive-delegate-forged-lineage": "RECURSIVE_DELEGATE_FORGED_PARENT",
 };
@@ -250,6 +251,29 @@ function responseHasNoForbiddenCalibrationFields(response) {
     response.failure_log_calibration_fields_absent === true;
 }
 
+function recursiveChildEvents(response, phase) {
+  const values = response?.[`recursive_child_${phase}_events`];
+  return Array.isArray(values) ? values : [];
+}
+
+function recursiveChildEvent(response, phase, childRunId) {
+  return recursiveChildEvents(response, phase).find((event) => event?.child_run_id === childRunId);
+}
+
+function recursiveChildEventMatchesLineage(response, phase, childRunId) {
+  const event = recursiveChildEvent(response, phase, childRunId);
+  return event?.parent_run_id === response.run_id &&
+    event?.root_run_id === response.run_id &&
+    event?.recursion_depth === 1;
+}
+
+function recursiveChildFinishedEventMatches(response, childRunId, status, success) {
+  const event = recursiveChildEvent(response, "finished", childRunId);
+  return recursiveChildEventMatchesLineage(response, "finished", childRunId) &&
+    event?.status === status &&
+    event?.success === success;
+}
+
 function responseMatchesResultShape(response, resultClass) {
   if (!response) {
     return false;
@@ -359,7 +383,25 @@ function responseMatchesResultShape(response, resultClass) {
       response.delegated_view_status === "completed" &&
       response.delegated_view_parent_run_id === response.run_id &&
       response.delegated_view_root_run_id === response.run_id &&
-      response.delegated_view_recursion_depth === 1;
+      response.delegated_view_recursion_depth === 1 &&
+      response.recursive_child_started_event === true &&
+      response.recursive_child_finished_event === true &&
+      recursiveChildEventMatchesLineage(response, "started", response.delegated_run_id) &&
+      recursiveChildFinishedEventMatches(response, response.delegated_run_id, "completed", true);
+  }
+  if (resultClass === "recursive_delegate_parent_terminal_child_finish_event") {
+    return response.success === true &&
+      response.status === "completed" &&
+      response.polled === true &&
+      typeof response.delegated_run_id === "string" &&
+      response.delegated_status === "working" &&
+      response.delegated_view_status === "completed" &&
+      response.delegated_view_parent_run_id === response.run_id &&
+      response.delegated_view_root_run_id === response.run_id &&
+      response.delegated_view_recursion_depth === 1 &&
+      response.root_child_contains_delegated === true &&
+      recursiveChildEventMatchesLineage(response, "started", response.delegated_run_id) &&
+      recursiveChildFinishedEventMatches(response, response.delegated_run_id, "completed", true);
   }
   if (resultClass === "recursive_delegate_depth_rejected") {
     return response.success === true &&
@@ -368,7 +410,9 @@ function responseMatchesResultShape(response, resultClass) {
       response.delegated_status === "rejected" &&
       response.delegated_kind === "recursive_delegate_rejected" &&
       response.delegated_reason_code === "recursive_depth_exceeded" &&
-      response.root_child_run_count === 0;
+      response.root_child_run_count === 0 &&
+      response.recursive_child_started_event !== true &&
+      response.recursive_child_finished_event !== true;
   }
   if (resultClass === "recursive_delegate_forged_rejected") {
     return response.success === true &&
@@ -377,7 +421,9 @@ function responseMatchesResultShape(response, resultClass) {
       response.delegated_status === "rejected" &&
       response.delegated_kind === "recursive_delegate_rejected" &&
       response.delegated_reason_code === "recursive_control_invalid" &&
-      response.root_child_run_count === 0;
+      response.root_child_run_count === 0 &&
+      response.recursive_child_started_event !== true &&
+      response.recursive_child_finished_event !== true;
   }
   if (resultClass === "runtime_ready") {
     return response.is_error === false &&
@@ -552,6 +598,13 @@ async function createDeterministicFakeChild() {
       "  setInterval(() => {}, 1000);",
       "} else if (request.prompt.includes('REQUEST_INPUT_WAIT')) {",
       "  writeInputRequest();",
+      "} else if (request.prompt.includes('RECURSIVE_DELEGATE_WAIT0_CHILD_FINISH')) {",
+      "  callRecursiveDelegate({ prompt: 'HEARTBEAT_SLEEP', cwd: request.cwd, wait_ms: 0 }).then((result) => {",
+      "    writeFinal(JSON.stringify({ delegated: result }));",
+      "  }).catch((error) => {",
+      "    process.stderr.write('FAKE RECURSIVE DELEGATE FAILURE: ' + (error && error.stack ? error.stack : String(error)) + '\\n');",
+      "    process.exitCode = 1;",
+      "  });",
       "} else if (request.prompt.includes('RECURSIVE_DELEGATE_FAST') || request.prompt.includes('RECURSIVE_DELEGATE_DEPTH_LIMIT')) {",
       "  callRecursiveDelegate({ prompt: 'FAST', cwd: request.cwd, wait_ms: 1000 }).then((result) => {",
       "    writeFinal(JSON.stringify({ delegated: result }));",
@@ -771,6 +824,30 @@ function responseSummary(response) {
   const structured = response.structuredContent && typeof response.structuredContent === "object"
     ? response.structuredContent
     : {};
+  const recentEvents = Array.isArray(structured.recent_events) ? structured.recent_events : [];
+  const recursiveChildStartedEvents = recentEvents.filter((event) =>
+    event?.event === "recursive_child_started" &&
+      typeof event?.metadata?.child_run_id === "string"
+  );
+  const recursiveChildFinishedEvents = recentEvents.filter((event) =>
+    event?.event === "recursive_child_finished" &&
+      typeof event?.metadata?.child_run_id === "string" &&
+      typeof event?.metadata?.status === "string"
+  );
+  const recursiveChildEventSummary = (event) => {
+    const metadata = event?.metadata ?? {};
+    return {
+      child_run_id: metadata.child_run_id,
+      parent_run_id: metadata.parent_run_id,
+      root_run_id: metadata.root_run_id,
+      recursion_depth: metadata.recursion_depth,
+      ...(typeof metadata.status === "string" ? { status: metadata.status } : {}),
+      ...(typeof metadata.success === "boolean" ? { success: metadata.success } : {}),
+    };
+  };
+  const recursiveChildStartedSummaries = recursiveChildStartedEvents.map(recursiveChildEventSummary);
+  const recursiveChildFinishedSummaries = recursiveChildFinishedEvents.map(recursiveChildEventSummary);
+  const latestRecursiveChildFinished = recursiveChildFinishedSummaries.at(-1);
   const forbiddenPublicCalibrationFields = forbiddenFieldPaths(structured, FORBIDDEN_PUBLIC_CALIBRATION_FIELDS);
   return {
     is_error: response.isError === true,
@@ -789,6 +866,16 @@ function responseSummary(response) {
     recursion_depth: typeof structured.recursion_depth === "number" ? structured.recursion_depth : undefined,
     child_run_ids: Array.isArray(structured.child_run_ids)
       ? structured.child_run_ids.filter((value) => typeof value === "string")
+      : undefined,
+    recursive_child_started_event: recursiveChildStartedEvents.length > 0,
+    recursive_child_finished_event: recursiveChildFinishedEvents.length > 0,
+    recursive_child_started_events: recursiveChildStartedSummaries,
+    recursive_child_finished_events: recursiveChildFinishedSummaries,
+    recursive_child_finished_status: typeof latestRecursiveChildFinished?.status === "string"
+      ? latestRecursiveChildFinished.status
+      : undefined,
+    recursive_child_finished_success: typeof latestRecursiveChildFinished?.success === "boolean"
+      ? latestRecursiveChildFinished.success
       : undefined,
     child_started: typeof structured.child_started === "boolean" ? structured.child_started : undefined,
     exit_code: typeof structured.exit_code === "number" || structured.exit_code === null
@@ -1332,17 +1419,22 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
         )
       : started;
     let delegatedView;
+    let parentAfterDelegated;
     if (terminal.response?.delegated_run_id) {
-      delegatedView = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      delegatedView = await waitForRun(client, ledgerPath, evidenceClass, scenario, terminal.response.delegated_run_id, (response) =>
+        ["completed", "failed", "cancelled", "timed_out"].includes(response?.status),
+      );
+      parentAfterDelegated = await runCall(client, ledgerPath, evidenceClass, scenario, {
         tool: "get_run",
-        args: { run_id: terminal.response.delegated_run_id },
+        args: { run_id: terminal.response.run_id },
       });
     }
+    const parentView = parentAfterDelegated ?? terminal;
     return {
-      ...terminal,
+      ...parentView,
       tool: "schedule_run",
       response: {
-        ...(terminal.response ?? {}),
+        ...(parentView.response ?? terminal.response ?? {}),
         polled: true,
         delegated_view_status: delegatedView?.response?.status,
         delegated_view_parent_run_id: delegatedView?.response?.parent_run_id,
@@ -1352,7 +1444,8 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
       failure_log_delta_count:
         started.failure_log_delta_count +
         (terminal.failure_log_delta_count ?? 0) +
-        (delegatedView?.failure_log_delta_count ?? 0),
+        (delegatedView?.failure_log_delta_count ?? 0) +
+        (parentAfterDelegated?.failure_log_delta_count ?? 0),
     };
   }
 
