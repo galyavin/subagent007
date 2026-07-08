@@ -35,6 +35,7 @@ export function durableRunContractView(): {
   capabilities: typeof DURABLE_RUN_CAPABILITIES;
   tools: {
     start: ["start_run", "schedule_run"];
+    session_start: ["start_session_run", "run_subagent_session"];
     poll: "get_run";
     answer_input: "answer_run_input";
     cancel: "cancel_run";
@@ -71,6 +72,7 @@ export function durableRunContractView(): {
     capabilities: DURABLE_RUN_CAPABILITIES,
     tools: {
       start: ["start_run", "schedule_run"],
+      session_start: ["start_session_run", "run_subagent_session"],
       poll: "get_run",
       answer_input: "answer_run_input",
       cancel: "cancel_run",

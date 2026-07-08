@@ -19,6 +19,14 @@ last_updated: 2026-07-08
 
 ## Decision Log
 
+### Session failures preserve durable caller context
+**Date:** 2026-07-08
+**Status:** Active
+**Decision:** Terminal failures from durable session tasks log the public entrypoint that created the run, the durable `run_id`, and `task_kind:"session"`; `get_run_contract` exposes session start tools under `tools.session_start` without changing the existing run-only `tools.start` tuple.
+**Reasoning:** Session tools create normal durable run-task snapshots, so callers and operators need failure telemetry and adapter contract discovery to line up with the `run_id` they receive from `start_session_run` or `run_subagent_session`. Misattributing async session packet failures to the compatibility wrapper made telemetry ambiguous.
+**Alternatives considered:** Only document the caveat (rejected because correlation stayed broken), only add `run_id` to failure records (rejected because the public tool was still wrong), or mutate `tools.start` to include session tools (rejected because adapters may already depend on the existing tuple).
+**Consequences:** Observed `full-current` includes `start_session_run` packet-failure telemetry correlation; failure-log tests assert `tool`, `run_id`, and `task_kind` for session packet failures.
+
 ### Final-mode success requires a captured final message
 **Date:** 2026-07-08
 **Status:** Active

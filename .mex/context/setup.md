@@ -13,7 +13,7 @@ edges:
     condition: when specific technology versions or library details are needed
   - target: context/architecture.md
     condition: when understanding how components connect during setup
-last_updated: 2026-07-07
+last_updated: 2026-07-08
 ---
 
 # Setup
@@ -27,7 +27,7 @@ last_updated: 2026-07-07
 ## First-time Setup
 1. Run `npm ci`.
 2. Ensure `pi --list-models` works in the same environment that will launch the MCP server.
-3. Create `~/.codex/subagent007-pi/config.json` with at least `{"default_model_class":"C"}` when no alternate config path is set.
+3. Optionally create `~/.codex/subagent007-pi/config.json` to override or explicitly pin the default `{"default_model_class":"C"}` policy.
 4. Run `npm run build`.
 5. Run `npm test`.
 6. Register the built server with Codex using `codex mcp add subagent007-pi -- node "$(pwd)/dist/server.js"`.

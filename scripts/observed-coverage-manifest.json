@@ -16,6 +16,7 @@
     "start_run-missing-final-output",
     "start_run-local-capacity-exhaustion",
     "start_session_run-async-polling",
+    "start_session_run-packet-failure",
     "start_session_run-require-existing-missing",
     "get_run-run-not-found",
     "answer_run_input-caller-input",
@@ -51,6 +52,7 @@
     "start_run-missing-final-output": { "evidence_classes": ["protocol-deterministic"] },
     "start_run-local-capacity-exhaustion": { "evidence_classes": ["protocol-deterministic"] },
     "start_session_run-async-polling": { "evidence_classes": ["protocol-deterministic"] },
+    "start_session_run-packet-failure": { "evidence_classes": ["protocol-deterministic"] },
     "start_session_run-require-existing-missing": { "evidence_classes": ["protocol-deterministic"] },
     "get_run-run-not-found": { "evidence_classes": ["protocol-deterministic"] },
     "answer_run_input-caller-input": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
@@ -171,6 +173,12 @@
       "lifecycle_phases": ["async-start", "session-attempt", "packet-required-gate", "packet-closure", "polling", "terminal-snapshot"],
       "result_classes": ["session_async_polling"],
       "surfaces": ["start_session_run-async-polling", "run_subagent_session-valid-packet-closure"]
+    },
+    "start-session-packet-failure": {
+      "tool": "start_session_run",
+      "lifecycle_phases": ["async-start", "session-attempt", "packet-required-gate", "polling", "terminal-snapshot", "failure-log-correlation"],
+      "result_classes": ["start_session_packet_failure_logged"],
+      "surfaces": ["start_session_run-packet-failure"]
     },
     "start-session-require-existing-missing": {
       "tool": "start_session_run",
@@ -303,6 +311,7 @@
         "missing-final-output",
         "local-capacity-exhaustion",
         "start-session-run-async-polling",
+        "start-session-packet-failure",
         "start-session-require-existing-missing",
         "get-run-missing",
         "caller-input",
@@ -337,6 +346,7 @@
         "start_run-missing-final-output",
         "start_run-local-capacity-exhaustion",
         "start_session_run-async-polling",
+        "start_session_run-packet-failure",
         "start_session_run-require-existing-missing",
         "get_run-run-not-found",
         "answer_run_input-caller-input",

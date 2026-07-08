@@ -46,13 +46,16 @@ npm run build
 
 ## Config
 
+The config file is optional. When it is missing, the server uses model class `C`.
+Create the file only to override that default or preserve explicit local policy.
+
 Default config path:
 
 ```text
 ~/.codex/subagent007-pi/config.json
 ```
 
-Example:
+Example explicit policy:
 
 ```sh
 mkdir -p ~/.codex/subagent007-pi
@@ -71,7 +74,7 @@ Use model classes instead of concrete model IDs. The default class is `C`; calle
 
 Run `npm run models:reconcile` to compare calibrated concrete models with fresh source data from `pi --list-models`, OpenRouter `GET /api/v1/models`, and local Ollama `GET /api/tags`. The command exits nonzero when a calibrated model is missing or has drifted from a source; unavailable sources are reported as unverified instead of drift. Inventory reconciliation is separate from one-shot health.
 
-Run `npm run model-health:probe -- --model-class A --cwd /absolute/project/path` to record whether a class is usable for the `run_subagent` one-shot surface. The health file defaults to `~/.codex/subagent007-pi/model-health.json` and can be overridden with `SUBAGENT007_MODEL_HEALTH_PATH`; an unhealthy probe exits nonzero after writing its record. Unknown health is reported with `health_basis:"never_probed"` and does not block execution; cached probe results use `health_basis:"cached_probe"`. The health gate is `blocks_only_known_unhealthy`: only known unhealthy one-shot health fails `run_subagent` before the child process starts. Each health view includes `health_action` with the exact probe command to refresh that model class.
+Run `npm run model-health:probe -- --model-class C --cwd /absolute/project/path` to record whether a class is usable for the `run_subagent` one-shot surface. The health file defaults to `~/.codex/subagent007-pi/model-health.json` and can be overridden with `SUBAGENT007_MODEL_HEALTH_PATH`; an unhealthy probe exits nonzero after writing its record. Unknown health is reported with `health_basis:"never_probed"` and does not block execution; cached probe results use `health_basis:"cached_probe"`. The health gate is `blocks_only_known_unhealthy`: only known unhealthy one-shot health fails `run_subagent` before the child process starts. Each health view includes `health_action` with the exact probe command to refresh that model class.
 
 Run `npm run config:migrate` to canonicalize `default_model_class` or migrate a legacy `default_model` plus `default_thinking_level` pair when it exactly matches a known class calibration. The command honors `SUBAGENT007_CONFIG_PATH`, writes atomically, preserves unknown fields, and is not run automatically by server startup or model-class listing.
 
@@ -145,7 +148,7 @@ Result semantics:
 
 - `get_runtime_readiness` returns the concrete runtime snapshot from inside the running MCP server: resolved project root, server entrypoint, build/dist facts, git/source facts, durable-run contract compatibility, and public tool/capability surface. For pre-launch checks, use `npm run runtime:readiness`; it verifies `dist/server.js` exists before launching MCP, then calls `get_runtime_readiness`. A blocked result includes `status:"blocked"`, `ready:false`, and machine-readable `blocks[].class`.
   The default source policy is `require_clean`, which blocks dirty or unknown git state; `allow_dirty` permits dirty checkouts while still blocking unknown source state, and `allow_unknown` permits both dirty and unknown source state for package-style or exploratory probes.
-- `get_run_contract` returns the durable-run lifecycle contract. Version `1` defines non-terminal statuses `working` and `input_required`, terminal statuses `completed`, `failed`, `cancelled`, and `timed_out`, file-backed output references, bounded public excerpts, mailbox addressing by `run_id/request_id`, recursive lineage fields, and fail-closed restart drift behavior.
+- `get_run_contract` returns the durable-run lifecycle contract. Version `1` defines non-terminal statuses `working` and `input_required`, terminal statuses `completed`, `failed`, `cancelled`, and `timed_out`, file-backed output references, bounded public excerpts, mailbox addressing by `run_id/request_id`, recursive lineage fields, session start tools under `tools.session_start`, and fail-closed restart drift behavior.
 - Terminal views after child execution include `output_references` plus legacy `output_path`; read the referenced file for the full answer and check `written_output_mode`. Requested `final` output succeeds only when a final message is captured. A clean child exit without that final message fails with `reason_code:"missing_final_output"` and writes the public transcript as diagnostic output; timeout, cancellation, and other failures can also expose transcript output. Schema and preflight rejections do not create output artifacts.
 - Failed, timed-out, restart-drift, and structured rejection views include `error_class` and `reason_code` when the server can classify the failure; adapters should branch on those fields instead of parsing `error`.
 - Provider usage-limit failures use `reason_code:"usage_limit_reached"` and may include provider reset/retry fields such as `provider_status_code`, `provider_error_message`, `usage_limit_resets_in_seconds`, `usage_limit_retry_after_seconds`, and primary/secondary usage percentages. The same fields are copied to failure-log records.
@@ -303,7 +306,7 @@ npm run observed-campaign -- --campaign-id campaign.example-1 -- npm run observe
 
 Run the probe through `observed-campaign` for isolated temp state. Direct protocol-deterministic `observed-mcp-probe` runs require `SUBAGENT007_FAILURE_LOG_PATH` and either `SUBAGENT007_RECORD_SOURCE=test` or `SUBAGENT007_CAMPAIGN_ID`; their ledger path is `SUBAGENT007_CAMPAIGN_LEDGER_PATH`, or `campaign-ledger.jsonl` beside the failure log or in the current working directory.
 
-Only probe calls recorded in `campaign_ledger_path` should claim MCP call-attempt coverage. Server-side `failures.jsonl` remains handler and child failure telemetry; SDK schema rejections are recorded by the probe ledger as `call_schema_error`, structured child-invocation preflight rejections as `call_preflight_rejected`, and structured run-operation rejections as `call_operation_rejected`. The bundled MCP probe defaults to `protocol-core`; use `--profile full-current` for current deterministic surface coverage. That profile includes missing-final-output classification, local active-child capacity exhaustion/release, named-session `require_existing` missing-session preflight for both session tools, recursive delegate success lineage, depth-limit rejection, forged-lineage rejection, and absence of private recursive-control token/socket details in public artifacts. Profiles live in `scripts/observed-coverage-manifest.json` and fail closed when required surfaces are unknown, unselected, or covered only by an incompatible evidence class. Use `--mode live-model` only for live provider smoke evidence.
+Only probe calls recorded in `campaign_ledger_path` should claim MCP call-attempt coverage. Server-side `failures.jsonl` remains handler and child failure telemetry; SDK schema rejections are recorded by the probe ledger as `call_schema_error`, structured child-invocation preflight rejections as `call_preflight_rejected`, and structured run-operation rejections as `call_operation_rejected`. The bundled MCP probe defaults to `protocol-core`; use `--profile full-current` for current deterministic surface coverage. That profile includes missing-final-output classification, local active-child capacity exhaustion/release, named-session `require_existing` missing-session preflight for both session tools, `start_session_run` packet-failure telemetry correlation, recursive delegate success lineage, depth-limit rejection, forged-lineage rejection, and absence of private recursive-control token/socket details in public artifacts. Profiles live in `scripts/observed-coverage-manifest.json` and fail closed when required surfaces are unknown, unselected, or covered only by an incompatible evidence class. Use `--mode live-model` only for live provider smoke evidence.
 
 ## Development
 

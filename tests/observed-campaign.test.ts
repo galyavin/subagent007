@@ -319,6 +319,9 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
           forbidden_public_calibration_fields?: string[];
           failure_log_calibration_fields_absent?: boolean;
           forbidden_failure_log_calibration_fields?: string[];
+          failure_log_matching_tool?: string;
+          failure_log_matching_task_kind?: string;
+          failure_log_matching_run_id?: string;
           run_id?: string;
           status?: string;
           success?: boolean;
@@ -380,6 +383,7 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
   assert.ok(summary.scenarios.includes("local-capacity-exhaustion"));
   assert.ok(summary.scenarios.includes("schedule-run-durable-first"));
   assert.ok(summary.scenarios.includes("start-session-run-async-polling"));
+  assert.ok(summary.scenarios.includes("start-session-packet-failure"));
   assert.ok(summary.scenarios.includes("start-session-require-existing-missing"));
   assert.ok(summary.scenarios.includes("get-run-missing"));
   assert.ok(summary.scenarios.includes("caller-input"));
@@ -408,6 +412,7 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
   assert.ok(summary.coverage_summary.covered_surfaces.includes("start_run-local-capacity-exhaustion"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("schedule_run-durable-first"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("start_session_run-async-polling"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("start_session_run-packet-failure"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("start_session_run-require-existing-missing"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("get_run-run-not-found"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("answer_run_input-caller-input"));
@@ -950,6 +955,10 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
           forbidden_public_calibration_fields?: string[];
           failure_log_calibration_fields_absent?: boolean;
           forbidden_failure_log_calibration_fields?: string[];
+          failure_log_matching_tool?: string;
+          failure_log_matching_task_kind?: string;
+          failure_log_matching_run_id?: string;
+          run_id?: string;
         };
       }>;
     };
@@ -969,6 +978,7 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
     "start_run-missing-final-output",
     "start_run-local-capacity-exhaustion",
     "start_session_run-async-polling",
+    "start_session_run-packet-failure",
     "start_session_run-require-existing-missing",
     "get_run-run-not-found",
     "answer_run_input-caller-input",
@@ -993,6 +1003,15 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
   assert.deepEqual(toolListingScenario?.observed_result?.unexpected_tools, []);
   assert.equal(toolListingScenario?.observed_result?.skill_alias_guidance_clear, true);
   assert.deepEqual(toolListingScenario?.observed_result?.unclear_skill_alias_tools, []);
+  const startSessionPacketScenario = summary.coverage_summary.scenarios.find((scenario) =>
+    scenario.scenario === "start-session-packet-failure"
+  );
+  assert.equal(startSessionPacketScenario?.observed_result?.failure_log_matching_tool, "start_session_run");
+  assert.equal(startSessionPacketScenario?.observed_result?.failure_log_matching_task_kind, "session");
+  assert.equal(
+    startSessionPacketScenario?.observed_result?.failure_log_matching_run_id,
+    startSessionPacketScenario?.observed_result?.run_id,
+  );
   assert.equal(
     summary.coverage_summary.scenarios.every((scenario) =>
       scenario.observed_result?.public_calibration_fields_absent !== false &&
@@ -1021,7 +1040,7 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
       failure_log_calibration_fields_absent?: boolean;
       forbidden_failure_log_calibration_fields?: string[];
     }>;
-  for (const tool of ["schedule_run", "start_run", "get_run", "answer_run_input", "cancel_run", "run_subagent_session"]) {
+  for (const tool of ["schedule_run", "start_run", "get_run", "answer_run_input", "cancel_run", "start_session_run", "run_subagent_session"]) {
     assert.ok(events.some((event) => event.tool === tool), tool);
   }
   assert.ok(

@@ -9,6 +9,7 @@ import {
   failureClassForSessionResult,
   failureReasonCodeForSessionResult,
   logFailure,
+  type FailureLogTool,
 } from "./failureLog.js";
 import { resolveAllowedModelRef } from "./modelAllowlist.js";
 import { defaultSessionsDir } from "./output.js";
@@ -566,15 +567,17 @@ export async function runSubagentSession(
     rootRunId?: string;
     recursionDepth?: number;
     onOutputLine?: (line: string) => void | Promise<void>;
+    failureLogTool?: Extract<FailureLogTool, "start_session_run" | "run_subagent_session">;
   } = {},
 ): Promise<RunSubagentSessionResult> {
   assertNoRawSessionId(request);
+  const failureLogTool = options.failureLogTool ?? "run_subagent_session";
   const config = await loadConfig();
   const sessionKey = validateSessionKey(request.session_key);
   const resumeMode = validateResumeMode(request.resume_mode);
   const packetPolicy = validateSessionPacketPolicy(request.packet_policy);
   const resolvedBase = await validateAndResolveRequest(request, config);
-  assertDeadlineRiskTimeoutBudget(request, resolvedBase, "run_subagent_session");
+  assertDeadlineRiskTimeoutBudget(request, resolvedBase, failureLogTool);
   const cwd = await fs.realpath(resolvedBase.cwd);
   const resolved = { ...resolvedBase, cwd };
   const skillFilePath = resolveSkillFilePathForRequest(resolved);
@@ -783,10 +786,12 @@ export async function runSubagentSession(
     if (!result.success && result.run_record.stop_reason !== "cancelled") {
       const failureInput = { ...result, session_established: attemptSessionEstablished };
       await logFailure({
-        tool: "run_subagent_session",
+        tool: failureLogTool,
         failure_class: failureClassForSessionResult(failureInput, packetIsSatisfied),
         reason_code: failureReasonCodeForSessionResult(failureInput, packetIsSatisfied),
         cwd,
+        run_id: options.childRunId ?? runRecord.run_id,
+        task_kind: "session",
         output_path: result.output_path,
         session_key: result.session_key,
         session_dir: result.session_dir,

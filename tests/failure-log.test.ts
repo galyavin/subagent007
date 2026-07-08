@@ -750,7 +750,7 @@ test("run_subagent_session logs non-ready required packets as packet failures", 
     });
 
     assert.notEqual(response.isError, true);
-    const metadata = response.structuredContent as { success: boolean; packet_parse_status: string };
+    const metadata = response.structuredContent as { run_id: string; success: boolean; packet_parse_status: string };
     assert.equal(metadata.success, false);
     assert.equal(metadata.packet_parse_status, "valid");
     const failures = await readJsonl<FailureRecord>(failureLogPath);
@@ -758,6 +758,36 @@ test("run_subagent_session logs non-ready required packets as packet failures", 
     assert.equal(failures[0].tool, "run_subagent_session");
     assert.equal(failures[0].failure_class, "packet_failed");
     assert.equal(failures[0].reason_code, "packet_required_not_ready");
+    assert.equal(failures[0].run_id, metadata.run_id);
+    assert.equal(failures[0].task_kind, "session");
+  });
+});
+
+test("start_session_run logs packet failures with async session caller context", async () => {
+  await withFakeClient(async (client, { projectDir, failureLogPath }) => {
+    const response = await client.callTool({
+      name: "start_session_run",
+      arguments: {
+        cwd: projectDir,
+        session_key: "coherent-execution:T000-start-session-packet-not-ready",
+        resume_mode: "new",
+        prompt: "PACKET_INCONCLUSIVE",
+        packet_policy: "required",
+      },
+    });
+
+    assert.notEqual(response.isError, true);
+    const started = response.structuredContent as { run_id: string; status: string };
+    assert.equal(started.status, "working");
+    await waitForRunStatus(client, started.run_id, "failed");
+
+    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].tool, "start_session_run");
+    assert.equal(failures[0].failure_class, "packet_failed");
+    assert.equal(failures[0].reason_code, "packet_required_not_ready");
+    assert.equal(failures[0].run_id, started.run_id);
+    assert.equal(failures[0].task_kind, "session");
   });
 });
 

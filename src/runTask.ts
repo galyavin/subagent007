@@ -1535,6 +1535,7 @@ export async function startSessionRunTask(
         mailboxRoot: state.mailboxRoot,
         childRunId: state.runId,
         taskId: state.runId,
+        failureLogTool,
         ...taskRecursiveRuntimeOptions(state),
         ...taskChildRuntimeOptions(state, options),
       });

@@ -749,6 +749,10 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       contract_version?: number;
       statuses?: { non_terminal?: string[]; terminal?: string[] };
       capabilities?: string[];
+      tools?: {
+        start?: string[];
+        session_start?: string[];
+      };
       input_mailbox?: {
         waiting_status_terminal?: boolean;
         pending_cardinality?: string;
@@ -767,6 +771,8 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.equal(contract.capabilities?.includes("file_backed_output_references"), true);
     assert.equal(contract.capabilities?.includes("restart_drift_fail_closed"), true);
     assert.equal(contract.capabilities?.includes("recursive_delegate_lineage"), true);
+    assert.deepEqual(contract.tools?.start, ["start_run", "schedule_run"]);
+    assert.deepEqual(contract.tools?.session_start, ["start_session_run", "run_subagent_session"]);
     assert.equal(contract.input_mailbox?.waiting_status_terminal, false);
     assert.equal(contract.input_mailbox?.pending_cardinality, "zero_or_more");
     assert.equal(contract.input_mailbox?.safe_auto_answer, "exactly_one_pending");

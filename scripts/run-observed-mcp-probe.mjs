@@ -360,6 +360,15 @@ function responseMatchesResultShape(response, resultClass) {
       response.packet_parse_status === "valid" &&
       response.packet_closure_valid === true;
   }
+  if (resultClass === "start_session_packet_failure_logged") {
+    return response.success === false &&
+      response.status === "failed" &&
+      response.reason_code === "packet_required_not_ready" &&
+      response.packet_parse_status === "valid" &&
+      response.failure_log_matching_tool === "start_session_run" &&
+      response.failure_log_matching_task_kind === "session" &&
+      response.failure_log_matching_run_id === response.run_id;
+  }
   if (resultClass === "session_require_existing_missing") {
     return response.kind === "preflight_rejected" &&
       response.status === "rejected" &&
@@ -1408,6 +1417,41 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
       response: {
         ...(terminal.response ?? {}),
         polled: true,
+      },
+      failure_log_delta_count: started.failure_log_delta_count + (terminal.failure_log_delta_count ?? 0),
+    };
+  }
+
+  if (scenario === "start-session-packet-failure") {
+    const started = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "start_session_run",
+      args: {
+        cwd,
+        prompt: "PACKET_INCONCLUSIVE",
+        session_key: `campaign-probe-start-session-packet:${Date.now()}:${randomUUID().slice(0, 8)}`,
+        resume_mode: "new",
+        packet_policy: "required",
+      },
+    });
+    const terminal = started.response?.run_id
+      ? await waitForRun(client, ledgerPath, evidenceClass, scenario, started.response.run_id, (response) =>
+          response?.status === "failed",
+        )
+      : started;
+    const failureRecords = await readFailureRecords();
+    const matchingFailure = failureRecords.find((record) =>
+      record?.run_id === started.response?.run_id &&
+        record?.reason_code === "packet_required_not_ready"
+    );
+    return {
+      ...terminal,
+      tool: "start_session_run",
+      response: {
+        ...(terminal.response ?? {}),
+        polled: true,
+        failure_log_matching_tool: matchingFailure?.tool,
+        failure_log_matching_task_kind: matchingFailure?.task_kind,
+        failure_log_matching_run_id: matchingFailure?.run_id,
       },
       failure_log_delta_count: started.failure_log_delta_count + (terminal.failure_log_delta_count ?? 0),
     };

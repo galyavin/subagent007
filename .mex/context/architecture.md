@@ -27,7 +27,7 @@ Server-authored prompt provenance uses `src/prompt.ts` to project caller prompt 
 Server-launched children receive a private recursive control payload in the child request file. `src/piChild.ts` exposes it only as a native `delegate` tool; `src/recursiveControl.ts` validates the private token and recursion depth, then `src/runTask.ts` validates caller lineage against active parent run state before the parent scheduler creates a descendant. Parent run views project recursive child lifecycle through sanitized `recursive_child_started` and `recursive_child_finished` public events so callers can see descendant start and terminal status/success without reading private recursive-control payloads.
 `get_run`, `answer_run_input`, and `cancel_run` operate on local filesystem-backed run snapshots and input mailbox records.
 Operation-only semantic failures from those run-operation tools project as `kind:"operation_rejected"` instead of MCP text errors; child-invocation preflight failures remain `kind:"preflight_rejected"` with `child_started:false`.
-Named sessions add `src/session.ts` manifest/ledger/lock handling around the same child execution path. Manifest eligibility failures known before launch, such as missing `require_existing` sessions, reject before durable task registration with `preflight_rejected` and `child_started:false`; locked execution checks still run later as race protection.
+Named sessions add `src/session.ts` manifest/ledger/lock handling around the same child execution path. Manifest eligibility failures known before launch, such as missing `require_existing` sessions, reject before durable task registration with `preflight_rejected` and `child_started:false`; locked execution checks still run later as race protection. Terminal session failures logged after durable task creation preserve the caller tool, durable `run_id`, and `task_kind:"session"` so telemetry can be correlated with public run views.
 
 ## Key Components
 - `server.ts` - MCP tool surface, schema/preflight rejection shape, retry guidance, and failure logging for handler-level failures.
@@ -36,7 +36,7 @@ Named sessions add `src/session.ts` manifest/ledger/lock handling around the sam
 - `runSubagent.ts` - child request-file contract, Pi child invocation, transcript/final-output handling, missing-final classification, timeout metadata, provider error parsing, recursive control payload injection, and skill audit metadata.
 - `recursiveControl.ts` / `recursiveDelegateTool.ts` - private local IPC and child-facing `delegate` tool for recursive Subagent007 calls; the child tool is a client, not an owner of durable task state.
 - `processRunner.ts` - detached child process execution, timeout/cancel termination, heartbeat notifications, and parent-exit process-group cleanup.
-- `session.ts` - named-session manifests, read-only preflight eligibility checks, candidate ledgers, packet policy, skill/cwd immutability, and local session locks. Required packet failures distinguish missing, malformed, and parse-valid not-ready packets by reason code.
+- `session.ts` - named-session manifests, read-only preflight eligibility checks, candidate ledgers, packet policy, skill/cwd immutability, local session locks, and session terminal failure telemetry with durable caller context. Required packet failures distinguish missing, malformed, and parse-valid not-ready packets by reason code.
 - `runtimeReadiness.ts` - built-entrypoint, source-state, contract, and public-tool readiness checks.
 
 ## External Dependencies
