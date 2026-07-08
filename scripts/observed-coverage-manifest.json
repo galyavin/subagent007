@@ -13,7 +13,10 @@
     "run_subagent-timeout-recovery",
     "schedule_run-durable-first",
     "start_run-async-polling",
+    "start_run-missing-final-output",
+    "start_run-local-capacity-exhaustion",
     "start_session_run-async-polling",
+    "start_session_run-require-existing-missing",
     "get_run-run-not-found",
     "answer_run_input-caller-input",
     "answer_run_input-wrong-request-rejection",
@@ -24,6 +27,7 @@
     "run_subagent_session-packet-failure",
     "run_subagent_session-valid-packet-closure",
     "run_subagent_session-invalid-packet-closure",
+    "run_subagent_session-require-existing-missing",
     "installed-pi-integration",
     "recursive-delegate-success-lineage",
     "recursive-delegate-parent-terminal-child-finish-event",
@@ -44,7 +48,10 @@
     "run_subagent-timeout-recovery": { "evidence_classes": ["protocol-deterministic"] },
     "schedule_run-durable-first": { "evidence_classes": ["protocol-deterministic"] },
     "start_run-async-polling": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
+    "start_run-missing-final-output": { "evidence_classes": ["protocol-deterministic"] },
+    "start_run-local-capacity-exhaustion": { "evidence_classes": ["protocol-deterministic"] },
     "start_session_run-async-polling": { "evidence_classes": ["protocol-deterministic"] },
+    "start_session_run-require-existing-missing": { "evidence_classes": ["protocol-deterministic"] },
     "get_run-run-not-found": { "evidence_classes": ["protocol-deterministic"] },
     "answer_run_input-caller-input": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
     "answer_run_input-wrong-request-rejection": { "evidence_classes": ["protocol-deterministic"] },
@@ -55,6 +62,7 @@
     "run_subagent_session-packet-failure": { "evidence_classes": ["protocol-deterministic"] },
     "run_subagent_session-valid-packet-closure": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
     "run_subagent_session-invalid-packet-closure": { "evidence_classes": ["protocol-deterministic"] },
+    "run_subagent_session-require-existing-missing": { "evidence_classes": ["protocol-deterministic"] },
     "installed-pi-integration": { "evidence_classes": ["live-model-smoke"] },
     "recursive-delegate-success-lineage": { "evidence_classes": ["protocol-deterministic"] },
     "recursive-delegate-parent-terminal-child-finish-event": { "evidence_classes": ["protocol-deterministic"] },
@@ -146,11 +154,29 @@
       "result_classes": ["async_polling"],
       "surfaces": ["start_run-async-polling"]
     },
+    "missing-final-output": {
+      "tool": "start_run",
+      "lifecycle_phases": ["async-start", "final-output-contract", "polling", "terminal-snapshot"],
+      "result_classes": ["missing_final_output"],
+      "surfaces": ["start_run-missing-final-output"]
+    },
+    "local-capacity-exhaustion": {
+      "tool": "start_run",
+      "lifecycle_phases": ["async-start", "local-capacity", "handler-validation", "cancellation", "terminal-snapshot"],
+      "result_classes": ["local_capacity_exhaustion_release"],
+      "surfaces": ["start_run-local-capacity-exhaustion"]
+    },
     "start-session-run-async-polling": {
       "tool": "start_session_run",
       "lifecycle_phases": ["async-start", "session-attempt", "packet-required-gate", "packet-closure", "polling", "terminal-snapshot"],
       "result_classes": ["session_async_polling"],
       "surfaces": ["start_session_run-async-polling", "run_subagent_session-valid-packet-closure"]
+    },
+    "start-session-require-existing-missing": {
+      "tool": "start_session_run",
+      "lifecycle_phases": ["session-attempt", "session-manifest-preflight", "handler-validation"],
+      "result_classes": ["session_require_existing_missing"],
+      "surfaces": ["start_session_run-require-existing-missing"]
     },
     "schedule-run-durable-first": {
       "tool": "schedule_run",
@@ -205,6 +231,12 @@
       "lifecycle_phases": ["session-attempt", "packet-required-gate", "packet-closure"],
       "result_classes": ["invalid_packet_closure"],
       "surfaces": ["run_subagent_session-invalid-packet-closure"]
+    },
+    "run-subagent-session-require-existing-missing": {
+      "tool": "run_subagent_session",
+      "lifecycle_phases": ["session-attempt", "session-manifest-preflight", "handler-validation"],
+      "result_classes": ["session_require_existing_missing"],
+      "surfaces": ["run_subagent_session-require-existing-missing"]
     },
     "installed-pi-integration": {
       "tool": "run_subagent",
@@ -268,7 +300,10 @@
         "timeout-recovery",
         "schedule-run-durable-first",
         "start-run-async-polling",
+        "missing-final-output",
+        "local-capacity-exhaustion",
         "start-session-run-async-polling",
+        "start-session-require-existing-missing",
         "get-run-missing",
         "caller-input",
         "caller-input-wrong-request",
@@ -278,6 +313,7 @@
         "packet-failure",
         "session-valid-closure",
         "session-invalid-closure",
+        "run-subagent-session-require-existing-missing",
         "transcript-redaction",
         "recursive-delegate-success",
         "recursive-delegate-parent-terminal-child-finish",
@@ -298,7 +334,10 @@
         "run_subagent-timeout-recovery",
         "schedule_run-durable-first",
         "start_run-async-polling",
+        "start_run-missing-final-output",
+        "start_run-local-capacity-exhaustion",
         "start_session_run-async-polling",
+        "start_session_run-require-existing-missing",
         "get_run-run-not-found",
         "answer_run_input-caller-input",
         "answer_run_input-wrong-request-rejection",
@@ -309,6 +348,7 @@
         "run_subagent_session-packet-failure",
         "run_subagent_session-valid-packet-closure",
         "run_subagent_session-invalid-packet-closure",
+        "run_subagent_session-require-existing-missing",
         "recursive-delegate-success-lineage",
         "recursive-delegate-parent-terminal-child-finish-event",
         "recursive-delegate-depth-limit",

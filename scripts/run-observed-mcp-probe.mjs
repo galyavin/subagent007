@@ -306,6 +306,16 @@ function responseMatchesResultShape(response, resultClass) {
       typeof response.exit_code === "number" &&
       response.exit_code !== 0;
   }
+  if (resultClass === "missing_final_output") {
+    return response.success === false &&
+      response.status === "failed" &&
+      response.exit_code === 0 &&
+      response.timed_out === false &&
+      response.reason_code === "missing_final_output" &&
+      response.requested_output_mode === "final" &&
+      response.written_output_mode === "transcript" &&
+      response.output_reference_modes.includes("transcript");
+  }
   if (resultClass === "packet_required_not_ready") {
     return response.success === false &&
       response.reason_code === "packet_required_not_ready" &&
@@ -349,6 +359,24 @@ function responseMatchesResultShape(response, resultClass) {
       response.session_established === true &&
       response.packet_parse_status === "valid" &&
       response.packet_closure_valid === true;
+  }
+  if (resultClass === "session_require_existing_missing") {
+    return response.kind === "preflight_rejected" &&
+      response.status === "rejected" &&
+      response.success === false &&
+      response.reason_code === "session_does_not_exist" &&
+      response.child_started === false &&
+      response.run_id === undefined;
+  }
+  if (resultClass === "local_capacity_exhaustion_release") {
+    return response.capacity_rejected === true &&
+      response.kind === "preflight_rejected" &&
+      response.status === "rejected" &&
+      response.reason_code === "local_capacity_exhausted" &&
+      response.child_started === false &&
+      response.cleanup_status === "cancelled" &&
+      response.after_release_status === "completed" &&
+      response.after_release_success === true;
   }
   if (resultClass === "run_not_found") {
     return response.kind === "operation_rejected" &&
@@ -594,6 +622,8 @@ async function createDeterministicFakeChild() {
       "  setInterval(() => {}, 1000);",
       "} else if (request.prompt.includes('HEARTBEAT_SLEEP')) {",
       "  setTimeout(() => writeFinal('HEARTBEAT DONE'), 160);",
+      "} else if (request.prompt.includes('CLEAN_EXIT_NO_FINAL')) {",
+      "  writeEvent({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'PUBLIC DIAGNOSTIC ONLY' }] } });",
       "} else if (request.prompt.includes('CANCEL_WAIT')) {",
       "  setInterval(() => {}, 1000);",
       "} else if (request.prompt.includes('REQUEST_INPUT_WAIT')) {",
@@ -882,6 +912,17 @@ function responseSummary(response) {
       ? structured.exit_code
       : undefined,
     timed_out: typeof structured.timed_out === "boolean" ? structured.timed_out : undefined,
+    requested_output_mode: typeof structured.requested_output_mode === "string"
+      ? structured.requested_output_mode
+      : undefined,
+    written_output_mode: typeof structured.written_output_mode === "string"
+      ? structured.written_output_mode
+      : undefined,
+    output_reference_modes: Array.isArray(structured.output_references)
+      ? structured.output_references
+          .map((reference) => reference?.output_mode)
+          .filter((value) => typeof value === "string")
+      : [],
     packet_parse_status: typeof structured.packet_parse_status === "string"
       ? structured.packet_parse_status
       : undefined,
@@ -1274,6 +1315,77 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
     };
   }
 
+  if (scenario === "missing-final-output") {
+    const started = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "start_run",
+      args: { cwd, prompt: "CLEAN_EXIT_NO_FINAL", output_mode: "final" },
+    });
+    const terminal = started.response?.run_id
+      ? await waitForRun(client, ledgerPath, evidenceClass, scenario, started.response.run_id, (response) =>
+          response?.status === "failed",
+        )
+      : started;
+    return {
+      ...terminal,
+      tool: "start_run",
+      response: {
+        ...(terminal.response ?? {}),
+        polled: true,
+      },
+      failure_log_delta_count: started.failure_log_delta_count + (terminal.failure_log_delta_count ?? 0),
+    };
+  }
+
+  if (scenario === "local-capacity-exhaustion") {
+    const started = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "start_run",
+      args: { cwd, prompt: "CANCEL_WAIT", timeout_ms: 6000 },
+    });
+    if (!started.response?.run_id) {
+      return started;
+    }
+    const rejected = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "start_run",
+      args: { cwd, prompt: "FAST", timeout_ms: 6000 },
+    });
+    const cancelled = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "cancel_run",
+      args: { run_id: started.response.run_id },
+    });
+    const settled = await waitForRun(client, ledgerPath, evidenceClass, scenario, started.response.run_id, (response) =>
+      response?.status === "cancelled",
+    );
+    const afterRelease = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "start_run",
+      args: { cwd, prompt: "FAST", timeout_ms: 6000 },
+    });
+    const afterReleaseTerminal = afterRelease.response?.run_id
+      ? await waitForRun(client, ledgerPath, evidenceClass, scenario, afterRelease.response.run_id, (response) =>
+          response?.status === "completed",
+        )
+      : afterRelease;
+    return {
+      ...rejected,
+      tool: "start_run",
+      response: {
+        ...(rejected.response ?? {}),
+        capacity_rejected:
+          rejected.response?.kind === "preflight_rejected" &&
+          rejected.response?.reason_code === "local_capacity_exhausted",
+        cleanup_status: settled.response?.status ?? cancelled.response?.status,
+        after_release_status: afterReleaseTerminal.response?.status,
+        after_release_success: afterReleaseTerminal.response?.success,
+      },
+      failure_log_delta_count:
+        started.failure_log_delta_count +
+        rejected.failure_log_delta_count +
+        cancelled.failure_log_delta_count +
+        (settled.failure_log_delta_count ?? 0) +
+        afterRelease.failure_log_delta_count +
+        (afterReleaseTerminal.failure_log_delta_count ?? 0),
+    };
+  }
+
   if (scenario === "start-session-run-async-polling") {
     const started = await runCall(client, ledgerPath, evidenceClass, scenario, {
       tool: "start_session_run",
@@ -1299,6 +1411,32 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
       },
       failure_log_delta_count: started.failure_log_delta_count + (terminal.failure_log_delta_count ?? 0),
     };
+  }
+
+  if (scenario === "start-session-require-existing-missing") {
+    return runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "start_session_run",
+      args: {
+        cwd,
+        prompt: "FAST",
+        session_key: `campaign-probe-missing-start-session:${Date.now()}:${randomUUID().slice(0, 8)}`,
+        resume_mode: "require_existing",
+        packet_policy: "none",
+      },
+    });
+  }
+
+  if (scenario === "run-subagent-session-require-existing-missing") {
+    return runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "run_subagent_session",
+      args: {
+        cwd,
+        prompt: "FAST",
+        session_key: `campaign-probe-missing-run-session:${Date.now()}:${randomUUID().slice(0, 8)}`,
+        resume_mode: "require_existing",
+        packet_policy: "none",
+      },
+    });
   }
 
   if (scenario === "caller-input") {
@@ -1663,6 +1801,28 @@ try {
         );
       } finally {
         await limitedClient.close();
+      }
+      client = await connectClient();
+      continue;
+    }
+    if (scenario === "local-capacity-exhaustion") {
+      await client.close();
+      const capacityClient = await connectClient({
+        SUBAGENT007_MAX_ACTIVE_CHILDREN: "1",
+        SUBAGENT007_ACTIVE_CHILDREN_DIR: path.join(path.dirname(ledgerPath), "active-children"),
+      });
+      try {
+        results.push(
+          await runScenario(
+            capacityClient,
+            ledgerPath,
+            evidenceClass,
+            scenario,
+            parsed.options.cwd,
+          ),
+        );
+      } finally {
+        await capacityClient.close();
       }
       client = await connectClient();
       continue;

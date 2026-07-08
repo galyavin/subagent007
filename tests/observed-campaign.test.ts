@@ -320,6 +320,18 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
           failure_log_calibration_fields_absent?: boolean;
           forbidden_failure_log_calibration_fields?: string[];
           run_id?: string;
+          status?: string;
+          success?: boolean;
+          kind?: string;
+          reason_code?: string;
+          child_started?: boolean;
+          requested_output_mode?: string;
+          written_output_mode?: string;
+          output_reference_modes?: string[];
+          capacity_rejected?: boolean;
+          cleanup_status?: string;
+          after_release_status?: string;
+          after_release_success?: boolean;
           delegated_status?: string;
           delegated_run_id?: string;
           delegated_kind?: string;
@@ -364,8 +376,11 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
   assert.ok(summary.scenarios.includes("model-listing-alias"));
   assert.ok(summary.scenarios.includes("auto-promotion"));
   assert.ok(summary.scenarios.includes("start-run-async-polling"));
+  assert.ok(summary.scenarios.includes("missing-final-output"));
+  assert.ok(summary.scenarios.includes("local-capacity-exhaustion"));
   assert.ok(summary.scenarios.includes("schedule-run-durable-first"));
   assert.ok(summary.scenarios.includes("start-session-run-async-polling"));
+  assert.ok(summary.scenarios.includes("start-session-require-existing-missing"));
   assert.ok(summary.scenarios.includes("get-run-missing"));
   assert.ok(summary.scenarios.includes("caller-input"));
   assert.ok(summary.scenarios.includes("caller-input-wrong-request"));
@@ -374,6 +389,7 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
   assert.ok(summary.scenarios.includes("restart-drift"));
   assert.ok(summary.scenarios.includes("session-valid-closure"));
   assert.ok(summary.scenarios.includes("session-invalid-closure"));
+  assert.ok(summary.scenarios.includes("run-subagent-session-require-existing-missing"));
   assert.ok(summary.scenarios.includes("recursive-delegate-success"));
   assert.ok(summary.scenarios.includes("recursive-delegate-parent-terminal-child-finish"));
   assert.ok(summary.scenarios.includes("recursive-delegate-depth-limit"));
@@ -388,14 +404,18 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
   assert.ok(summary.coverage_summary.covered_surfaces.includes("run_subagent-auto-promotion"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("run_subagent_session-packet-failure"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("start_run-async-polling"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("start_run-missing-final-output"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("start_run-local-capacity-exhaustion"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("schedule_run-durable-first"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("start_session_run-async-polling"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("start_session_run-require-existing-missing"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("get_run-run-not-found"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("answer_run_input-caller-input"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("answer_run_input-wrong-request-rejection"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("cancel_run-cancellation-settlement"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("cancel_run-terminal-idempotency"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("get_run-restart-drift"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("run_subagent_session-require-existing-missing"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("transcript-redaction"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("recursive-delegate-success-lineage"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("recursive-delegate-parent-terminal-child-finish-event"));
@@ -419,6 +439,43 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
   );
   assert.equal(redactionScenario?.evidence_satisfied, true);
   assert.equal(redactionScenario?.observed_result?.transcript_redacted, true);
+  const missingFinal = summary.coverage_summary.scenarios.find((scenario) =>
+    scenario.scenario === "missing-final-output"
+  );
+  assert.equal(missingFinal?.evidence_satisfied, true);
+  assert.equal(missingFinal?.observed_result?.status, "failed");
+  assert.equal(missingFinal?.observed_result?.success, false);
+  assert.equal(missingFinal?.observed_result?.reason_code, "missing_final_output");
+  assert.equal(missingFinal?.observed_result?.requested_output_mode, "final");
+  assert.equal(missingFinal?.observed_result?.written_output_mode, "transcript");
+  assert.equal(missingFinal?.observed_result?.output_reference_modes?.includes("transcript"), true);
+  const startSessionMissing = summary.coverage_summary.scenarios.find((scenario) =>
+    scenario.scenario === "start-session-require-existing-missing"
+  );
+  assert.equal(startSessionMissing?.evidence_satisfied, true);
+  assert.equal(startSessionMissing?.observed_result?.kind, "preflight_rejected");
+  assert.equal(startSessionMissing?.observed_result?.reason_code, "session_does_not_exist");
+  assert.equal(startSessionMissing?.observed_result?.child_started, false);
+  assert.equal(startSessionMissing?.observed_result?.run_id, undefined);
+  const runSessionMissing = summary.coverage_summary.scenarios.find((scenario) =>
+    scenario.scenario === "run-subagent-session-require-existing-missing"
+  );
+  assert.equal(runSessionMissing?.evidence_satisfied, true);
+  assert.equal(runSessionMissing?.observed_result?.kind, "preflight_rejected");
+  assert.equal(runSessionMissing?.observed_result?.reason_code, "session_does_not_exist");
+  assert.equal(runSessionMissing?.observed_result?.child_started, false);
+  assert.equal(runSessionMissing?.observed_result?.run_id, undefined);
+  const localCapacity = summary.coverage_summary.scenarios.find((scenario) =>
+    scenario.scenario === "local-capacity-exhaustion"
+  );
+  assert.equal(localCapacity?.evidence_satisfied, true);
+  assert.equal(localCapacity?.observed_result?.capacity_rejected, true);
+  assert.equal(localCapacity?.observed_result?.kind, "preflight_rejected");
+  assert.equal(localCapacity?.observed_result?.reason_code, "local_capacity_exhausted");
+  assert.equal(localCapacity?.observed_result?.child_started, false);
+  assert.equal(localCapacity?.observed_result?.cleanup_status, "cancelled");
+  assert.equal(localCapacity?.observed_result?.after_release_status, "completed");
+  assert.equal(localCapacity?.observed_result?.after_release_success, true);
   const recursiveSuccess = summary.coverage_summary.scenarios.find((scenario) =>
     scenario.scenario === "recursive-delegate-success"
   );
@@ -909,7 +966,10 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
     "run_subagent-timeout-recovery",
     "schedule_run-durable-first",
     "start_run-async-polling",
+    "start_run-missing-final-output",
+    "start_run-local-capacity-exhaustion",
     "start_session_run-async-polling",
+    "start_session_run-require-existing-missing",
     "get_run-run-not-found",
     "answer_run_input-caller-input",
     "answer_run_input-wrong-request-rejection",
@@ -918,6 +978,7 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
     "get_run-restart-drift",
     "run_subagent_session-valid-packet-closure",
     "run_subagent_session-invalid-packet-closure",
+    "run_subagent_session-require-existing-missing",
   ]) {
     assert.ok(summary.coverage_summary.covered_surfaces.includes(surface), surface);
   }
