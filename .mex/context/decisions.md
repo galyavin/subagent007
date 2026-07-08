@@ -12,12 +12,20 @@ edges:
     condition: when a decision relates to system structure
   - target: context/stack.md
     condition: when a decision relates to technology choice
-last_updated: 2026-07-07
+last_updated: 2026-07-08
 ---
 
 # Decisions
 
 ## Decision Log
+
+### Final-mode success requires a captured final message
+**Date:** 2026-07-08
+**Status:** Active
+**Decision:** Runs that request `output_mode:"final"` fail with `reason_code:"missing_final_output"` when the child process exits cleanly but no final message artifact is captured.
+**Reasoning:** A clean process exit only proves the child stopped. It does not prove the caller received the verdict they asked for, and treating a progress transcript as success made unattended campaign episodes look healthy after a child stalled before finalization.
+**Alternatives considered:** Add a designer-in-chief-specific smoke check (rejected because the failure is a generic final-output contract breach), keep falling back to transcript success (rejected because it hides missing verdicts), or infer success from side effects/artifacts (rejected because the public contract is the requested output mode).
+**Consequences:** Public run results, named-session projections, and failure logs use `missing_final_output`; transcript fallback remains diagnostic output for failures/timeouts/cancellations, not a substitute success path for requested final output.
 
 ### Named-session manifest eligibility preflights before durable task registration
 **Date:** 2026-07-04

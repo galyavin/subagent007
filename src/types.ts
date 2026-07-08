@@ -47,6 +47,7 @@ export type FailureReasonCode =
   | "local_capacity_exhausted"
   | "timeout_underbudget_for_deadline_risk"
   | "missing_session_id"
+  | "missing_final_output"
   | "nonzero_exit"
   | "packet_required_invalid"
   | "packet_required_missing"

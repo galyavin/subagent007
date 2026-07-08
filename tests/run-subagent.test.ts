@@ -61,6 +61,7 @@ type RunSubagentMetadata = {
   effective_wait_ms?: number;
   wait_truncated?: boolean;
   requested_skill?: string | null;
+  requested_output_mode?: "final" | "transcript";
   resolved_skill_path?: string | null;
   resolved_skill_sha256?: string | null;
   auto_promoted_from?: "run_subagent";
@@ -1304,6 +1305,7 @@ test("run_subagent writes public transcripts without thinking event payloads", a
         cwd: projectDir,
         prompt: "RAW_THINKING_TRANSCRIPT SECRET_PROMPT_SHOULD_NOT_LEAK",
         run_kind: "quick_noninteractive",
+        output_mode: "transcript",
       },
     });
     assert.notEqual(response.isError, true);
@@ -1332,6 +1334,7 @@ test("run_subagent raw public event file omits thinking payloads", async () => {
           cwd: projectDir,
           prompt: "RAW_THINKING_TRANSCRIPT SECRET_PROMPT_SHOULD_NOT_LEAK",
           run_kind: "quick_noninteractive",
+          output_mode: "transcript",
         },
       });
       assert.notEqual(response.isError, true);
@@ -1922,6 +1925,93 @@ test("MCP start_run/get_run completes asynchronously with the same child contrac
     assert.equal(terminal.output_references?.[0].output_mode, terminal.written_output_mode);
     assert.equal(terminal.output_references?.[0].size_bytes, Buffer.byteLength("FAST FINAL", "utf8"));
   });
+});
+
+test("MCP start_run final mode completes after generic side-effect progress", async () => {
+  await connectFakeClient(async (client, { projectDir }) => {
+    const startedResponse = await client.callTool({
+      name: "start_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "SIDE_EFFECT_THEN_FINAL",
+        output_mode: "final",
+      },
+    });
+    assert.notEqual(startedResponse.isError, true);
+    const started = startedResponse.structuredContent as RunSubagentMetadata;
+
+    const terminal = await waitForTerminalRun(client, started.run_id);
+    assert.equal(terminal.status, "completed");
+    assert.equal(terminal.success, true);
+    assert.equal(terminal.requested_output_mode, "final");
+    assert.equal(terminal.written_output_mode, "final");
+    assert.equal(await fs.readFile(path.join(projectDir, "side-effect.txt"), "utf8"), "side effect complete\n");
+    assert.equal(await fs.readFile(terminal.output_path, "utf8"), "SIDE EFFECT FINAL");
+    assert.ok(terminal.recent_events?.some((event) => /PUBLIC SIDE EFFECT PROGRESS/.test(event.text)));
+  });
+});
+
+test("MCP start_run final mode fails when a clean child exit produces no final output", async () => {
+  await connectFakeClient(async (client, { projectDir }) => {
+    const startedResponse = await client.callTool({
+      name: "start_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "CLEAN_EXIT_NO_FINAL",
+        output_mode: "final",
+      },
+    });
+    assert.notEqual(startedResponse.isError, true);
+    const started = startedResponse.structuredContent as RunSubagentMetadata;
+
+    const terminal = await waitForTerminalRun(client, started.run_id);
+    assert.equal(terminal.status, "failed");
+    assert.equal(terminal.success, false);
+    assert.equal(terminal.exit_code, 0);
+    assert.equal(terminal.timed_out, false);
+    assert.equal(terminal.error_class, "missing_final_output");
+    assert.equal(terminal.reason_code, "missing_final_output");
+    assert.equal(terminal.requested_output_mode, "final");
+    assert.equal(terminal.written_output_mode, "transcript");
+    assert.equal(terminal.output_references?.[0].output_mode, "transcript");
+    assert.equal(await fs.readFile(path.join(projectDir, "side-effect-no-final.txt"), "utf8"), "side effect complete\n");
+  });
+});
+
+test("MCP start_run final mode keeps progress-then-timeout classified as timeout", async () => {
+  await connectFakeClient(
+    async (client, { projectDir }) => {
+      const startedResponse = await client.callTool({
+        name: "start_run",
+        arguments: {
+          cwd: projectDir,
+          prompt: "TIMEOUT_ASSISTANT_EVENT",
+          output_mode: "final",
+          timeout_ms: 500,
+        },
+      });
+      assert.notEqual(startedResponse.isError, true);
+      const started = startedResponse.structuredContent as RunSubagentMetadata;
+
+      const terminal = await waitForTerminalRun(client, started.run_id);
+      assert.equal(terminal.status, "timed_out");
+      assert.equal(terminal.success, false);
+      assert.equal(terminal.timed_out, true);
+      assert.equal(terminal.error_class, "timeout");
+      assert.equal(terminal.reason_code, "timeout");
+      assert.equal(terminal.written_output_mode, "transcript");
+      assert.equal(terminal.partial_output_available, true);
+      assert.match(await fs.readFile(terminal.output_path, "utf8"), /PUBLIC PARTIAL ASSISTANT/);
+    },
+    {
+      env: {
+        SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS: "0",
+        SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS: "100",
+        SUBAGENT007_TIMEOUT_KILL_GRACE_MS: "50",
+        SUBAGENT007_TIMEOUT_FORCE_GRACE_MS: "50",
+      },
+    },
+  );
 });
 
 test("MCP start_run resolves skill_name before child spawn and passes the resolved skill path", async () => {

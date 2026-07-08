@@ -336,6 +336,7 @@ function runErrorTaxonomy(input: {
   stopSignal: string | null;
   sessionMode: RunSubagentSessionMode;
   sessionEstablished: boolean;
+  missingFinalOutput: boolean;
   childFailureReasonCode?: FailureReasonCode;
 }): { error_class?: string; reason_code?: FailureReasonCode } {
   if (input.success || input.cancelled) {
@@ -353,6 +354,9 @@ function runErrorTaxonomy(input: {
     input.exitCode === 0
   ) {
     return { error_class: "missing_session_id", reason_code: "missing_session_id" };
+  }
+  if (input.missingFinalOutput) {
+    return { error_class: "missing_final_output", reason_code: "missing_final_output" };
   }
   if (input.exitCode !== null && input.exitCode !== 0) {
     return { error_class: "nonzero_exit", reason_code: input.childFailureReasonCode ?? "nonzero_exit" };
@@ -513,7 +517,9 @@ export async function runSubagentCore(
       : sessionMode.kind === "resume"
         ? processSuccess
         : false;
-    const success = processSuccess && (sessionMode.kind !== "fresh" || sessionEstablished);
+    const missingFinalOutput = processSuccess && resolved.outputMode === "final" && !finalMessage;
+    const success =
+      processSuccess && !missingFinalOutput && (sessionMode.kind !== "fresh" || sessionEstablished);
     const partialOutputAvailable = partialOutputAvailableForRun({
       timedOut: processResult.timedOut,
       finalMessage,
@@ -574,6 +580,7 @@ export async function runSubagentCore(
         stopSignal: processResult.stopSignal,
         sessionMode,
         sessionEstablished,
+        missingFinalOutput,
         childFailureReasonCode: childFailure.reasonCode,
       }),
       ...(childFailure.usageLimitMetadata ?? {}),

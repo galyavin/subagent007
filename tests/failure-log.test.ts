@@ -213,6 +213,47 @@ test("run_subagent appends one central record for a nonzero child failure", asyn
   });
 });
 
+test("run_subagent records missing final output as a typed terminal failure", async () => {
+  await withFakeClient(async (client, { projectDir, failureLogPath }) => {
+    const response = await client.callTool({
+      name: "run_subagent",
+      arguments: {
+        cwd: projectDir,
+        prompt: "CLEAN_EXIT_NO_FINAL",
+        run_kind: "quick_noninteractive",
+        output_mode: "final",
+      },
+    });
+
+    assert.notEqual(response.isError, true);
+    const metadata = response.structuredContent as {
+      run_id: string;
+      status: string;
+      success: boolean;
+      error_class?: string;
+      reason_code?: string;
+      exit_code: number | null;
+      written_output_mode?: string;
+    };
+    assert.equal(metadata.status, "failed");
+    assert.equal(metadata.success, false);
+    assert.equal(metadata.exit_code, 0);
+    assert.equal(metadata.error_class, "missing_final_output");
+    assert.equal(metadata.reason_code, "missing_final_output");
+    assert.equal(metadata.written_output_mode, "transcript");
+
+    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].tool, "run_subagent");
+    assert.equal(failures[0].run_id, metadata.run_id);
+    assert.equal(failures[0].failure_class, "missing_final_output");
+    assert.equal(failures[0].reason_code, "missing_final_output");
+    assert.equal(failures[0].exit_code, 0);
+    assert.equal(failures[0].stop_reason, "completed");
+    assert.equal(failures[0].output_mode, "final");
+  });
+});
+
 test("run_subagent classifies Codex usage limits and preserves provider reset metadata", async () => {
   await withFakeClient(async (client, { projectDir, failureLogPath }) => {
     const response = await client.callTool({

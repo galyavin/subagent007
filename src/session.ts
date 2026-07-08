@@ -659,6 +659,7 @@ export async function runSubagentSession(
       packet_parse_status: packet.packetParseStatus,
       timed_out: runResult.timed_out,
       exit_code: runResult.exit_code,
+      reason_code: runResult.reason_code,
     };
     const errorTaxonomy = success
       ? {}

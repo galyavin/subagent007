@@ -29,6 +29,7 @@ export type FailureClass =
   | "nonzero_exit"
   | "packet_failed"
   | "missing_session_id"
+  | "missing_final_output"
   | "restart_drift"
   | "session_error"
   | "signal_terminated"
@@ -135,6 +136,8 @@ function defaultReasonCode(failureClass: FailureClass): FailureReasonCode {
       return "nonzero_exit";
     case "missing_session_id":
       return "missing_session_id";
+    case "missing_final_output":
+      return "missing_final_output";
     case "restart_drift":
       return "server_restarted_active_run";
     case "packet_failed":
@@ -294,6 +297,7 @@ function sessionFailureProjection(
     packet_parse_status: string;
     timed_out: boolean;
     exit_code: number | null;
+    reason_code?: FailureReasonCode;
   },
   packetSatisfied: boolean,
 ): { failureClass: FailureClass; reasonCode: FailureReasonCode } {
@@ -305,6 +309,9 @@ function sessionFailureProjection(
   }
   if (!result.session_established) {
     return { failureClass: "missing_session_id", reasonCode: "missing_session_id" };
+  }
+  if (result.reason_code === "missing_final_output") {
+    return { failureClass: "missing_final_output", reasonCode: "missing_final_output" };
   }
   if (!packetSatisfied) {
     const reasonCode = result.packet_parse_status === "missing"
@@ -326,6 +333,7 @@ export function failureClassForSessionResult(
     packet_parse_status: string;
     timed_out: boolean;
     exit_code: number | null;
+    reason_code?: FailureReasonCode;
   },
   packetSatisfied: boolean,
 ): FailureClass {
@@ -338,6 +346,7 @@ export function failureReasonCodeForSessionResult(
     packet_parse_status: string;
     timed_out: boolean;
     exit_code: number | null;
+    reason_code?: FailureReasonCode;
   },
   packetSatisfied: boolean,
 ): FailureReasonCode {

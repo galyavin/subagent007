@@ -711,16 +711,13 @@ async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
   if (result.stop_reason === "cancelled" && !cancelledBeforeFirstOutput) {
     return;
   }
-  const missingSessionId =
-    !result.timed_out &&
-    result.exit_code === 0 &&
-    result.stop_reason === "completed" &&
-    result.session_established === false;
   const failureClass: FailureClass = cancelledBeforeFirstOutput
     ? "cancelled"
     : result.error_class === "timeout"
       ? "timeout"
-      : result.error_class === "missing_session_id" || missingSessionId
+      : result.error_class === "missing_final_output"
+        ? "missing_final_output"
+      : result.error_class === "missing_session_id"
         ? "missing_session_id"
         : result.error_class === "nonzero_exit"
           ? "nonzero_exit"
@@ -731,13 +728,15 @@ async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
       ? "timeout"
       : failureClass === "missing_session_id"
         ? "missing_session_id"
-        : failureClass === "nonzero_exit" && result.reason_code
-          ? result.reason_code
-        : failureClass === "nonzero_exit"
-          ? "nonzero_exit"
-          : failureClass === "signal_terminated"
-            ? "process_signal_terminated"
-          : "unknown_error";
+        : failureClass === "missing_final_output"
+          ? "missing_final_output"
+          : failureClass === "nonzero_exit" && result.reason_code
+            ? result.reason_code
+            : failureClass === "nonzero_exit"
+              ? "nonzero_exit"
+              : failureClass === "signal_terminated"
+                ? "process_signal_terminated"
+                : "unknown_error";
   await logFailure({
     tool: state.failureLogTool ?? "run_subagent",
     failure_class: failureClass,

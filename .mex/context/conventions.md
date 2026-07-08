@@ -11,7 +11,7 @@ triggers:
 edges:
   - target: context/architecture.md
     condition: when a convention depends on understanding the system structure
-last_updated: 2026-07-07
+last_updated: 2026-07-08
 ---
 
 # Conventions
@@ -38,6 +38,7 @@ last_updated: 2026-07-07
 - Public event views and transcripts must stay sanitized; never expose raw thinking, private tool payloads, caller prompt text, full composed prompts, or answer values. Use the shared public prompt projection marker instead of writing `request.prompt` into public events or transcript provenance.
 - Public model calibration must stay class-level on caller surfaces: expose `model_class`/`resolved_model_class` and health/migration actions, not concrete model IDs or thinking-level calibration values in MCP results, failure logs, session ledgers, observed campaign summaries, or README.
 - Required named-session packet failures use distinct reason codes: missing packet -> `packet_required_missing`, malformed packet -> `packet_required_invalid`, parse-valid not-ready packet -> `packet_required_not_ready`.
+- Requested `final` output must not silently degrade to successful transcript output. A clean child exit without a captured final message is a typed `missing_final_output` terminal failure; keep run result metadata, session projection, failure logs, README, and tests synchronized.
 - When adding an environment variable, update source constants, README environment docs, and `npm run docs:check` coverage.
 - When changing child execution, verify timeout/cancel/parent-exit cleanup because fake child descendants can otherwise outlive the test run.
 - Compatibility aliases such as `list_allowed_models`, legacy `skill`, and legacy `tool_profile` are intentional unless a migration explicitly removes them.
@@ -53,3 +54,4 @@ Before presenting code changes:
 - [ ] Preflight failures still happen before child spawn and preserve `child_started:false`.
 - [ ] Operation-only semantic failures return `operation_rejected` instead of forcing callers to parse MCP error text.
 - [ ] Failure logs and public result metadata remain synchronized when reason codes or provider fields change.
+- [ ] Final-output behavior is asserted generically; do not add skill-specific branches for a missing final message.
