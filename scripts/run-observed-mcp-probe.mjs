@@ -51,6 +51,11 @@ const FORBIDDEN_FAILURE_LOG_CALIBRATION_FIELDS = new Set([
 const RETIRED_BUNDLED_ALIAS = "all-bundled";
 const RETIRED_BUNDLED_ALIAS_MESSAGE =
   "all-bundled is retired; use --profile protocol-core for the historical bundled protocol-core scenario set";
+const RECURSIVE_DELEGATE_SCENARIO_PROMPTS = {
+  "recursive-delegate-success": "RECURSIVE_DELEGATE_FAST",
+  "recursive-delegate-depth-limit": "RECURSIVE_DELEGATE_DEPTH_LIMIT",
+  "recursive-delegate-forged-lineage": "RECURSIVE_DELEGATE_FORGED_PARENT",
+};
 
 function selectProfile(options, profile) {
   options.profile = profile;
@@ -339,6 +344,41 @@ function responseMatchesResultShape(response, resultClass) {
       response.error_class === "restart_drift" &&
       response.reason_code === "server_restarted_active_run";
   }
+  if (resultClass === "recursive_delegate_success_lineage") {
+    return response.success === true &&
+      response.status === "completed" &&
+      response.polled === true &&
+      response.root_run_id === response.run_id &&
+      response.recursion_depth === 0 &&
+      response.delegated_success === true &&
+      response.delegated_status === "completed" &&
+      response.delegated_parent_run_id === response.run_id &&
+      response.delegated_root_run_id === response.run_id &&
+      response.delegated_recursion_depth === 1 &&
+      response.root_child_contains_delegated === true &&
+      response.delegated_view_status === "completed" &&
+      response.delegated_view_parent_run_id === response.run_id &&
+      response.delegated_view_root_run_id === response.run_id &&
+      response.delegated_view_recursion_depth === 1;
+  }
+  if (resultClass === "recursive_delegate_depth_rejected") {
+    return response.success === true &&
+      response.status === "completed" &&
+      response.polled === true &&
+      response.delegated_status === "rejected" &&
+      response.delegated_kind === "recursive_delegate_rejected" &&
+      response.delegated_reason_code === "recursive_depth_exceeded" &&
+      response.root_child_run_count === 0;
+  }
+  if (resultClass === "recursive_delegate_forged_rejected") {
+    return response.success === true &&
+      response.status === "completed" &&
+      response.polled === true &&
+      response.delegated_status === "rejected" &&
+      response.delegated_kind === "recursive_delegate_rejected" &&
+      response.delegated_reason_code === "recursive_control_invalid" &&
+      response.root_child_run_count === 0;
+  }
   if (resultClass === "runtime_ready") {
     return response.is_error === false &&
       response.ready === true &&
@@ -421,9 +461,15 @@ async function createDeterministicFakeChild() {
       "#!/usr/bin/env node",
       "const fs = require('fs');",
       "const path = require('path');",
+      "const net = require('net');",
       "const request = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));",
       "const logPath = process.env.FAKE_PI_LOG_PATH;",
-      "if (logPath) fs.appendFileSync(logPath, JSON.stringify({ request }) + '\\n');",
+      "function requestForLog() {",
+      "  const clone = { ...request };",
+      "  if (clone.recursiveControl) clone.recursiveControl = { ...clone.recursiveControl, socket_path: '[redacted]', token: '[redacted]' };",
+      "  return clone;",
+      "}",
+      "if (logPath) fs.appendFileSync(logPath, JSON.stringify({ request: requestForLog() }) + '\\n');",
       "function writeEvent(event) { process.stdout.write(JSON.stringify(event) + '\\n'); }",
       "function writeFinal(text) {",
       "  if (request.outputLastMessagePath && request.outputMode === 'final') fs.writeFileSync(request.outputLastMessagePath, text);",
@@ -462,6 +508,38 @@ async function createDeterministicFakeChild() {
       "  }",
       "  process.exit(43);",
       "}",
+      "function callRecursiveDelegate(params, callerOverride) {",
+      "  const control = request.recursiveControl;",
+      "  if (!control) return Promise.resolve({ status: 'rejected', kind: 'recursive_delegate_rejected', success: false, error_class: 'validation_error', reason_code: 'recursive_control_invalid', message: 'missing recursive control' });",
+      "  const id = 'fake-' + process.pid + '-' + Date.now();",
+      "  const payload = {",
+      "    id,",
+      "    token: control.token,",
+      "    method: 'delegate',",
+      "    caller: callerOverride || {",
+      "      parent_run_id: control.parent_run_id,",
+      "      root_run_id: control.root_run_id,",
+      "      recursion_depth: control.recursion_depth",
+      "    },",
+      "    params",
+      "  };",
+      "  return new Promise((resolve, reject) => {",
+      "    const socket = net.createConnection(control.socket_path);",
+      "    let buffer = '';",
+      "    socket.setEncoding('utf8');",
+      "    socket.once('connect', () => socket.write(JSON.stringify(payload) + '\\n'));",
+      "    socket.once('error', reject);",
+      "    socket.on('data', (chunk) => {",
+      "      buffer += chunk;",
+      "      const newlineIndex = buffer.indexOf('\\n');",
+      "      if (newlineIndex === -1) return;",
+      "      socket.end();",
+      "      const response = JSON.parse(buffer.slice(0, newlineIndex));",
+      "      if (response.id !== id) throw new Error('recursive response id mismatch');",
+      "      resolve(response.ok ? response.result : { status: 'rejected', kind: 'recursive_delegate_rejected', success: false, error_class: 'validation_error', reason_code: response.error.reason_code, message: response.error.message });",
+      "    });",
+      "  });",
+      "}",
       "if (request.prompt.includes('FAIL_EXIT')) {",
       "  process.stderr.write('FAKE PI FAILURE\\n');",
       "  process.exit(42);",
@@ -474,6 +552,24 @@ async function createDeterministicFakeChild() {
       "  setInterval(() => {}, 1000);",
       "} else if (request.prompt.includes('REQUEST_INPUT_WAIT')) {",
       "  writeInputRequest();",
+      "} else if (request.prompt.includes('RECURSIVE_DELEGATE_FAST') || request.prompt.includes('RECURSIVE_DELEGATE_DEPTH_LIMIT')) {",
+      "  callRecursiveDelegate({ prompt: 'FAST', cwd: request.cwd, wait_ms: 1000 }).then((result) => {",
+      "    writeFinal(JSON.stringify({ delegated: result }));",
+      "  }).catch((error) => {",
+      "    process.stderr.write('FAKE RECURSIVE DELEGATE FAILURE: ' + (error && error.stack ? error.stack : String(error)) + '\\n');",
+      "    process.exitCode = 1;",
+      "  });",
+      "} else if (request.prompt.includes('RECURSIVE_DELEGATE_FORGED_PARENT')) {",
+      "  callRecursiveDelegate({ prompt: 'FAST', cwd: request.cwd, wait_ms: 1000 }, {",
+      "    parent_run_id: request.runId + '-forged',",
+      "    root_run_id: request.runId,",
+      "    recursion_depth: 0",
+      "  }).then((result) => {",
+      "    writeFinal(JSON.stringify({ delegated: result }));",
+      "  }).catch((error) => {",
+      "    process.stderr.write('FAKE RECURSIVE DELEGATE FAILURE: ' + (error && error.stack ? error.stack : String(error)) + '\\n');",
+      "    process.exitCode = 1;",
+      "  });",
       "} else if (request.prompt.includes('PACKET_INCONCLUSIVE')) {",
       "  writeFinal(packetFinal({ verdict: 'inconclusive', summary: 'not ready', findings: [], blockers: ['needs evidence'], next_step: 'repair' }));",
       "} else if (request.prompt.includes('PACKET_VALID_WITH_CLOSURE')) {",
@@ -688,6 +784,12 @@ function responseSummary(response) {
     error_class: typeof structured.error_class === "string" ? structured.error_class : undefined,
     reason_code: typeof structured.reason_code === "string" ? structured.reason_code : undefined,
     run_id: typeof structured.run_id === "string" ? structured.run_id : undefined,
+    parent_run_id: typeof structured.parent_run_id === "string" ? structured.parent_run_id : undefined,
+    root_run_id: typeof structured.root_run_id === "string" ? structured.root_run_id : undefined,
+    recursion_depth: typeof structured.recursion_depth === "number" ? structured.recursion_depth : undefined,
+    child_run_ids: Array.isArray(structured.child_run_ids)
+      ? structured.child_run_ids.filter((value) => typeof value === "string")
+      : undefined,
     child_started: typeof structured.child_started === "boolean" ? structured.child_started : undefined,
     exit_code: typeof structured.exit_code === "number" || structured.exit_code === null
       ? structured.exit_code
@@ -723,12 +825,60 @@ function responseSummary(response) {
   };
 }
 
+function isRecursiveDelegateScenario(scenario) {
+  return Object.hasOwn(RECURSIVE_DELEGATE_SCENARIO_PROMPTS, scenario);
+}
+
+async function recursiveDelegateOutputSummary(summary) {
+  if (typeof summary.output_path !== "string") {
+    return {};
+  }
+  try {
+    const outputText = await fs.readFile(summary.output_path, "utf8");
+    const output = JSON.parse(outputText);
+    const delegated = output?.delegated && typeof output.delegated === "object"
+      ? output.delegated
+      : null;
+    if (!delegated) {
+      return {};
+    }
+    const delegatedRunId = typeof delegated.run_id === "string" ? delegated.run_id : undefined;
+    return {
+      delegated_status: typeof delegated.status === "string" ? delegated.status : undefined,
+      delegated_success: typeof delegated.success === "boolean" ? delegated.success : undefined,
+      delegated_kind: typeof delegated.kind === "string" ? delegated.kind : undefined,
+      delegated_error_class: typeof delegated.error_class === "string" ? delegated.error_class : undefined,
+      delegated_reason_code: typeof delegated.reason_code === "string" ? delegated.reason_code : undefined,
+      delegated_run_id: delegatedRunId,
+      delegated_parent_run_id: typeof delegated.parent_run_id === "string" ? delegated.parent_run_id : undefined,
+      delegated_root_run_id: typeof delegated.root_run_id === "string" ? delegated.root_run_id : undefined,
+      delegated_recursion_depth: typeof delegated.recursion_depth === "number"
+        ? delegated.recursion_depth
+        : undefined,
+      root_child_run_count: Array.isArray(summary.child_run_ids) ? summary.child_run_ids.length : undefined,
+      root_child_contains_delegated: Boolean(
+        delegatedRunId &&
+          Array.isArray(summary.child_run_ids) &&
+          summary.child_run_ids.includes(delegatedRunId),
+      ),
+    };
+  } catch {
+    return {};
+  }
+}
+
 async function responseSummaryForScenario(response, scenario) {
   const summary = responseSummary(response);
   if (scenario === "tool-listing") {
     return {
       ...summary,
       ...toolListingSummary(response),
+    };
+  }
+  if (isRecursiveDelegateScenario(scenario)) {
+    return {
+      ...summary,
+      ...(await recursiveDelegateOutputSummary(summary)),
     };
   }
   if (scenario !== "transcript-redaction" || typeof summary.output_path !== "string") {
@@ -1167,6 +1317,45 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
     };
   }
 
+  if (isRecursiveDelegateScenario(scenario)) {
+    const started = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "schedule_run",
+      args: {
+        cwd,
+        prompt: RECURSIVE_DELEGATE_SCENARIO_PROMPTS[scenario],
+        wait_ms: 0,
+      },
+    });
+    const terminal = started.response?.run_id
+      ? await waitForRun(client, ledgerPath, evidenceClass, scenario, started.response.run_id, (response) =>
+          response?.status === "completed",
+        )
+      : started;
+    let delegatedView;
+    if (terminal.response?.delegated_run_id) {
+      delegatedView = await runCall(client, ledgerPath, evidenceClass, scenario, {
+        tool: "get_run",
+        args: { run_id: terminal.response.delegated_run_id },
+      });
+    }
+    return {
+      ...terminal,
+      tool: "schedule_run",
+      response: {
+        ...(terminal.response ?? {}),
+        polled: true,
+        delegated_view_status: delegatedView?.response?.status,
+        delegated_view_parent_run_id: delegatedView?.response?.parent_run_id,
+        delegated_view_root_run_id: delegatedView?.response?.root_run_id,
+        delegated_view_recursion_depth: delegatedView?.response?.recursion_depth,
+      },
+      failure_log_delta_count:
+        started.failure_log_delta_count +
+        (terminal.failure_log_delta_count ?? 0) +
+        (delegatedView?.failure_log_delta_count ?? 0),
+    };
+  }
+
   if (scenario === "schedule-run-durable-first") {
     const started = await runCall(client, ledgerPath, evidenceClass, scenario, {
       tool: "schedule_run",
@@ -1311,17 +1500,17 @@ const serverEnv = {
     : {}),
 };
 
-function createTransport() {
+function createTransport(extraEnv = {}) {
   return new StdioClientTransport({
     command: process.execPath,
     args: [parsed.options.server],
-    env: serverEnv,
+    env: { ...serverEnv, ...extraEnv },
   });
 }
 
-async function connectClient() {
+async function connectClient(extraEnv = {}) {
   const client = new Client({ name: "subagent007-observed-mcp-probe", version: "0.1.0" });
-  await client.connect(createTransport());
+  await client.connect(createTransport(extraEnv));
   return client;
 }
 
@@ -1364,6 +1553,25 @@ try {
       const restartDrift = await runRestartDriftScenario(client);
       client = restartDrift.client;
       results.push(restartDrift.result);
+      continue;
+    }
+    if (scenario === "recursive-delegate-depth-limit") {
+      await client.close();
+      const limitedClient = await connectClient({ SUBAGENT007_MAX_RECURSION_DEPTH: "0" });
+      try {
+        results.push(
+          await runScenario(
+            limitedClient,
+            ledgerPath,
+            evidenceClass,
+            scenario,
+            parsed.options.cwd,
+          ),
+        );
+      } finally {
+        await limitedClient.close();
+      }
+      client = await connectClient();
       continue;
     }
     results.push(

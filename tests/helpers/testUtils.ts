@@ -1,8 +1,22 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 
+async function readTextAfterCreate(filePath: string): Promise<string> {
+  const deadline = Date.now() + 1000;
+  while (true) {
+    try {
+      return await fs.readFile(filePath, "utf8");
+    } catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT" || Date.now() >= deadline) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+}
+
 export async function readJsonl<T>(filePath: string): Promise<T[]> {
-  const text = await fs.readFile(filePath, "utf8");
+  const text = await readTextAfterCreate(filePath);
   return text
     .trim()
     .split("\n")

@@ -29,6 +29,7 @@ Then read this file fully before doing anything else in this session.
 - Durable runs persist snapshots and public event ledgers, support cancellation and caller input, and fail closed on restart drift.
 - Model classes, config migration, model-health probes, observed campaign/probe tooling, and failure-log archival are implemented.
 - Observed campaign tool-listing asserts the exact 12-tool public MCP surface and `skill_name` vs legacy `skill` schema guidance instead of treating `listTools()` as liveness-only.
+- Observed `full-current` coverage includes recursive delegate success lineage, depth-limit rejection, forged-lineage rejection, and private recursive-control leakage checks.
 - Public run views and transcript provenance render a redacted caller-prompt marker instead of raw caller prompt text; observed campaign redaction checks include prompt sentinels in public artifacts/state.
 - Public MCP result/list/session surfaces, failure logs, and README expose model classes and health/migration guidance without concrete model IDs or thinking-level calibration values; observed campaign result matching asserts absence of forbidden calibration fields and thinking-level field-name variants.
 - SAF repairs are in place for provider usage-limit metadata, parent-exit child-process cleanup, opt-in active-child launch fusing, structured run-operation semantic rejections, packet-required not-ready taxonomy, public prompt projection, and named-session manifest preflight eligibility.

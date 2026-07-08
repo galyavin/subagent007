@@ -319,6 +319,18 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
           forbidden_public_calibration_fields?: string[];
           failure_log_calibration_fields_absent?: boolean;
           forbidden_failure_log_calibration_fields?: string[];
+          delegated_status?: string;
+          delegated_kind?: string;
+          delegated_reason_code?: string;
+          delegated_parent_run_id?: string;
+          delegated_root_run_id?: string;
+          delegated_recursion_depth?: number;
+          delegated_view_status?: string;
+          delegated_view_parent_run_id?: string;
+          delegated_view_root_run_id?: string;
+          delegated_view_recursion_depth?: number;
+          root_child_contains_delegated?: boolean;
+          root_child_run_count?: number;
         };
       }>;
       evidence_classes: string[];
@@ -342,6 +354,9 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
   assert.ok(summary.scenarios.includes("restart-drift"));
   assert.ok(summary.scenarios.includes("session-valid-closure"));
   assert.ok(summary.scenarios.includes("session-invalid-closure"));
+  assert.ok(summary.scenarios.includes("recursive-delegate-success"));
+  assert.ok(summary.scenarios.includes("recursive-delegate-depth-limit"));
+  assert.ok(summary.scenarios.includes("recursive-delegate-forged-lineage"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("run_subagent-success"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("tool-listing"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("runtime-readiness"));
@@ -361,6 +376,9 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
   assert.ok(summary.coverage_summary.covered_surfaces.includes("cancel_run-terminal-idempotency"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("get_run-restart-drift"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("transcript-redaction"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("recursive-delegate-success-lineage"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("recursive-delegate-depth-limit"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("recursive-delegate-forged-lineage"));
   assert.ok(summary.coverage_summary.uncovered_surfaces.includes("installed-pi-integration"));
   assert.deepEqual(summary.coverage_summary.missing_required_surfaces, []);
   assert.equal(summary.coverage_summary.scenarios.every((scenario) => scenario.tool.length > 0), true);
@@ -379,6 +397,27 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
   );
   assert.equal(redactionScenario?.evidence_satisfied, true);
   assert.equal(redactionScenario?.observed_result?.transcript_redacted, true);
+  const recursiveSuccess = summary.coverage_summary.scenarios.find((scenario) =>
+    scenario.scenario === "recursive-delegate-success"
+  );
+  assert.equal(recursiveSuccess?.evidence_satisfied, true);
+  assert.equal(recursiveSuccess?.observed_result?.root_child_contains_delegated, true);
+  assert.equal(recursiveSuccess?.observed_result?.delegated_recursion_depth, 1);
+  assert.equal(recursiveSuccess?.observed_result?.delegated_view_status, "completed");
+  const recursiveDepthLimit = summary.coverage_summary.scenarios.find((scenario) =>
+    scenario.scenario === "recursive-delegate-depth-limit"
+  );
+  assert.equal(recursiveDepthLimit?.evidence_satisfied, true);
+  assert.equal(recursiveDepthLimit?.observed_result?.delegated_kind, "recursive_delegate_rejected");
+  assert.equal(recursiveDepthLimit?.observed_result?.delegated_reason_code, "recursive_depth_exceeded");
+  assert.equal(recursiveDepthLimit?.observed_result?.root_child_run_count, 0);
+  const recursiveForgedLineage = summary.coverage_summary.scenarios.find((scenario) =>
+    scenario.scenario === "recursive-delegate-forged-lineage"
+  );
+  assert.equal(recursiveForgedLineage?.evidence_satisfied, true);
+  assert.equal(recursiveForgedLineage?.observed_result?.delegated_kind, "recursive_delegate_rejected");
+  assert.equal(recursiveForgedLineage?.observed_result?.delegated_reason_code, "recursive_control_invalid");
+  assert.equal(recursiveForgedLineage?.observed_result?.root_child_run_count, 0);
   assert.equal(
     summary.coverage_summary.scenarios.every((scenario) =>
       scenario.observed_result?.public_calibration_fields_absent !== false &&
@@ -393,6 +432,101 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
     summary.coverage_summary.scenarios.every((scenario) => scenario.evidence_class === "protocol-deterministic"),
     true,
   );
+});
+
+test("observed MCP probe covers recursive delegate lineage and rejection edges", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-probe-recursive-"));
+  const projectDir = path.join(tmp, "project");
+  const stateDir = path.join(tmp, "state");
+  const configPath = path.join(stateDir, "config.json");
+  await fs.mkdir(projectDir, { recursive: true });
+  await fs.mkdir(stateDir, { recursive: true });
+  await fs.writeFile(configPath, JSON.stringify({ default_model_class: "C" }));
+
+  const result = await execFileAsync(
+    process.execPath,
+    [
+      probePath,
+      "--server",
+      path.resolve("dist/server.js"),
+      "--cwd",
+      projectDir,
+      "--scenario",
+      "recursive-delegate-success",
+      "--scenario",
+      "recursive-delegate-depth-limit",
+      "--scenario",
+      "recursive-delegate-forged-lineage",
+    ],
+    {
+      cwd: path.resolve("."),
+      env: {
+        ...process.env,
+        SUBAGENT007_CONFIG_PATH: configPath,
+        SUBAGENT007_FAILURE_LOG_PATH: path.join(stateDir, "failures.jsonl"),
+        SUBAGENT007_CAMPAIGN_LEDGER_PATH: path.join(stateDir, "campaign-ledger.jsonl"),
+        SUBAGENT007_SESSIONS_DIR: path.join(stateDir, "sessions"),
+        SUBAGENT007_RUNS_DIR: path.join(stateDir, "runs"),
+        SUBAGENT007_RUN_TASKS_DIR: path.join(stateDir, "run-tasks"),
+        SUBAGENT007_INPUT_REQUESTS_DIR: path.join(stateDir, "input-requests"),
+        SUBAGENT007_PI_RAW_SESSIONS_DIR: path.join(stateDir, "raw-sessions"),
+        SUBAGENT007_MODEL_HEALTH_PATH: path.join(stateDir, "model-health.json"),
+        SUBAGENT007_RECORD_SOURCE: "test",
+      },
+      maxBuffer: 8 * 1024 * 1024,
+    },
+  );
+
+  const summary = JSON.parse(result.stdout) as {
+    coverage_summary: {
+      missing_required_surfaces: string[];
+      scenarios: Array<{
+        scenario: string;
+        evidence_satisfied?: boolean;
+        observed_result?: Record<string, unknown>;
+      }>;
+    };
+  };
+  assert.deepEqual(summary.coverage_summary.missing_required_surfaces, []);
+  const byScenario = new Map(
+    summary.coverage_summary.scenarios.map((scenario) => [scenario.scenario, scenario]),
+  );
+
+  const success = byScenario.get("recursive-delegate-success")?.observed_result;
+  assert.equal(byScenario.get("recursive-delegate-success")?.evidence_satisfied, true);
+  assert.equal(success?.delegated_status, "completed");
+  assert.equal(success?.delegated_recursion_depth, 1);
+  assert.equal(success?.root_child_contains_delegated, true);
+  assert.equal(success?.delegated_view_status, "completed");
+  assert.equal(success?.delegated_parent_run_id, success?.delegated_view_parent_run_id);
+  assert.equal(success?.delegated_root_run_id, success?.delegated_view_root_run_id);
+  assert.equal(success?.delegated_recursion_depth, success?.delegated_view_recursion_depth);
+
+  const depthLimit = byScenario.get("recursive-delegate-depth-limit")?.observed_result;
+  assert.equal(byScenario.get("recursive-delegate-depth-limit")?.evidence_satisfied, true);
+  assert.equal(depthLimit?.delegated_status, "rejected");
+  assert.equal(depthLimit?.delegated_kind, "recursive_delegate_rejected");
+  assert.equal(depthLimit?.delegated_reason_code, "recursive_depth_exceeded");
+  assert.equal(depthLimit?.root_child_run_count, 0);
+
+  const forgedLineage = byScenario.get("recursive-delegate-forged-lineage")?.observed_result;
+  assert.equal(byScenario.get("recursive-delegate-forged-lineage")?.evidence_satisfied, true);
+  assert.equal(forgedLineage?.delegated_status, "rejected");
+  assert.equal(forgedLineage?.delegated_kind, "recursive_delegate_rejected");
+  assert.equal(forgedLineage?.delegated_reason_code, "recursive_control_invalid");
+  assert.equal(forgedLineage?.root_child_run_count, 0);
+
+  const ledgerText = await fs.readFile(path.join(stateDir, "campaign-ledger.jsonl"), "utf8");
+  assert.match(ledgerText, /recursive-delegate-success/);
+  assert.match(ledgerText, /recursive-delegate-depth-limit/);
+  assert.match(ledgerText, /recursive-delegate-forged-lineage/);
+
+  const publicArtifactText = [
+    result.stdout,
+    ledgerText,
+    await readPublicCampaignArtifactTextUnder(stateDir),
+  ].join("\n");
+  assert.doesNotMatch(publicArtifactText, /recursiveControl|subagent007-recursive|socket_path|"token"/);
 });
 
 test("protocol-deterministic observed MCP probe refuses unscoped failure telemetry", async () => {
