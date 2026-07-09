@@ -206,7 +206,7 @@ test("resolves caller fields over config defaults", async () => {
   assert.equal(resolved.thinkingLevel, "high");
   assert.equal(resolved.skill, "pda-lite");
   assert.equal(resolved.outputMode, "final");
-  assert.equal(resolved.toolProfile, "all");
+  assert.equal(Object.hasOwn(resolved, "toolProfile"), false);
 });
 
 test("resolves canonical skill_name and legacy skill alias", async () => {
@@ -383,13 +383,13 @@ test("validates resume session files before spawning Pi work", async () => {
   );
 });
 
-test("resolves tool profile to all while accepting legacy explicit profiles", async () => {
+test("accepts legacy tool profile input without adding resolved runtime state", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-tool-profile-"));
   const defaulted = await validateAndResolveRequest(
     { prompt: "x", cwd, model_class: "C" },
     {},
   );
-  assert.equal(defaulted.toolProfile, "all");
+  assert.equal(Object.hasOwn(defaulted, "toolProfile"), false);
 
   for (const toolProfile of ["all", "inspect", "web_search", "shell", "workspace_write"] as const) {
     const resolved = await validateAndResolveRequest(
@@ -401,7 +401,7 @@ test("resolves tool profile to all while accepting legacy explicit profiles", as
       },
       {},
     );
-    assert.equal(resolved.toolProfile, "all");
+    assert.equal(Object.hasOwn(resolved, "toolProfile"), false);
   }
 
   await assert.rejects(

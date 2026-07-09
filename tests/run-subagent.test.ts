@@ -329,7 +329,7 @@ test("runSubagent is ephemeral by default and invokes the Pi child request-file 
       assert.equal(logs[0].request.skill, skillName);
       assert.equal(logs[0].request.skillFilePath, skillPath);
       assert.equal(logs[0].request.cwd, projectDir);
-      assert.equal(logs[0].request.toolProfile, "all");
+      assert.equal(Object.hasOwn(logs[0].request, "toolProfile"), false);
     },
   );
 });
@@ -442,7 +442,7 @@ test("start_run rejects before child launch when the configured local child fuse
   );
 });
 
-test("runSubagent accepts legacy explicit tool profile but resolves all tools", async () => {
+test("runSubagent accepts legacy explicit tool profile without runtime profile state", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-tool-profile-"));
   const projectDir = path.join(tmp, "project");
   const runsDir = path.join(tmp, "runs");
@@ -467,11 +467,11 @@ test("runSubagent accepts legacy explicit tool profile but resolves all tools", 
       );
 
       assert.equal(result.success, true);
-      assert.equal(result.resolved_tool_profile, "all");
+      assert.equal(Object.hasOwn(result, "resolved_tool_profile"), false);
 
       const logs = await readJsonl<{ request: Record<string, unknown> }>(fake.logPath);
       assert.equal(logs.length, 1);
-      assert.equal(logs[0].request.toolProfile, "all");
+      assert.equal(Object.hasOwn(logs[0].request, "toolProfile"), false);
     },
   );
 });
@@ -1180,7 +1180,7 @@ test("MCP run_subagent uses the configured fake Pi child", async () => {
     assert.equal(logs[0].request.model, "openai-codex/gpt-5.4-mini");
     assert.equal(logs[0].request.thinkingLevel, "high");
     assert.equal(logs[0].request.skill, undefined);
-    assert.equal(logs[0].request.toolProfile, "all");
+    assert.equal(Object.hasOwn(logs[0].request, "toolProfile"), false);
   });
 });
 
@@ -1543,7 +1543,7 @@ test("MCP run_subagent auto-promotes edit prompts because write tools are availa
 
     const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
     assert.equal(logs.length, 1);
-    assert.equal(logs[0].request.toolProfile, "all");
+    assert.equal(Object.hasOwn(logs[0].request, "toolProfile"), false);
   });
 });
 

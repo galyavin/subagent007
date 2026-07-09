@@ -12,7 +12,7 @@ edges:
     condition: when specific technology details are needed
   - target: context/decisions.md
     condition: when understanding why the architecture is structured this way
-last_updated: 2026-07-08
+last_updated: 2026-07-09
 ---
 
 # Architecture
@@ -50,6 +50,6 @@ Named sessions add `src/session.ts` manifest/ledger/lock handling around the sam
 - No queue behind local capacity rejection; exhausted active-child capacity returns `preflight_rejected` with `child_started:false`.
 - No database, remote worker service, or distributed lock manager; persistence and locks are local files.
 - No public concrete model or thinking-level input, result field, failure-log field, session ledger field, or README calibration table; callers use model classes and class-level health/migration guidance.
-- No tool restriction by `tool_profile`; accepted legacy profile values resolve to all child tools.
+- No tool restriction by `tool_profile`; accepted legacy profile values are validated and ignored, and every child uses all registered tools.
 - No full recursive descendant tree manager or cascade cancellation; the first recursive slice is one child-facing delegate tool plus direct lineage metadata.
 - No exposure of raw thinking, private tool payloads, caller prompt text, full composed prompts, or input answer values in public event views.

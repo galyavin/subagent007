@@ -528,7 +528,6 @@ function coverageSummary(scenarios, mode, profileName, calls = []) {
     uncovered_surfaces: uncoveredSurfaces,
     missing_required_surfaces: profile.required_surfaces.filter((surface) => !coveredSurfaces.includes(surface)).sort(),
     tools: unique(metadata.map((scenario) => scenario.tool)),
-    lifecycle_phases: unique(metadata.flatMap((scenario) => scenario.lifecycle_phases)),
     result_classes: unique(metadata.flatMap((scenario) => scenario.result_classes)),
     evidence_classes: unique(metadata.map((scenario) => scenario.evidence_class)),
   };

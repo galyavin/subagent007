@@ -26,7 +26,6 @@ import {
   SESSION_PACKET_POLICIES,
   type ContractPacketV1,
   type FailureReasonCode,
-  TOOL_PROFILES,
   type PacketParseStatus,
   type ResumeMode,
   type RunSubagentRequest,
@@ -88,7 +87,6 @@ const sessionRunRecordSchema = z.object({
   requested_skill: z.string().nullable(),
   requested_output_mode: z.enum(OUTPUT_MODES),
   written_output_mode: z.enum(OUTPUT_MODES),
-  resolved_tool_profile: z.enum(TOOL_PROFILES).optional(),
   stop_reason: z.enum(RUN_STOP_REASONS).optional(),
   stop_signal: z.string().nullable().optional(),
   error: z.string().optional(),
@@ -478,7 +476,6 @@ function sessionRunRequest(
     timeout_ms: resolved.timeoutMs,
     skill: resolved.skill,
     output_mode: resolved.outputMode,
-    tool_profile: resolved.toolProfile,
     continuity: manifest
       ? { mode: "resume", session_id: manifest.subagent_session_id }
       : { mode: "fresh" },
@@ -712,7 +709,6 @@ export async function runSubagentSession(
       resolved_skill_sha256: runResult.resolved_skill_sha256,
       requested_output_mode: runResult.requested_output_mode,
       written_output_mode: runResult.written_output_mode,
-      resolved_tool_profile: runResult.resolved_tool_profile,
       stop_reason: runResult.stop_reason,
       stop_signal: runResult.stop_signal,
       error: missingSessionIdError,
@@ -760,7 +756,6 @@ export async function runSubagentSession(
       resolved_skill_sha256: runResult.resolved_skill_sha256,
       requested_output_mode: runResult.requested_output_mode,
       written_output_mode: runResult.written_output_mode,
-      resolved_tool_profile: runResult.resolved_tool_profile,
       stop_reason: runResult.stop_reason,
       stop_signal: runResult.stop_signal,
       ...errorTaxonomy,
@@ -811,7 +806,6 @@ export async function runSubagentSession(
         model_class: result.resolved_model_class,
         skill: result.requested_skill,
         output_mode: result.requested_output_mode,
-        tool_profile: result.resolved_tool_profile,
         stop_reason: result.stop_reason,
         stop_signal: result.stop_signal,
       });

@@ -19,7 +19,6 @@ import type {
   OutputMode,
   PromptProvenance,
   ThinkingLevel,
-  ToolProfile,
 } from "./types.js";
 import type { RecursiveControlChildConfig } from "./recursiveControl.js";
 
@@ -31,7 +30,6 @@ interface PiChildRequest {
   skill?: string;
   skillFilePath?: string;
   outputMode: OutputMode;
-  toolProfile?: ToolProfile;
   outputLastMessagePath?: string;
   promptProvenance?: PromptProvenance;
   mailboxRoot: string;

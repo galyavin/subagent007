@@ -12,12 +12,28 @@ edges:
     condition: when a decision relates to system structure
   - target: context/stack.md
     condition: when a decision relates to technology choice
-last_updated: 2026-07-08
+last_updated: 2026-07-09
 ---
 
 # Decisions
 
 ## Decision Log
+
+### Validation reason codes are explicit data, not message parsing
+**Date:** 2026-07-09
+**Status:** Active
+**Decision:** Failure-log reason mapping uses `ValidationError.reasonCode` when present and otherwise reports `unknown_validation_error`; it does not inspect validation message text to derive semantic codes.
+**Reasoning:** Message parsing made public telemetry depend on prose that can drift independently from caller contracts. Typed reason ownership belongs at the validation throw site, where the author knows the semantic failure.
+**Alternatives considered:** Keep the message fallback as defense in depth (rejected because it silently hides missing structured codes), or centralize message strings and codes together (rejected because it still couples telemetry to copy).
+**Consequences:** New semantic validation paths must pass an explicit reason code. Tests should assert both explicit-code preservation and unknown fallback for uncoded validation errors.
+
+### Legacy tool_profile is input-only compatibility
+**Date:** 2026-07-09
+**Status:** Active
+**Decision:** The public request schema still accepts known `tool_profile` values, but validation discards the field and runtime/result/session/failure surfaces no longer carry `toolProfile` or `resolved_tool_profile`.
+**Reasoning:** All registered child tools are active, so carrying a resolved profile implied a policy switch that no longer exists. Keeping the input avoids breaking old callers while removing false downstream contract surface.
+**Alternatives considered:** Remove the input immediately (rejected as unnecessary caller breakage), keep returning `resolved_tool_profile:"all"` (rejected because it preserves misleading public state), or implement real profiles again (rejected because current child tooling depends on all registered tools being active).
+**Consequences:** Child request files omit profile state; failure logs omit profile state; README documents validation-and-ignore behavior; tests prove legacy input acceptance and downstream absence.
 
 ### Session failures preserve durable caller context
 **Date:** 2026-07-08

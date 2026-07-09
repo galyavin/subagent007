@@ -115,7 +115,6 @@ export interface ResolvedRunSubagentRequest {
   continuity: RunContinuity;
   skill?: string;
   outputMode: OutputMode;
-  toolProfile: ToolProfile;
 }
 
 export interface PromptProvenance {
@@ -153,7 +152,6 @@ interface SubagentRunResultBase {
   resolved_skill_sha256: string | null;
   requested_output_mode: OutputMode;
   written_output_mode: OutputMode;
-  resolved_tool_profile: ToolProfile;
   stop_reason: RunStopReason;
   stop_signal: string | null;
   error_class?: string;
@@ -250,7 +248,6 @@ export interface SessionRunRecord {
   resolved_skill_sha256?: string | null;
   requested_output_mode: OutputMode;
   written_output_mode: OutputMode;
-  resolved_tool_profile?: ToolProfile;
   stop_reason?: RunStopReason;
   stop_signal?: string | null;
   error?: string;

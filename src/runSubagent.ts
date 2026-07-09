@@ -33,7 +33,6 @@ import type {
   RunContinuity,
   RunSubagentRequest,
   RunSubagentResult,
-  ToolProfile,
 } from "./types.js";
 import { ValidationError } from "./types.js";
 import { validateAndResolveRequest } from "./validate.js";
@@ -80,7 +79,6 @@ interface PiChildRequestFile {
   skill?: string;
   skillFilePath?: string;
   outputMode: OutputMode;
-  toolProfile: ToolProfile;
   outputLastMessagePath?: string;
   promptProvenance?: PromptProvenance;
   mailboxRoot: string;
@@ -455,7 +453,6 @@ export async function runSubagentCore(
       skill: resolved.skill,
       skillFilePath: childSkillFilePath,
       outputMode: resolved.outputMode,
-      toolProfile: resolved.toolProfile,
       outputLastMessagePath: finalMessageTarget.outputLastMessagePath,
       promptProvenance,
       mailboxRoot,
@@ -568,7 +565,6 @@ export async function runSubagentCore(
       resolved_skill_sha256: skillAudit.resolvedSkillSha256,
       requested_output_mode: resolved.outputMode,
       written_output_mode: writtenOutputMode,
-      resolved_tool_profile: resolved.toolProfile,
       stop_reason: processResult.stopReason,
       stop_signal: processResult.stopSignal,
       ...runErrorTaxonomy({

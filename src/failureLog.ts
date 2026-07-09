@@ -75,7 +75,6 @@ export interface FailureLogRecord {
   model_class?: string;
   skill?: string | null;
   output_mode?: string;
-  tool_profile?: string;
   provider_error_type?: string;
   provider_status_code?: number;
   provider_error_message?: string;
@@ -218,67 +217,7 @@ export function failureReasonCodeForError(error: unknown): FailureReasonCode {
   if (!(error instanceof ValidationError)) {
     return "handler_error";
   }
-  if (error.reasonCode) {
-    return error.reasonCode;
-  }
-  const message = error.message;
-  if (message.includes("cwd must be an absolute path")) return "cwd_not_absolute";
-  if (message.includes("cwd is not accessible")) return "cwd_inaccessible";
-  if (message.includes("cwd must be a directory")) return "cwd_not_directory";
-  if (message.includes("child entrypoint is missing")) return "child_entrypoint_missing";
-  if (message.includes("child entrypoint is not a file")) return "child_entrypoint_not_file";
-  if (message.includes("prompt must be a nonempty string")) return "prompt_missing";
-  if (message.includes("default_model_class is not configured")) return "config_missing_default_model_class";
-  if (message.includes("timeout_ms must be at least") || message.includes("timeout_ms must be a positive integer")) {
-    return "invalid_timeout_ms";
-  }
-  if (message.includes("timeout_ms under budget for deadline-risk workload")) {
-    return "timeout_underbudget_for_deadline_risk";
-  }
-  if (message.includes("timeout_ms is not supported by run_subagent")) {
-    return "run_subagent_timeout_unsupported";
-  }
-  if (message.includes("wait_ms must be a nonnegative integer")) return "invalid_wait_ms";
-  if (message.includes("incompatible with run_subagent's quick_noninteractive contract")) {
-    return "run_subagent_incompatible_workload";
-  }
-  if (message.includes("skill must") || message.includes("skill_name") || message.includes("skill invocation syntax")) {
-    return "invalid_skill";
-  }
-  if (message.includes("model is no longer a public input")) return "invalid_model";
-  if (message.includes("model_class must")) return "invalid_model_class";
-  if (message.includes("known unhealthy for run_subagent one-shot")) return "model_class_unhealthy";
-  if (message.includes("thinking_level is calibrated by model_class")) return "invalid_thinking_level";
-  if (message.includes("curated Subagent007 Pi allowlist")) return "invalid_model";
-  if (message.includes("thinking_level must")) return "invalid_thinking_level";
-  if (message.includes("tool_profile must")) return "invalid_tool_profile";
-  if (message.includes("output_mode must")) return "invalid_output_mode";
-  if (message.includes("resume session ")) return "invalid_session_id";
-  if (message.includes("session_id is not supported")) return "raw_session_id_unsupported";
-  if (message.includes("session_id")) return "invalid_session_id";
-  if (message.includes("run not found")) return "run_not_found";
-  if (message.includes("run is not accepting input")) return "run_not_accepting_input";
-  if (message.includes("input request not found")) return "input_request_not_found";
-  if (message.includes("input request is not part of run")) return "input_request_not_part_of_run";
-  if (message.includes("input request is already answered")) return "input_request_already_answered";
-  if (message.includes("input request is already timed out")) return "input_request_already_timed_out";
-  if (message.includes("input request is already closed")) return "input_request_already_closed";
-  if (message.includes("session_key must")) return "invalid_session_key";
-  if (message.includes("resume_mode must")) return "invalid_resume_mode";
-  if (message.includes("packet_policy must")) return "invalid_packet_policy";
-  if (message.includes("session lock ownership was lost")) return "session_already_running";
-  if (message.includes("session already exists")) return "session_already_exists";
-  if (message.includes("session is already running")) return "session_already_running";
-  if (message.includes("session does not exist")) return "session_does_not_exist";
-  if (message.includes("session manifest is invalid") || message.includes("session manifest is unreadable")) {
-    return "session_manifest_invalid";
-  }
-  if (message.includes("session ledger is invalid") || message.includes("session ledger is behind")) {
-    return "session_ledger_invalid";
-  }
-  if (message.includes("session manifest cwd does not match")) return "session_cwd_mismatch";
-  if (message.includes("session skill mismatch")) return "session_skill_mismatch";
-  return "unknown_validation_error";
+  return error.reasonCode ?? "unknown_validation_error";
 }
 
 export function failureClassForToolHandlerError(

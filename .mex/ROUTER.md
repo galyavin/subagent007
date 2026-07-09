@@ -14,7 +14,7 @@ edges:
     condition: when setting up the dev environment or running the project for the first time
   - target: patterns/INDEX.md
     condition: when starting a task — check the pattern index for a matching pattern file
-last_updated: 2026-07-08
+last_updated: 2026-07-09
 ---
 
 # Session Bootstrap
@@ -29,12 +29,15 @@ Then read this file fully before doing anything else in this session.
 - Durable runs persist snapshots and public event ledgers, support cancellation and caller input, and fail closed on restart drift.
 - Model classes, config migration, model-health probes, observed campaign/probe tooling, and failure-log archival are implemented.
 - Observed campaign tool-listing asserts the exact 12-tool public MCP surface and `skill_name` vs legacy `skill` schema guidance instead of treating `listTools()` as liveness-only.
+- Observed campaign coverage is keyed by caller-visible `surfaces` and `result_classes`; retired descriptive `lifecycle_phases` metadata is not part of the coverage contract.
 - Observed `full-current` coverage includes recursive delegate success lineage, depth-limit rejection, forged-lineage rejection, and private recursive-control leakage checks.
 - Observed `full-current` coverage also includes missing-final-output classification, named-session `require_existing` missing-session preflight for both session tools, `start_session_run` packet-failure telemetry correlation, and local active-child capacity exhaustion/release.
 - Public run views and transcript provenance render a redacted caller-prompt marker instead of raw caller prompt text; observed campaign redaction checks include prompt sentinels in public artifacts/state.
 - Public MCP result/list/session surfaces, failure logs, and README expose model classes and health/migration guidance without concrete model IDs or thinking-level calibration values; observed campaign result matching asserts absence of forbidden calibration fields and thinking-level field-name variants.
 - Session terminal failure telemetry preserves the caller-facing durable context: packet failures from `start_session_run` and `run_subagent_session` log the correct public tool, durable `run_id`, and `task_kind:"session"`.
 - The durable-run contract exposes session start tools under `tools.session_start`, while preserving the existing `tools.start` tuple for run-only adapters.
+- Skill binding normalization and schema descriptions are centralized in `src/skillBinding.ts`; prompt-level skill invocation syntax is rejected unless the caller binds `skill_name`/legacy `skill`.
+- Failure reason codes come from explicit `ValidationError.reasonCode`; failure logging does not infer semantic codes from message text.
 - SAF repairs are in place for provider usage-limit metadata, parent-exit child-process cleanup, opt-in active-child launch fusing, structured run-operation semantic rejections, packet-required not-ready taxonomy, public prompt projection, and named-session manifest preflight eligibility.
 - Requested `final` output is a hard contract: a clean child exit without a captured final message fails as `missing_final_output` and writes the public transcript only as diagnostic output.
 - Server-launched children receive a native `delegate` tool backed by private parent-owned recursive control IPC; recursive descendants are normal durable runs with `parent_run_id`, `root_run_id`, `recursion_depth`, and direct `child_run_ids` in run views.
@@ -44,7 +47,7 @@ Then read this file fully before doing anything else in this session.
 **Not Built:**
 - There is no queue behind `SUBAGENT007_MAX_ACTIVE_CHILDREN`; capacity exhaustion is a front-door rejection guard.
 - There is no database or remote job manager; state is local filesystem-backed.
-- Tool profiles are compatibility inputs only and do not restrict child tools.
+- Tool profiles are compatibility inputs only: legacy values are validated, then ignored, and no runtime/result/session/failure surface carries resolved profile state.
 - Recursive delegation currently provides one child-facing `delegate` tool and direct lineage metadata only; full descendant-tree management and cascade cancel are not built.
 
 **Known Issues:**

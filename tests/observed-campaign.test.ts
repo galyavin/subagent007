@@ -863,7 +863,6 @@ test("observed MCP probe self-check fails when a profile has no compatible scena
       scenarios: {
         "schema-error": {
           tool: "run_subagent",
-          lifecycle_phases: ["sdk-schema-validation"],
           result_classes: ["schema_error"],
           surfaces: [],
         },
@@ -1079,7 +1078,6 @@ test("observed MCP probe fails required coverage when selected scenario has wron
       scenarios: {
         "schema-error": {
           tool: "run_subagent",
-          lifecycle_phases: ["sdk-schema-validation"],
           result_classes: ["success"],
           surfaces: ["run_subagent-success"],
         },
@@ -1142,7 +1140,6 @@ test("observed MCP probe fails tool-listing coverage when required public tools 
       scenarios: {
         "tool-listing": {
           tool: "__list_tools",
-          lifecycle_phases: ["tool-discovery"],
           result_classes: ["expected_tool_surface"],
           surfaces: ["tool-listing"],
         },
@@ -1213,7 +1210,6 @@ test("observed MCP probe fails tool-listing coverage when unexpected public tool
       scenarios: {
         "tool-listing": {
           tool: "__list_tools",
-          lifecycle_phases: ["tool-discovery"],
           result_classes: ["expected_tool_surface"],
           surfaces: ["tool-listing"],
         },

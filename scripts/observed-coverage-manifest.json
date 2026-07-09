@@ -74,205 +74,171 @@
   "scenarios": {
     "tool-listing": {
       "tool": "__list_tools",
-      "lifecycle_phases": ["tool-discovery"],
       "result_classes": ["expected_tool_surface"],
       "surfaces": ["tool-listing"]
     },
     "model-listing": {
       "tool": "list_model_classes",
-      "lifecycle_phases": ["model-class-listing"],
       "result_classes": ["success"],
       "surfaces": ["model-class-listing"]
     },
     "model-listing-alias": {
       "tool": "list_allowed_models",
-      "lifecycle_phases": ["model-class-listing", "compatibility-alias"],
       "result_classes": ["success"],
       "surfaces": ["model-class-listing-alias"]
     },
     "run-contract": {
       "tool": "get_run_contract",
-      "lifecycle_phases": ["contract-discovery"],
       "result_classes": ["success"],
       "surfaces": ["durable-run-contract"]
     },
     "runtime-readiness": {
       "tool": "get_runtime_readiness",
-      "lifecycle_phases": ["runtime-readiness", "contract-discovery"],
       "result_classes": ["runtime_ready"],
       "surfaces": ["runtime-readiness"]
     },
     "success": {
       "tool": "run_subagent",
-      "lifecycle_phases": ["one-shot-success"],
       "result_classes": ["run_success"],
       "surfaces": ["run_subagent-success"]
     },
     "auto-promotion": {
       "tool": "run_subagent",
-      "lifecycle_phases": ["one-shot-compatibility", "auto-promotion", "polling", "terminal-snapshot"],
       "result_classes": ["auto_promoted"],
       "surfaces": ["run_subagent-auto-promotion"]
     },
     "schema-error": {
       "tool": "run_subagent",
-      "lifecycle_phases": ["sdk-schema-validation"],
       "result_classes": ["schema_error"],
       "surfaces": ["run_subagent-schema-error"]
     },
     "handler-validation": {
       "tool": "run_subagent",
-      "lifecycle_phases": ["handler-validation"],
       "result_classes": ["preflight_rejected"],
       "surfaces": ["run_subagent-preflight-rejection"]
     },
     "child-failure": {
       "tool": "run_subagent",
-      "lifecycle_phases": ["child-process-terminal"],
       "result_classes": ["nonzero_exit"],
       "surfaces": ["run_subagent-child-failure"]
     },
     "packet-failure": {
       "tool": "run_subagent_session",
-      "lifecycle_phases": ["session-attempt", "packet-required-gate"],
       "result_classes": ["packet_required_not_ready"],
       "surfaces": ["run_subagent_session-packet-failure"]
     },
     "transcript-redaction": {
       "tool": "run_subagent",
-      "lifecycle_phases": ["transcript-rendering"],
       "result_classes": ["transcript_redacted"],
       "surfaces": ["transcript-redaction"]
     },
     "timeout-recovery": {
       "tool": "run_subagent",
-      "lifecycle_phases": ["one-shot-timeout", "timeout-recovery"],
       "result_classes": ["timeout_recovered"],
       "surfaces": ["run_subagent-timeout-recovery"]
     },
     "start-run-async-polling": {
       "tool": "start_run",
-      "lifecycle_phases": ["async-start", "polling", "terminal-snapshot"],
       "result_classes": ["async_polling"],
       "surfaces": ["start_run-async-polling"]
     },
     "missing-final-output": {
       "tool": "start_run",
-      "lifecycle_phases": ["async-start", "final-output-contract", "polling", "terminal-snapshot"],
       "result_classes": ["missing_final_output"],
       "surfaces": ["start_run-missing-final-output"]
     },
     "local-capacity-exhaustion": {
       "tool": "start_run",
-      "lifecycle_phases": ["async-start", "local-capacity", "handler-validation", "cancellation", "terminal-snapshot"],
       "result_classes": ["local_capacity_exhaustion_release"],
       "surfaces": ["start_run-local-capacity-exhaustion"]
     },
     "start-session-run-async-polling": {
       "tool": "start_session_run",
-      "lifecycle_phases": ["async-start", "session-attempt", "packet-required-gate", "packet-closure", "polling", "terminal-snapshot"],
       "result_classes": ["session_async_polling"],
       "surfaces": ["start_session_run-async-polling", "run_subagent_session-valid-packet-closure"]
     },
     "start-session-packet-failure": {
       "tool": "start_session_run",
-      "lifecycle_phases": ["async-start", "session-attempt", "packet-required-gate", "polling", "terminal-snapshot", "failure-log-correlation"],
       "result_classes": ["start_session_packet_failure_logged"],
       "surfaces": ["start_session_run-packet-failure"]
     },
     "start-session-require-existing-missing": {
       "tool": "start_session_run",
-      "lifecycle_phases": ["session-attempt", "session-manifest-preflight", "handler-validation"],
       "result_classes": ["session_require_existing_missing"],
       "surfaces": ["start_session_run-require-existing-missing"]
     },
     "schedule-run-durable-first": {
       "tool": "schedule_run",
-      "lifecycle_phases": ["scheduler-start", "async-start", "polling", "terminal-snapshot"],
       "result_classes": ["scheduled_durable"],
       "surfaces": ["schedule_run-durable-first"]
     },
     "get-run-missing": {
       "tool": "get_run",
-      "lifecycle_phases": ["run-lookup", "handler-validation"],
       "result_classes": ["run_not_found"],
       "surfaces": ["get_run-run-not-found"]
     },
     "caller-input": {
       "tool": "answer_run_input",
-      "lifecycle_phases": ["async-start", "caller-input", "input-settlement"],
       "result_classes": ["input_answered"],
       "surfaces": ["answer_run_input-caller-input"]
     },
     "caller-input-wrong-request": {
       "tool": "answer_run_input",
-      "lifecycle_phases": ["async-start", "caller-input", "handler-validation", "cancellation", "terminal-snapshot"],
       "result_classes": ["input_wrong_rejected"],
       "surfaces": ["answer_run_input-wrong-request-rejection"]
     },
     "cancellation": {
       "tool": "cancel_run",
-      "lifecycle_phases": ["async-start", "cancellation", "terminal-snapshot"],
       "result_classes": ["cancelled"],
       "surfaces": ["cancel_run-cancellation-settlement"]
     },
     "cancel-terminal-run": {
       "tool": "cancel_run",
-      "lifecycle_phases": ["async-start", "terminal-snapshot", "cancellation-idempotency"],
       "result_classes": ["terminal_cancel_idempotent"],
       "surfaces": ["cancel_run-terminal-idempotency"]
     },
     "restart-drift": {
       "tool": "get_run",
-      "lifecycle_phases": ["async-start", "server-restart", "restart-drift", "terminal-snapshot"],
       "result_classes": ["restart_drift"],
       "surfaces": ["get_run-restart-drift"]
     },
     "session-valid-closure": {
       "tool": "run_subagent_session",
-      "lifecycle_phases": ["session-attempt", "packet-required-gate", "packet-closure"],
       "result_classes": ["valid_packet_closure"],
       "surfaces": ["run_subagent_session-valid-packet-closure"]
     },
     "session-invalid-closure": {
       "tool": "run_subagent_session",
-      "lifecycle_phases": ["session-attempt", "packet-required-gate", "packet-closure"],
       "result_classes": ["invalid_packet_closure"],
       "surfaces": ["run_subagent_session-invalid-packet-closure"]
     },
     "run-subagent-session-require-existing-missing": {
       "tool": "run_subagent_session",
-      "lifecycle_phases": ["session-attempt", "session-manifest-preflight", "handler-validation"],
       "result_classes": ["session_require_existing_missing"],
       "surfaces": ["run_subagent_session-require-existing-missing"]
     },
     "installed-pi-integration": {
       "tool": "run_subagent",
-      "lifecycle_phases": ["installed-pi-child", "one-shot-success"],
       "result_classes": ["run_success"],
       "surfaces": ["installed-pi-integration", "run_subagent-success"]
     },
     "recursive-delegate-success": {
       "tool": "schedule_run",
-      "lifecycle_phases": ["scheduler-start", "async-start", "recursive-delegate", "polling", "terminal-snapshot"],
       "result_classes": ["recursive_delegate_success_lineage"],
       "surfaces": ["recursive-delegate-success-lineage"]
     },
     "recursive-delegate-depth-limit": {
       "tool": "schedule_run",
-      "lifecycle_phases": ["scheduler-start", "async-start", "recursive-delegate", "recursive-depth-guard", "polling", "terminal-snapshot"],
       "result_classes": ["recursive_delegate_depth_rejected"],
       "surfaces": ["recursive-delegate-depth-limit"]
     },
     "recursive-delegate-parent-terminal-child-finish": {
       "tool": "schedule_run",
-      "lifecycle_phases": ["scheduler-start", "async-start", "recursive-delegate", "polling", "terminal-snapshot"],
       "result_classes": ["recursive_delegate_parent_terminal_child_finish_event"],
       "surfaces": ["recursive-delegate-parent-terminal-child-finish-event"]
     },
     "recursive-delegate-forged-lineage": {
       "tool": "schedule_run",
-      "lifecycle_phases": ["scheduler-start", "async-start", "recursive-delegate", "recursive-lineage-guard", "polling", "terminal-snapshot"],
       "result_classes": ["recursive_delegate_forged_rejected"],
       "surfaces": ["recursive-delegate-forged-lineage"]
     }

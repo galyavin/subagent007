@@ -11,7 +11,7 @@ triggers:
 edges:
   - target: context/architecture.md
     condition: when a convention depends on understanding the system structure
-last_updated: 2026-07-08
+last_updated: 2026-07-09
 ---
 
 # Conventions
@@ -27,6 +27,7 @@ last_updated: 2026-07-08
 - `src/server.ts` owns MCP registration and handler-level result shaping.
 - `src/runTask.ts` owns durable task lifecycle; do not duplicate task state transitions in handlers.
 - `src/runSubagent.ts` owns the Pi child request-file contract and child result projection.
+- `src/skillBinding.ts` owns `skill_name`/legacy `skill` validation, prompt-invocation rejection, and MCP schema description text.
 - `src/types.ts` is the public type/reason-code source; update tests and README when public fields change.
 - `tests/*.test.ts` are integration-heavy Node tests; helpers live in `tests/helpers/`.
 - `scripts/*.mjs` are operational commands and should be documented in AGENTS/setup context when added.
@@ -44,7 +45,10 @@ last_updated: 2026-07-08
 - When adding an environment variable, update source constants, README environment docs, and `npm run docs:check` coverage.
 - When changing child execution, verify timeout/cancel/parent-exit cleanup because fake child descendants can otherwise outlive the test run.
 - Compatibility aliases such as `list_allowed_models`, legacy `skill`, and legacy `tool_profile` are intentional unless a migration explicitly removes them.
+- Legacy `tool_profile` is boundary-only compatibility: validate accepted values, but do not add `toolProfile`, `resolved_tool_profile`, or failure-log profile fields downstream.
+- `ValidationError.reasonCode` is the semantic authority for failure reason mapping. Do not infer public reason codes from English message text.
 - Observed campaign result classes must prove the caller-visible contract they name. For `tool-listing`, assert the exact public tool surface and schema guidance; do not count a generic non-error `listTools()` response as full discovery coverage.
+- Observed campaign coverage uses `surfaces` and `result_classes`; do not reintroduce descriptive `lifecycle_phases` as a required coverage axis.
 
 ## Verify Checklist
 Before presenting code changes:

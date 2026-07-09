@@ -36,6 +36,10 @@ import {
   startRunTask,
 } from "./runTask.js";
 import { startRecursiveControlServer } from "./recursiveControl.js";
+import {
+  LEGACY_SKILL_INPUT_DESCRIPTION,
+  SKILL_NAME_INPUT_DESCRIPTION,
+} from "./skillBinding.js";
 import { SERVER_VERSION } from "./runtimeMetadata.js";
 import {
   type FailureReasonCode,
@@ -249,13 +253,13 @@ const skillNameInputSchema = z
   .string()
   .nullable()
   .optional()
-  .describe("Preferred bare skill name only, such as pda-lite or plugin:skill-name; null means no skill.");
+  .describe(SKILL_NAME_INPUT_DESCRIPTION);
 
 const legacySkillInputSchema = z
   .string()
   .nullable()
   .optional()
-  .describe("Legacy alias for skill_name; prefer skill_name for new callers. Bare skill name only, such as pda-lite or plugin:skill-name; null means no skill.");
+  .describe(LEGACY_SKILL_INPUT_DESCRIPTION);
 
 const runKindSchema = z
   .enum(RUN_KINDS, {
@@ -273,7 +277,7 @@ const baseRunInputSchema = {
   tool_profile: z
     .enum(TOOL_PROFILES)
     .optional()
-    .describe("Legacy compatibility field; all registered child tools are active regardless of this value."),
+    .describe("Legacy compatibility field; accepted values are validated and ignored; all registered child tools are active."),
 };
 
 const runInputSchema = z.strictObject({

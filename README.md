@@ -118,7 +118,7 @@ Optional common fields:
 - `skill_name`: bare skill name only, such as `pda-lite` or `google-drive:google-docs`; null or omission means no skill
 - `skill`: legacy alias for `skill_name`; if both are provided, they must match
 - `output_mode`: `final` or `transcript`; default is `final`; use `transcript` for debugging or audit trails
-- `tool_profile`: legacy compatibility field; accepted values resolve to `all` and do not restrict child tools
+- `tool_profile`: legacy compatibility field; accepted values are validated and ignored; all registered child tools are active
 
 Child-invocation input rules:
 
@@ -138,7 +138,7 @@ Tool authority:
 
 - Every Subagent007 child activates all tools registered in the Pi session registry: Pi built-ins, SDK custom tools such as `request_input`, and installed Pi extension/MCP tools.
 - Required web tools: `web_search` and `web_read`. Child startup fails clearly if either tool is missing from the Pi environment.
-- Legacy profile inputs `inspect`, `web_search`, `shell`, and `workspace_write` are still accepted so older callers do not fail validation, but they resolve to `all`.
+- Legacy profile inputs `inspect`, `web_search`, `shell`, and `workspace_write` are still accepted so older callers do not fail validation, then ignored; every child uses all registered tools.
 
 This server does not enumerate Codex MCP servers directly. It exposes what the embedded Pi session registers as tools. To add a new capability, install or configure it in the Pi environment so it appears in `session.getAllTools()`. Each server-launched Subagent007 child also receives a native `delegate` tool for recursive delegation; the tool calls back to the original parent server, which creates the descendant as a normal durable run.
 

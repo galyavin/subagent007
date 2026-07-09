@@ -14,22 +14,14 @@ import {
   type RunSubagentPromotionReasonCode,
   type RunSubagentRequest,
   type RunnerConfig,
-  type ToolProfile,
 } from "./types.js";
 import { DEFAULT_MODEL_CLASS, resolveModelClass } from "./modelAllowlist.js";
 import { minimumRequestedTimeoutMs } from "./timeoutBudget.js";
 import { ValidationError } from "./types.js";
 import { safeIntegerFromEnv } from "./env.js";
+import { resolveSkillBinding } from "./skillBinding.js";
 
-const SKILL_NAME_ERROR =
-  "skill must be a bare skill name such as pda-lite or plugin:skill-name; pass pda-lite, not $pda-lite, /skill:pda-lite, a path, markdown link, or prose";
-const SKILL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*(?::[A-Za-z0-9][A-Za-z0-9_-]*)?$/;
-const PROMPT_SKILL_INVOCATION_PATTERNS = [
-  /^\/skill:[A-Za-z0-9][A-Za-z0-9_-]*(?::[A-Za-z0-9][A-Za-z0-9_-]*)?(?:\b|\s|$)/,
-  /^\$[A-Za-z0-9][A-Za-z0-9_-]*(?::[A-Za-z0-9][A-Za-z0-9_-]*)?(?:\b|\s|$)/,
-  /^\[\$[A-Za-z0-9][A-Za-z0-9_-]*(?::[A-Za-z0-9][A-Za-z0-9_-]*)?\]\([^)]+\)/,
-  /^(?:use|run|invoke)\s+\$[A-Za-z0-9][A-Za-z0-9_-]*(?::[A-Za-z0-9][A-Za-z0-9_-]*)?(?:\b|\s|$)/i,
-];
+export { validateSkillName } from "./skillBinding.js";
 const ONE_SHOT_MAX_PROMPT_CHARS = 6000;
 const BROAD_WORK_OBJECTS =
   String.raw`(?:docs?|repo|diff|artifact|architecture|doctrine|charts?|implementation|requirements?|correctness|changes?|patch|repair|delta|residual)`;
@@ -178,54 +170,12 @@ function validateChoice<T extends string>(
   return choice as T;
 }
 
-export function validateSkillName(value: unknown, key = "skill"): string | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-  if (typeof value !== "string") {
-    throw new ValidationError(`${key} must be a string or null`, "invalid_skill");
-  }
-  if (!SKILL_NAME_PATTERN.test(value)) {
-    throw new ValidationError(SKILL_NAME_ERROR, "invalid_skill");
-  }
-  return value;
-}
-
-function assertNoUnstructuredSkillInvocation(prompt: string, resolvedSkill: string | undefined): void {
-  if (resolvedSkill) {
-    return;
-  }
-  const firstLine = prompt.trimStart().split(/\r?\n/, 1)[0]?.trimEnd() ?? "";
-  if (PROMPT_SKILL_INVOCATION_PATTERNS.some((pattern) => pattern.test(firstLine))) {
-    throw new ValidationError(
-      "Pass skill_name instead of putting skill invocation syntax in prompt.",
-      "invalid_skill",
-    );
-  }
-}
-
-function resolveSkillName(request: RunSubagentRequest, prompt: string): string | undefined {
-  const legacySkill = validateSkillName(request.skill, "skill");
-  const canonicalSkill = validateSkillName(request.skill_name, "skill_name");
-  if (legacySkill && canonicalSkill && legacySkill !== canonicalSkill) {
-    throw new ValidationError("skill and skill_name must match when both are provided", "invalid_skill");
-  }
-  const resolvedSkill = canonicalSkill ?? legacySkill;
-  assertNoUnstructuredSkillInvocation(prompt, resolvedSkill);
-  return resolvedSkill;
-}
-
 function validateModelClass(value: unknown): ModelClass | undefined {
   return validateChoice(value, "model_class", MODEL_CLASSES);
 }
 
 function validateOutputMode(value: unknown): OutputMode {
   return validateChoice(value, "output_mode", OUTPUT_MODES, "final") as OutputMode;
-}
-
-function validateToolProfile(value: unknown): ToolProfile {
-  validateChoice(value, "tool_profile", TOOL_PROFILES);
-  return "all";
 }
 
 function validateContinuity(value: unknown, request: unknown): RunContinuity {
@@ -371,6 +321,8 @@ export async function validateAndResolveRequest(
   const continuity = validateContinuity(request.continuity, request);
   await validateResumeSessionFile(continuity);
 
+  validateChoice(request.tool_profile, "tool_profile", TOOL_PROFILES);
+
   return {
     prompt,
     cwd,
@@ -379,9 +331,8 @@ export async function validateAndResolveRequest(
     thinkingLevel: resolvedModelClass.thinkingLevel,
     timeoutMs,
     continuity,
-    skill: resolveSkillName(request, prompt),
+    skill: resolveSkillBinding(request, prompt),
     outputMode: validateOutputMode(request.output_mode),
-    toolProfile: validateToolProfile(request.tool_profile),
   };
 }
 

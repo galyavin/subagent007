@@ -159,7 +159,6 @@ if (!parsed.options.recordStatus) {
       model_class: parsed.options.modelClass,
       run_kind: "quick_noninteractive",
       output_mode: "final",
-      tool_profile: "inspect",
     },
   );
 }

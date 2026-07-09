@@ -35,6 +35,7 @@ import {
 } from "./session.js";
 import { DEFAULT_HEARTBEAT_MESSAGE, type HeartbeatNotify } from "./progress.js";
 import { PUBLIC_PROMPT_REDACTED_MARKER, serverContractPacketMarker, serverContractSkillMarker } from "./prompt.js";
+import { skillBindingForPublicMarker } from "./skillBinding.js";
 import {
   appendRunPublicEvent,
   publicOutputExcerptProjection,
@@ -633,11 +634,7 @@ async function appendRunStartedEvent(
       occurred_at: state.startedAt,
     });
   }
-  const skill = typeof request.skill_name === "string" && request.skill_name.trim() !== ""
-    ? request.skill_name.trim()
-    : typeof request.skill === "string" && request.skill.trim() !== ""
-      ? request.skill.trim()
-      : undefined;
+  const skill = skillBindingForPublicMarker(request);
   if (skill) {
     await appendPublicEvent(state, {
       kind: "task",
@@ -854,7 +851,6 @@ async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
     model_class: result.resolved_model_class,
     skill: result.requested_skill,
     output_mode: result.requested_output_mode,
-    tool_profile: result.resolved_tool_profile,
   });
 }
 
@@ -1287,7 +1283,6 @@ async function persistRestartDriftSnapshot(
     model_class: staleView.resolved_model_class,
     skill: staleView.requested_skill,
     output_mode: staleView.requested_output_mode,
-    tool_profile: staleView.resolved_tool_profile,
   });
   await writeTaskSnapshot(staleView);
   return staleView;
