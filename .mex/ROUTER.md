@@ -14,7 +14,7 @@ edges:
     condition: when setting up the dev environment or running the project for the first time
   - target: patterns/INDEX.md
     condition: when starting a task — check the pattern index for a matching pattern file
-last_updated: 2026-07-10
+last_updated: 2026-07-11
 ---
 
 # Session Bootstrap
@@ -35,6 +35,7 @@ Then read this file fully before doing anything else in this session.
 - Observed `full-current` coverage includes recursive delegate success lineage, depth-limit rejection, forged-lineage rejection, and private recursive-control leakage checks.
 - Observed `full-current` coverage also includes missing-final-output classification, named-session `require_existing` missing-session preflight for both session tools, `start_session_run` packet-failure telemetry correlation, and local active-child capacity exhaustion/release.
 - Public run views and transcript provenance render a redacted caller-prompt marker instead of raw caller prompt text; observed campaign redaction checks include prompt sentinels in public artifacts/state.
+- Public `get_run` and `cancel_run` descriptions make cancellation eligibility explicit: `working`/`running_silent`, elapsed silence, live heartbeats, and recursive child activity are not staleness or cancellation authority; only explicit user intent or a real caller-owned stop condition is.
 - Public MCP result/list/session surfaces, failure logs, and README expose model classes and health/migration guidance without concrete model IDs or thinking-level calibration values; observed campaign result matching asserts absence of forbidden calibration fields and thinking-level field-name variants.
 - Session terminal failure telemetry preserves the caller-facing durable context: packet failures from `start_session_run` and `run_subagent_session` log the correct public tool, durable `run_id`, and `task_kind:"session"`.
 - The durable-run contract exposes session start tools under `tools.session_start`, while preserving the existing `tools.start` tuple for run-only adapters.

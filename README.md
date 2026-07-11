@@ -11,6 +11,8 @@ Use this server as a durable delegation boundary. Treat `run_id` as the unit of 
 - Use `run_subagent` only when the task is genuinely quick, bounded, non-interactive, and deadline-compatible.
 - Use `schedule_run.wait_ms` for the initial wait; use `timeout_ms` only when the child should be killed at a hard deadline.
 - If `status:"working"`, poll the same `run_id` with `get_run`; if `status:"input_required"`, answer its `request_id` and keep polling. Do not resubmit the same prompt.
+- Treat `working` as authoritative non-terminal work. `running_silent`, several minutes without public output, live heartbeats, and recursive child activity are normal and do not make a run stale or authorize cancellation.
+- Use `cancel_run` only for explicit user intent or a real caller-owned stop condition established independently of elapsed silence. A reviewer or delegated result required by the active workflow remains a blocking gate until it reaches a terminal status.
 - Bind skills with the `skill_name` field. Do not put `/skill:...`, `$skill`, markdown links, paths, or prose skill references in the prompt.
 - Treat `preflight_rejected` plus `child_started:false` as a front-door validation failure. No child model work ran.
 - At terminal status, prefer file-backed `output_references`; fall back to legacy `output_path` only when present.
@@ -211,6 +213,8 @@ Flow:
 
 After `cancel_run`, an in-flight cancellation reports `status:"working"` with `active_phase:"cancelling"`.
 Continue polling until `status:"cancelled"` appears; that terminal view includes the settled cancellation metadata.
+
+Do not infer a cancellation condition from `running_silent`, `no_public_output_elapsed_ms`, elapsed wall time, heartbeat count, or the presence of recursive children. Model-backed work can legitimately remain silent for many minutes. If the active workflow requires the delegated result, keep polling until terminal completion or input; cancel only when the user asks to abandon it or a real caller-owned deadline or stop condition is reached.
 
 Input requests are stored under `~/.codex/subagent007-pi/input-requests` by default. Each request has one terminal settlement: `answered`, `timed_out`, or `closed`. Multiple pending requests are legal; clients that auto-answer should do so only when exactly one request is pending and fail closed otherwise. Duplicate answers, stale request IDs, foreign request IDs, and late answers to closed or timed-out requests are rejected. A run serializes answer acceptance, cancellation, finalization, and pending-request closure; the first committed outcome wins. Cancelling a run or reaching any terminal run state closes remaining pending requests.
 

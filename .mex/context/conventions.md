@@ -11,7 +11,7 @@ triggers:
 edges:
   - target: context/architecture.md
     condition: when a convention depends on understanding the system structure
-last_updated: 2026-07-09
+last_updated: 2026-07-11
 ---
 
 # Conventions
@@ -35,6 +35,7 @@ last_updated: 2026-07-09
 ## Patterns
 - Semantic preflight rejection must happen before child launch and return structured content with `kind:"preflight_rejected"` and `child_started:false`.
 - Run-operation semantic rejections from `get_run`, `answer_run_input`, and `cancel_run` return structured content with `kind:"operation_rejected"` and a typed `reason_code`; do not include `child_started` because the target run may already have launched.
+- Tool descriptions are part of the agent-facing lifecycle contract. Keep `get_run` and `cancel_run` explicit that `working`/`running_silent`, elapsed silence, live heartbeats, and recursive child activity do not authorize cancellation.
 - Named-session manifest eligibility failures that are knowable before child launch must reject before durable task registration with `kind:"preflight_rejected"` and `child_started:false`; keep the locked session execution checks as race protection.
 - Public event views and transcripts must stay sanitized; never expose raw thinking, private tool payloads, caller prompt text, full composed prompts, or answer values. Use the shared public prompt projection marker instead of writing `request.prompt` into public events or transcript provenance.
 - Recursive parent public events are part of the caller contract: descendant registration/finalization should project through sanitized `recursive_child_started` and `recursive_child_finished` events whose child ids match the direct `child_run_ids`/delegated run id and whose metadata contains only lineage/status/success fields.

@@ -12,7 +12,7 @@ edges:
     condition: when specific technology details are needed
   - target: context/decisions.md
     condition: when understanding why the architecture is structured this way
-last_updated: 2026-07-10
+last_updated: 2026-07-11
 ---
 
 # Architecture
@@ -30,7 +30,7 @@ Operation-only semantic failures from those run-operation tools project as `kind
 Named sessions add `src/session.ts` manifest/ledger/lock handling around the same child execution path. Manifest eligibility failures known before launch, such as missing `require_existing` sessions, reject before durable task registration with `preflight_rejected` and `child_started:false`; locked execution checks still run later as race protection. Terminal session failures logged after durable task creation preserve the caller tool, durable `run_id`, and `task_kind:"session"` so telemetry can be correlated with public run views.
 
 ## Key Components
-- `server.ts` - MCP tool surface, schema/preflight rejection shape, retry guidance, and failure logging for handler-level failures.
+- `server.ts` - MCP tool surface, schema/preflight rejection shape, retry and cancellation-eligibility guidance, and failure logging for handler-level failures.
 - `runTask.ts` - durable task lifecycle, snapshots, background execution, cancellation, caller input closure, promotion from one-shot, and active-child lease release.
 - `runTask.ts` also records recursive lineage metadata: `parent_run_id` for descendants, `root_run_id`, `recursion_depth`, direct `child_run_ids`, and parent public events for recursive child start/finish.
 - `runSubagent.ts` - child request-file contract, Pi child invocation, transcript/final-output handling, missing-final classification, timeout metadata, provider error parsing, recursive control payload injection, and skill audit metadata.

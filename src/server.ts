@@ -490,7 +490,7 @@ server.registerTool(
   {
     title: "Get Run",
     description:
-      "Read the current status, pending input requests, and terminal result for a durable run created by run_subagent, schedule_run, start_run, start_session_run, or run_subagent_session.",
+      "Read the current status, pending input requests, and terminal result for a durable run. A working run is authoritative non-terminal work: running_silent can normally last many minutes. Elapsed time, no public output, live heartbeats, or recursive child activity do not make a run stale and do not authorize cancellation; keep polling unless explicit user intent or a real caller-owned stop condition requires cancellation.",
     inputSchema: {
       run_id: z.string().min(1),
     },
@@ -534,7 +534,8 @@ server.registerTool(
   "cancel_run",
   {
     title: "Cancel Run",
-    description: "Request cancellation for an active run and return the updated run view.",
+    description:
+      "Request cancellation only for explicit user intent or a real caller-owned stop condition, then return the updated run view. Silence, running_silent, elapsed time, no public output, live heartbeats, and recursive child activity do not authorize cancellation.",
     inputSchema: {
       run_id: z.string().min(1),
     },

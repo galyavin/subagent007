@@ -720,6 +720,14 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       true,
     );
     assert.deepEqual(runSubagentTool.inputSchema.required, ["prompt", "cwd", "run_kind"]);
+    const getRunTool = response.tools.find((tool) => tool.name === "get_run");
+    assert.ok(getRunTool);
+    assert.match(getRunTool.description ?? "", /running_silent.*many minutes/i);
+    assert.match(getRunTool.description ?? "", /not.*stale.*cancel/i);
+    const cancelRunTool = response.tools.find((tool) => tool.name === "cancel_run");
+    assert.ok(cancelRunTool);
+    assert.match(cancelRunTool.description ?? "", /explicit user intent.*caller-owned stop condition/i);
+    assert.match(cancelRunTool.description ?? "", /silence.*not.*authoriz/i);
     const runSubagentSessionTool = response.tools.find((tool) => tool.name === "run_subagent_session");
     assert.ok(runSubagentSessionTool);
     assert.equal(
