@@ -1141,7 +1141,7 @@ test("MCP list_model_classes exposes cached healthy one-shot health basis", asyn
         {
           schema_version: 1,
           model_class: "C",
-          resolved_model: "openai-codex/gpt-5.4-mini",
+          resolved_model: "openai-codex/gpt-5.6-luna",
           surface: "run_subagent_one_shot",
           checked_at: "2026-06-11T00:00:00.000Z",
           usable_for_one_shot: true,
@@ -1199,8 +1199,8 @@ test("MCP run_subagent uses the configured fake Pi child", async () => {
     assert.equal(await fs.readFile(metadata.output_path, "utf8"), "FAST FINAL");
 
     const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
-    assert.equal(logs[0].request.model, "openai-codex/gpt-5.4-mini");
-    assert.equal(logs[0].request.thinkingLevel, "high");
+    assert.equal(logs[0].request.model, "openai-codex/gpt-5.6-luna");
+    assert.equal(logs[0].request.thinkingLevel, "xhigh");
     assert.equal(logs[0].request.skill, undefined);
     assert.equal(Object.hasOwn(logs[0].request, "toolProfile"), false);
   });
@@ -1219,7 +1219,7 @@ test("MCP run_subagent auto-promotes skill-bound work without one-shot health ga
           {
             schema_version: 1,
             model_class: "A",
-            resolved_model: "openrouter/qwen/qwen3.6-35b-a3b",
+            resolved_model: "openrouter/deepseek/deepseek-v4-flash",
             surface: "run_subagent_one_shot",
             checked_at: "2026-06-11T00:00:00.000Z",
             usable_for_one_shot: false,
@@ -1261,7 +1261,7 @@ test("MCP run_subagent auto-promotes skill-bound work without one-shot health ga
       assert.equal(logs.length, 1);
       assert.equal(logs[0].request.skill, skillName);
       assert.equal(logs[0].request.skillFilePath, skillPath);
-      assert.equal(logs[0].request.model, "openrouter/qwen/qwen3.6-35b-a3b");
+      assert.equal(logs[0].request.model, "openrouter/deepseek/deepseek-v4-flash");
 
       const rawEvents = await fs.readFile(path.join(runTasksDir, `${metadata.run_id}.events.jsonl`), "utf8");
       assert.match(rawEvents, /\[auto_promoted\] run_subagent -> durable_run/);
@@ -1396,7 +1396,7 @@ test("MCP run_subagent fails fast for known unhealthy one-shot model class", asy
         {
           schema_version: 1,
           model_class: "A",
-          resolved_model: "openrouter/qwen/qwen3.6-35b-a3b",
+          resolved_model: "openrouter/deepseek/deepseek-v4-flash",
           surface: "run_subagent_one_shot",
           checked_at: "2026-06-11T00:00:00.000Z",
           usable_for_one_shot: false,

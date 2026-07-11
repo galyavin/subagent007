@@ -77,8 +77,8 @@ test("config:migrate does not rewrite retired legacy class calibrations", async 
 test("config:migrate migrates legacy model and thinking defaults to model class", async () => {
   const { configPath } = await createConfigDir();
   const original = `${JSON.stringify({
-    default_model: "openai-codex/gpt-5.4-mini",
-    default_thinking_level: "high",
+    default_model: "openai-codex/gpt-5.6-luna",
+    default_thinking_level: "xhigh",
     extra: "preserved",
   }, null, 2)}\n`;
   await fs.writeFile(configPath, original, "utf8");
@@ -88,8 +88,8 @@ test("config:migrate migrates legacy model and thinking defaults to model class"
   assert.equal(result.ok, true);
   assert.equal(result.json.status, "migrated");
   assert.deepEqual(result.json.from, {
-    default_model: "openai-codex/gpt-5.4-mini",
-    default_thinking_level: "high",
+    default_model: "openai-codex/gpt-5.6-luna",
+    default_thinking_level: "xhigh",
   });
   assert.equal(result.json.to, "C");
   const migrated = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<string, unknown>;

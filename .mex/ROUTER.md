@@ -29,6 +29,7 @@ Then read this file fully before doing anything else in this session.
 - MCP public tools expose one-shot, durable run, scheduler, named-session, mailbox, contract, readiness, and model-class surfaces.
 - Durable runs persist snapshots and public event ledgers, support cancellation and caller input, and fail closed on restart drift.
 - Model classes, config migration, model-health probes, observed campaign/probe tooling, and failure-log archival are implemented.
+- Internal model-class calibration uses the current Pi registry, and the bundled Pi coding-agent dependency is kept new enough to resolve every calibrated class model during child execution.
 - Observed campaign tool-listing asserts the exact 12-tool public MCP surface and `skill_name` vs legacy `skill` schema guidance instead of treating `listTools()` as liveness-only.
 - Observed campaign coverage is keyed by caller-visible `surfaces` and `result_classes`; retired descriptive `lifecycle_phases` metadata is not part of the coverage contract.
 - Observed `full-current` coverage includes recursive delegate success lineage, depth-limit rejection, forged-lineage rejection, and private recursive-control leakage checks.

@@ -12,7 +12,7 @@ edges:
     condition: when the reasoning behind a tech choice is needed
   - target: context/conventions.md
     condition: when understanding how to use a technology in this codebase
-last_updated: 2026-06-30
+last_updated: 2026-07-11
 ---
 
 # Stack
@@ -28,7 +28,7 @@ last_updated: 2026-06-30
 - `@modelcontextprotocol/sdk` - canonical MCP server/client types and transports; do not hand-roll protocol behavior.
 - Node built-ins (`fs/promises`, `child_process`, `path`, `crypto`) - filesystem state, detached process execution, and safe id/hash generation.
 - TypeScript compiler (`tsc`) - build and static oracle; there is no separate linter configured.
-- Pi runtime - reached through the child request-file contract rather than a direct in-process API.
+- `@earendil-works/pi-coding-agent` `^0.80.6` - Pi child runtime and model registry, reached through the child request-file contract rather than a direct in-process API.
 
 ## What We Deliberately Do NOT Use
 - No web framework; the package is an MCP server, not an HTTP app.
@@ -40,3 +40,4 @@ last_updated: 2026-06-30
 ## Version Constraints
 - Node must satisfy `>=22.19.0`.
 - Build output in `dist/` must be fresh after `src/` edits before MCP/runtime readiness checks.
+- The bundled Pi coding-agent registry must contain every concrete model behind classes A-E; a newer global `pi` executable does not make an older project-local runtime compatible.

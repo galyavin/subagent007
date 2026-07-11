@@ -17,7 +17,7 @@ export const MODEL_CLASS_CALIBRATIONS: Record<ModelClass, {
   description: string;
 }> = {
   A: {
-    model: "openrouter/qwen/qwen3.6-35b-a3b",
+    model: "openrouter/deepseek/deepseek-v4-flash",
     thinkingLevel: "high",
     description: "A",
   },
@@ -27,18 +27,18 @@ export const MODEL_CLASS_CALIBRATIONS: Record<ModelClass, {
     description: "B",
   },
   C: {
-    model: "openai-codex/gpt-5.4-mini",
-    thinkingLevel: "high",
+    model: "openai-codex/gpt-5.6-luna",
+    thinkingLevel: "xhigh",
     description: "C",
   },
   D: {
-    model: "openai-codex/gpt-5.5",
-    thinkingLevel: "high",
+    model: "openai-codex/gpt-5.6-terra",
+    thinkingLevel: "xhigh",
     description: "D",
   },
   E: {
-    model: "openai-codex/gpt-5.5",
-    thinkingLevel: "xhigh",
+    model: "openai-codex/gpt-5.6-sol",
+    thinkingLevel: "high",
     description: "E",
   },
 };
@@ -146,11 +146,11 @@ test("docs runtime fact guard fails when README publishes internal model calibra
   });
   await fs.appendFile(
     path.join(root, "README.md"),
-    "\nInternal detail that should not be public: openai-codex/gpt-5.4-mini\n",
+    "\nInternal detail that should not be public: openai-codex/gpt-5.6-luna\n",
     "utf8",
   );
   const result = await runDocsCheck(["--root", root]);
   assert.equal(result.code, 1);
   assert.match(result.stderr, /README publishes internal model calibration values/);
-  assert.match(result.stderr, /openai-codex\/gpt-5\.4-mini/);
+  assert.match(result.stderr, /openai-codex\/gpt-5\.6-luna/);
 });

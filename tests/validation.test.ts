@@ -64,8 +64,8 @@ test("legacy default model and thinking config maps to default model class", asy
   await fs.writeFile(
     configPath,
     JSON.stringify({
-      default_model: "openai-codex/gpt-5.4-mini",
-      default_thinking_level: "high",
+      default_model: "openai-codex/gpt-5.6-luna",
+      default_thinking_level: "xhigh",
     }),
   );
 
@@ -91,8 +91,8 @@ test("malformed legacy model config does not block class defaults", async () => 
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-cwd-"));
   const resolved = await validateAndResolveRequest({ prompt: "x", cwd }, config);
   assert.equal(resolved.modelClass, "C");
-  assert.equal(resolved.model, "openai-codex/gpt-5.4-mini");
-  assert.equal(resolved.thinkingLevel, "high");
+  assert.equal(resolved.model, "openai-codex/gpt-5.6-luna");
+  assert.equal(resolved.thinkingLevel, "xhigh");
 });
 
 test("model health records reject unsupported model classes", async () => {
@@ -104,7 +104,7 @@ test("model health records reject unsupported model classes", async () => {
       {
         schema_version: 1,
         model_class: "Z",
-        resolved_model: "openai-codex/gpt-5.4-mini",
+        resolved_model: "openai-codex/gpt-5.6-luna",
         surface: "run_subagent_one_shot",
         checked_at: "2026-06-11T00:00:00.000Z",
         usable_for_one_shot: true,
@@ -124,7 +124,7 @@ test("model health records require nonempty string fields", async () => {
   const baseRecord = {
     schema_version: 1,
     model_class: "C",
-    resolved_model: "openai-codex/gpt-5.4-mini",
+    resolved_model: "openai-codex/gpt-5.6-luna",
     surface: "run_subagent_one_shot",
     checked_at: "2026-06-11T00:00:00.000Z",
     usable_for_one_shot: true,
@@ -202,8 +202,8 @@ test("resolves caller fields over config defaults", async () => {
   assert.equal(resolved.prompt, "say hi");
   assert.deepEqual(resolved.continuity, { mode: "resume", session_id: sessionFile });
   assert.equal(resolved.modelClass, "D");
-  assert.equal(resolved.model, "openai-codex/gpt-5.5");
-  assert.equal(resolved.thinkingLevel, "high");
+  assert.equal(resolved.model, "openai-codex/gpt-5.6-terra");
+  assert.equal(resolved.thinkingLevel, "xhigh");
   assert.equal(resolved.skill, "pda-lite");
   assert.equal(resolved.outputMode, "final");
   assert.equal(Object.hasOwn(resolved, "toolProfile"), false);
@@ -421,11 +421,11 @@ test("accepts legacy tool profile input without adding resolved runtime state", 
 test("resolves model classes to calibrated model and thinking level", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-model-"));
   for (const [modelClass, model, thinkingLevel] of [
-    ["A", "openrouter/qwen/qwen3.6-35b-a3b", "high"],
+    ["A", "openrouter/deepseek/deepseek-v4-flash", "high"],
     ["B", "openrouter/deepseek/deepseek-v4-pro", "high"],
-    ["C", "openai-codex/gpt-5.4-mini", "high"],
-    ["D", "openai-codex/gpt-5.5", "high"],
-    ["E", "openai-codex/gpt-5.5", "xhigh"],
+    ["C", "openai-codex/gpt-5.6-luna", "xhigh"],
+    ["D", "openai-codex/gpt-5.6-terra", "xhigh"],
+    ["E", "openai-codex/gpt-5.6-sol", "high"],
   ] as const) {
     const resolved = await validateAndResolveRequest(
       { prompt: "x", cwd, model_class: modelClass },

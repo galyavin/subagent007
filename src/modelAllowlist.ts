@@ -7,7 +7,7 @@ export const OPENAI_CODEX_GPT54_PLUS_REF = "openai-codex/gpt-5.4+";
 const OPENAI_CODEX_MIN_GPT5_MINOR = 4;
 
 export const CURATED_EXACT_MODEL_REFS = [
-  "openrouter/qwen/qwen3.6-35b-a3b",
+  "openrouter/deepseek/deepseek-v4-flash",
   "openrouter/deepseek/deepseek-v4-pro",
   "openrouter/z-ai/glm-5.2",
 ] as const;
@@ -28,7 +28,7 @@ export const MODEL_CLASS_CALIBRATIONS: Record<ModelClass, {
   description: string;
 }> = {
   A: {
-    model: "openrouter/qwen/qwen3.6-35b-a3b",
+    model: "openrouter/deepseek/deepseek-v4-flash",
     thinkingLevel: "high",
     description: "Lowest-complexity class for narrow read-only audits, low-risk probes, and concise first-pass judgment.",
   },
@@ -38,18 +38,18 @@ export const MODEL_CLASS_CALIBRATIONS: Record<ModelClass, {
     description: "Simple coding, review, or search tasks with limited ambiguity.",
   },
   C: {
-    model: "openai-codex/gpt-5.4-mini",
-    thinkingLevel: "high",
+    model: "openai-codex/gpt-5.6-luna",
+    thinkingLevel: "xhigh",
     description: "Default class for bounded implementation, repo-grounded fixes, and ordinary technical reasoning.",
   },
   D: {
-    model: "openai-codex/gpt-5.5",
-    thinkingLevel: "high",
+    model: "openai-codex/gpt-5.6-terra",
+    thinkingLevel: "xhigh",
     description: "Complex multi-file debugging, planning, synthesis, and high-abstraction work.",
   },
   E: {
-    model: "openai-codex/gpt-5.5",
-    thinkingLevel: "xhigh",
+    model: "openai-codex/gpt-5.6-sol",
+    thinkingLevel: "high",
     description: "Highest-abstraction, highest-difficulty work requiring the deepest technical judgment.",
   },
 };
