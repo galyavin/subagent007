@@ -6,7 +6,7 @@ export interface SessionToolRegistry {
   setActiveToolsByName(toolNames: string[]): void;
 }
 
-export function activateAllRegisteredTools(session: SessionToolRegistry): string[] {
+export function activateAllRegisteredTools(session: SessionToolRegistry): void {
   const allToolNames = session.getAllTools().map((tool) => tool.name);
   session.setActiveToolsByName(allToolNames);
   const activeToolNames = session.getActiveToolNames();
@@ -17,5 +17,4 @@ export function activateAllRegisteredTools(session: SessionToolRegistry): string
       `required Pi web search tools unavailable: ${missingWebTools.join(", ")}; install/configure the Pi web search extension before running Subagent007`,
     );
   }
-  return activeToolNames;
 }

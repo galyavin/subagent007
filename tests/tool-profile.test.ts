@@ -18,7 +18,7 @@ test("activates every registered session tool", () => {
   ];
   let activeNames: string[] = [];
 
-  const result = activateAllRegisteredTools({
+  activateAllRegisteredTools({
     getAllTools: () => allTools,
     setActiveToolsByName: (toolNames) => {
       activeNames = toolNames;
@@ -26,7 +26,6 @@ test("activates every registered session tool", () => {
     getActiveToolNames: () => activeNames,
   });
 
-  assert.deepEqual(result, allTools.map((tool) => tool.name));
   assert.deepEqual(activeNames, allTools.map((tool) => tool.name));
 });
 
