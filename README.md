@@ -29,8 +29,6 @@ Use this server as a durable delegation boundary. Treat `run_id` as the unit of 
 | Durable-run adapter compatibility | `get_run_contract` | Check `contract_name`, `contract_version`, terminal/non-terminal statuses, and capabilities before launching command-mode adapters; fail closed when incompatible. |
 | Runtime/build/source readiness | `get_runtime_readiness`; or `npm run runtime:readiness` before MCP launch | Use the script when a caller needs to prove the built server entrypoint can launch. It reports typed blocks such as `missing_build`, `stale_build`, `dirty_source`, `source_state_unknown`, `incompatible_contract`, and `runtime_launch_failure`. |
 
-Tool authority rule of thumb: the child starts with every registered Pi tool active. Tool profiles are legacy compatibility inputs only; skills are the remaining explicit restriction.
-
 ## Requirements
 
 - Node.js `>=22.19.0`
@@ -335,6 +333,7 @@ Primary source boundaries:
 - `src/runSubagent.ts` owns the Pi child request-file contract, output projection, timeout metadata, and provider error parsing.
 - `src/processRunner.ts` owns child process supervision and timeout/cancel/parent-exit cleanup.
 - `src/session.ts` owns named-session manifests, packet policy, and local session locks.
+- `src/skillBinding.ts` owns `skill_name`/legacy `skill` validation and prompt-level skill-invocation rejection.
 - `src/types.ts` is the public type/reason-code source; keep it synchronized with README and tests when public fields change.
 
 Tests use `SUBAGENT007_PI_CHILD_PATH` to replace the real Pi child with a fake child process. Do not set it for normal MCP use. `npm test` injects a private failure ledger unless `SUBAGENT007_FAILURE_LOG_PATH` is already set; explicit paths are preserved and fingerprinted.
