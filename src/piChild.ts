@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createInterface } from "node:readline";
 import {
   AuthStorage,
   createAgentSession,
@@ -10,7 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { createInputRequest, waitForInputAnswer } from "./inputMailbox.js";
+import { createInputRequest } from "./inputMailbox.js";
 import { resolvePiAgentDir } from "./piAgentDir.js";
 import { createRecursiveDelegateTool } from "./recursiveDelegateTool.js";
 import { createSkillScopedResourceLoader } from "./skillResources.js";
@@ -46,6 +47,91 @@ const requestInputParameters = Type.Object({
   options: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
   freeform: Type.Optional(Type.Boolean()),
 });
+
+interface InputResponse {
+  requestId: string;
+  responseId: string;
+  answer: string;
+  receivedAt: string;
+}
+
+interface InputControl {
+  waitForResponse(requestId: string, timeoutMs: number): Promise<InputResponse>;
+  dispose(): void;
+}
+
+function createInputControl(runId: string): InputControl {
+  const buffered = new Map<string, InputResponse>();
+  const waiters = new Map<string, (response: InputResponse) => void>();
+  const reader = createInterface({ input: process.stdin, crlfDelay: Infinity });
+  reader.on("line", (line) => {
+    try {
+      const message = JSON.parse(line) as {
+        type?: unknown;
+        request_id?: unknown;
+        response_id?: unknown;
+        answer?: unknown;
+      };
+      if (
+        message.type !== "subagent007.input_response" ||
+        typeof message.request_id !== "string" ||
+        typeof message.response_id !== "string" ||
+        typeof message.answer !== "string"
+      ) {
+        return;
+      }
+      const response: InputResponse = {
+        requestId: message.request_id,
+        responseId: message.response_id,
+        answer: message.answer,
+        receivedAt: new Date().toISOString(),
+      };
+      const waiter = waiters.get(response.requestId);
+      if (waiter) {
+        waiters.delete(response.requestId);
+        waiter(response);
+        return;
+      }
+      buffered.set(response.requestId, response);
+    } catch {
+      // The parent owns this private control channel. Malformed frames cannot become tool input.
+    }
+  });
+
+  return {
+    waitForResponse(requestId, timeoutMs) {
+      const accept = (response: InputResponse): InputResponse => {
+        writeEvent({
+          type: "subagent007.input_response_accepted",
+          run_id: runId,
+          request_id: response.requestId,
+          response_id: response.responseId,
+        });
+        return response;
+      };
+      const alreadyReceived = buffered.get(requestId);
+      if (alreadyReceived) {
+        buffered.delete(requestId);
+        return Promise.resolve(accept(alreadyReceived));
+      }
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          waiters.delete(requestId);
+          reject(new Error(`input request timed out: ${requestId}`));
+        }, timeoutMs);
+        waiters.set(requestId, (response) => {
+          clearTimeout(timeout);
+          resolve(accept(response));
+        });
+      });
+    },
+    dispose() {
+      reader.close();
+      waiters.clear();
+      buffered.clear();
+    },
+  };
+}
 
 function writeEvent(event: unknown): void {
   process.stdout.write(`${JSON.stringify(event)}\n`);
@@ -89,7 +175,10 @@ function resolveRequestedModel(modelRef: string, registry: ModelRegistry): Model
   );
 }
 
-function createRequestInputTool(request: PiChildRequest): ToolDefinition<typeof requestInputParameters> {
+function createRequestInputTool(
+  request: PiChildRequest,
+  inputControl: InputControl,
+): ToolDefinition<typeof requestInputParameters> {
   return {
     name: "request_input",
     label: "Request Input",
@@ -111,6 +200,8 @@ function createRequestInputTool(request: PiChildRequest): ToolDefinition<typeof 
         question: params.question,
         choices: params.options ?? [],
         freeform: params.freeform ?? true,
+        optionIds: (params.options ?? []).map((_, index) => `option_${index + 1}`),
+        maxAnswerChars: 4096,
       });
       writeEvent({
         type: "subagent007.input_request",
@@ -121,12 +212,7 @@ function createRequestInputTool(request: PiChildRequest): ToolDefinition<typeof 
       });
       let answer;
       try {
-        answer = await waitForInputAnswer({
-          mailboxRoot: request.mailboxRoot,
-          runId: request.runId,
-          requestId: inputRequest.request_id,
-          timeoutMs: request.inputTimeoutMs,
-        });
+        answer = await inputControl.waitForResponse(inputRequest.request_id, request.inputTimeoutMs);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (message.includes("timed out")) {
@@ -141,7 +227,7 @@ function createRequestInputTool(request: PiChildRequest): ToolDefinition<typeof 
         details: {
           request_id: inputRequest.request_id,
           answer: answer.answer,
-          answered_at: answer.answered_at,
+          answered_at: answer.receivedAt,
         },
       };
     },
@@ -174,6 +260,7 @@ async function readRequest(): Promise<PiChildRequest> {
 
 async function main(): Promise<void> {
   const request = await readRequest();
+  const inputControl = createInputControl(request.runId);
   writeEvent({ type: "subagent007.lifecycle", event: "child_bridge_started" });
   const agentDir = resolvePiAgentDir();
   process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -200,7 +287,7 @@ async function main(): Promise<void> {
         : SessionManager.create(request.cwd, request.sessionDir);
 
   await resourceLoader.reload();
-  const customTools: ToolDefinition<any>[] = [createRequestInputTool(request)];
+  const customTools: ToolDefinition<any>[] = [createRequestInputTool(request, inputControl)];
   const recursiveDelegateTool = createRecursiveDelegateTool({
     cwd: request.cwd,
     recursiveControl: request.recursiveControl,
@@ -243,6 +330,7 @@ async function main(): Promise<void> {
     }
   } finally {
     unsubscribe();
+    inputControl.dispose();
     session.dispose();
   }
 }

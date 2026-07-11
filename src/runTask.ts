@@ -16,11 +16,12 @@ import {
   type DurableRunStatus,
 } from "./durableRunContract.js";
 import {
-  answerInputRequest,
   closePendingInputRequestsForRun,
   defaultInputRequestsDir,
   listInputRequests,
   newRunId,
+  settleInputResponse,
+  validateInputResponse,
   type InputRequestView,
 } from "./inputMailbox.js";
 import {
@@ -162,6 +163,20 @@ interface RunTaskState {
   rootRunId: string;
   recursionDepth: number;
   childRunIds: string[];
+  childControlSend?: (message: string) => boolean;
+  acceptedInputResponses: Map<string, { responseId: string; answer: string; receipt: string }>;
+  pendingInputDeliveries: Map<string, PendingInputDelivery>;
+  inputMutationQueue: Promise<void>;
+  terminalizing: boolean;
+}
+
+interface PendingInputDelivery {
+  responseId: string;
+  answer: string;
+  receipt: string;
+  completion: Promise<AnswerRunTaskInputResult>;
+  resolve: (result: AnswerRunTaskInputResult) => void;
+  reject: (error: Error) => void;
 }
 
 type RunTaskProgressView = Pick<
@@ -226,6 +241,29 @@ function taskNotFound(runId: string): ValidationError {
   return new ValidationError(`run not found: ${runId}`, "run_not_found");
 }
 
+function serializeInputMutation<T>(state: RunTaskState, operation: () => Promise<T>): Promise<T> {
+  const previous = state.inputMutationQueue;
+  let release!: () => void;
+  state.inputMutationQueue = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return (async () => {
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  })();
+}
+
+function rejectPendingInputDeliveries(state: RunTaskState, error: ValidationError): void {
+  for (const delivery of state.pendingInputDeliveries.values()) {
+    delivery.reject(error);
+  }
+  state.pendingInputDeliveries.clear();
+}
+
 function createRunTaskState(
   taskKind: "run" | "session",
   sessionKey?: string,
@@ -253,6 +291,10 @@ function createRunTaskState(
     rootRunId: lineage.rootRunId ?? runId,
     recursionDepth: lineage.recursionDepth ?? 0,
     childRunIds: [],
+    acceptedInputResponses: new Map(),
+    pendingInputDeliveries: new Map(),
+    inputMutationQueue: Promise.resolve(),
+    terminalizing: false,
   };
   setTaskProgress(state, DEFAULT_HEARTBEAT_MESSAGE, 0);
   return state;
@@ -855,36 +897,45 @@ async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
 }
 
 async function finalizeRunTask(state: RunTaskState, closeReason: string): Promise<void> {
-  const preservedRestartDrift = await authoritativeRestartDriftSnapshot(state.runId);
-  if (preservedRestartDrift) {
-    state.finishedAt = preservedRestartDrift.finished_at ?? new Date().toISOString();
+  await serializeInputMutation(state, async () => {
+    state.terminalizing = true;
+    rejectPendingInputDeliveries(
+      state,
+      new ValidationError(`run is not accepting input: ${state.runId}`, "run_not_accepting_input"),
+    );
+    const preservedRestartDrift = await authoritativeRestartDriftSnapshot(state.runId);
+    if (preservedRestartDrift) {
+      state.finishedAt = preservedRestartDrift.finished_at ?? new Date().toISOString();
+      state.terminalSnapshotStarted = true;
+      return;
+    }
+    state.finishedAt = new Date().toISOString();
+    state.childControlSend = undefined;
+    state.acceptedInputResponses.clear();
+    const closed = await closePendingInputRequestsForRun({
+      mailboxRoot: state.mailboxRoot,
+      runId: state.runId,
+      reason: closeReason,
+    });
+    await appendClosedInputEvents(state, closed);
+    const restartDriftAfterInputClose = await authoritativeRestartDriftSnapshot(state.runId);
+    if (restartDriftAfterInputClose) {
+      state.finishedAt = restartDriftAfterInputClose.finished_at ?? state.finishedAt;
+      state.terminalSnapshotStarted = true;
+      return;
+    }
+    await appendTerminalEvent(state);
+    const restartDriftBeforePersist = await authoritativeRestartDriftSnapshot(state.runId);
+    if (restartDriftBeforePersist) {
+      state.finishedAt = restartDriftBeforePersist.finished_at ?? state.finishedAt;
+      state.terminalSnapshotStarted = true;
+      return;
+    }
     state.terminalSnapshotStarted = true;
-    return;
-  }
-  state.finishedAt = new Date().toISOString();
-  const closed = await closePendingInputRequestsForRun({
-    mailboxRoot: state.mailboxRoot,
-    runId: state.runId,
-    reason: closeReason,
+    await logTerminalRunTaskFailure(state);
+    await writeTaskSnapshot(await getRunTask(state.runId));
+    await appendParentRecursiveChildFinishedEvent(state);
   });
-  await appendClosedInputEvents(state, closed);
-  const restartDriftAfterInputClose = await authoritativeRestartDriftSnapshot(state.runId);
-  if (restartDriftAfterInputClose) {
-    state.finishedAt = restartDriftAfterInputClose.finished_at ?? state.finishedAt;
-    state.terminalSnapshotStarted = true;
-    return;
-  }
-  await appendTerminalEvent(state);
-  const restartDriftBeforePersist = await authoritativeRestartDriftSnapshot(state.runId);
-  if (restartDriftBeforePersist) {
-    state.finishedAt = restartDriftBeforePersist.finished_at ?? state.finishedAt;
-    state.terminalSnapshotStarted = true;
-    return;
-  }
-  state.terminalSnapshotStarted = true;
-  await logTerminalRunTaskFailure(state);
-  await writeTaskSnapshot(await getRunTask(state.runId));
-  await appendParentRecursiveChildFinishedEvent(state);
 }
 
 function durableTaskCloseReason(state: RunTaskState): string {
@@ -1128,6 +1179,20 @@ function taskChildRuntimeOptions(
     heartbeatIntervalMs: options.heartbeatIntervalMs,
     abortSignal: state.abortController.signal,
     onOutputLine: (line) => observeOutputLine(state, line),
+  };
+}
+
+function taskInputControlOptions(state: RunTaskState): {
+  onChildControlReady: (send: (message: string) => boolean) => void;
+  onInputResponseAccepted: (response: { requestId: string; responseId: string }) => void;
+} {
+  return {
+    onChildControlReady: (send) => {
+      state.childControlSend = send;
+    },
+    onInputResponseAccepted: (response) => {
+      settleChildAcceptedInputResponse(state, response);
+    },
   };
 }
 
@@ -1387,6 +1452,7 @@ export async function startRunTask(
         skillFilePath,
         ...taskRecursiveRuntimeOptions(state),
         ...taskChildRuntimeOptions(state, options),
+        ...taskInputControlOptions(state),
       });
     } catch (error) {
       state.error = error as Error;
@@ -1533,6 +1599,7 @@ export async function startSessionRunTask(
         failureLogTool,
         ...taskRecursiveRuntimeOptions(state),
         ...taskChildRuntimeOptions(state, options),
+        ...taskInputControlOptions(state),
       });
     } catch (error) {
       state.error = error as Error;
@@ -1624,6 +1691,7 @@ async function runSubagentPromotedTask(
         skillFilePath,
         ...taskRecursiveRuntimeOptions(state),
         ...taskChildRuntimeOptions(state, options),
+        ...taskInputControlOptions(state),
       });
       state.result = {
         ...runSubagentResultWithConcreteTimeoutRecoveryHint(result, state.runId),
@@ -1678,6 +1746,7 @@ export async function runSubagentOneShotTask(
         skillFilePath,
         ...taskRecursiveRuntimeOptions(state),
         ...taskChildRuntimeOptions(state, options),
+        ...taskInputControlOptions(state),
       });
     } catch (error) {
       state.error = error as Error;
@@ -1709,26 +1778,32 @@ export async function cancelRunTask(runId: string): Promise<RunTaskView> {
   if (!state) {
     throw taskNotFound(runId);
   }
-  if (!state.result && !state.error) {
-    state.cancelRequested = true;
-    setTaskPhase(state, "cancelling");
-    await appendStatusEvent(state, {
-      kind: "terminal",
-      event: "cancellation_requested",
-      text: "[cancellation_requested] cancellation requested",
-      occurred_at: new Date().toISOString(),
-    }, "cancellation requested");
-    state.abortController.abort();
-    const closed = await closePendingInputRequestsForRun({
-      mailboxRoot: state.mailboxRoot,
-      runId,
-      reason: "run cancelled",
-    });
-    await appendClosedInputEvents(state, closed);
-  }
-  const view = await getRunTask(runId);
-  await writeTaskSnapshot(view);
-  return view;
+  return serializeInputMutation(state, async () => {
+    if (!state.result && !state.error && !state.terminalizing) {
+      state.cancelRequested = true;
+      setTaskPhase(state, "cancelling");
+      rejectPendingInputDeliveries(
+        state,
+        new ValidationError(`input request is already closed: ${runId}`, "input_request_already_closed"),
+      );
+      await appendStatusEvent(state, {
+        kind: "terminal",
+        event: "cancellation_requested",
+        text: "[cancellation_requested] cancellation requested",
+        occurred_at: new Date().toISOString(),
+      }, "cancellation requested");
+      const closed = await closePendingInputRequestsForRun({
+        mailboxRoot: state.mailboxRoot,
+        runId,
+        reason: "run cancelled",
+      });
+      await appendClosedInputEvents(state, closed);
+      state.abortController.abort();
+    }
+    const view = await getRunTask(runId);
+    await writeTaskSnapshot(view);
+    return view;
+  });
 }
 
 export interface RunOperationContext {
@@ -1774,33 +1849,18 @@ export async function resolveRunOperationContext(runId: string): Promise<RunOper
   };
 }
 
-export async function answerRunTaskInput(options: {
-  runId: string;
-  requestId: string;
-  answer: string;
-}): Promise<RunTaskView> {
-  const state = tasks.get(options.runId);
-  if (!state) {
-    throw taskNotFound(options.runId);
-  }
-  if (state.cancelRequested || state.result || state.error) {
-    throw new ValidationError(`run is not accepting input: ${options.runId}`, "run_not_accepting_input");
-  }
-  const requests = await listInputRequests({
-    mailboxRoot: state.mailboxRoot,
-    runId: state.runId,
-  });
-  if (!requests.some((request) => request.request_id === options.requestId)) {
-    throw new ValidationError(
-      `input request is not part of run ${options.runId}: ${options.requestId}`,
-      "input_request_not_part_of_run",
-    );
-  }
-  await answerInputRequest({
-    mailboxRoot: state.mailboxRoot,
-    requestId: options.requestId,
-    answer: options.answer,
-  });
+export interface AnswerRunTaskInputResult {
+  view: RunTaskView;
+  responseId: string;
+  receipt: string;
+  outcome: "accepted" | "replayed";
+}
+
+async function recordAnsweredInput(
+  state: RunTaskState,
+  requestId: string,
+  responseId: string,
+): Promise<RunTaskView> {
   const occurredAt = new Date().toISOString();
   const remainingPending = await listInputRequests({
     mailboxRoot: state.mailboxRoot,
@@ -1811,14 +1871,174 @@ export async function answerRunTaskInput(options: {
   await appendStatusEvent(state, {
     kind: "input",
     event: "input_answered",
-    text: `[input_answered] ${options.requestId}`,
+    text: `[input_answered] ${requestId}`,
     occurred_at: occurredAt,
     metadata: {
-      request_id: options.requestId,
+      request_id: requestId,
+      response_id: responseId,
       status: "answered",
     },
   }, "input answered");
-  const view = await getRunTask(options.runId);
+  const view = await getRunTask(state.runId);
   await writeTaskSnapshot(view);
   return view;
+}
+
+function settleChildAcceptedInputResponse(
+  state: RunTaskState,
+  response: { requestId: string; responseId: string },
+): void {
+  void serializeInputMutation(state, async () => {
+    const delivery = state.pendingInputDeliveries.get(response.requestId);
+    if (!delivery || delivery.responseId !== response.responseId) {
+      return;
+    }
+    if (state.cancelRequested || state.terminalizing) {
+      state.pendingInputDeliveries.delete(response.requestId);
+      delivery.reject(new ValidationError(`run is not accepting input: ${state.runId}`, "run_not_accepting_input"));
+      return;
+    }
+    try {
+      await settleInputResponse({
+        mailboxRoot: state.mailboxRoot,
+        requestId: response.requestId,
+        responseId: response.responseId,
+        receipt: delivery.receipt,
+      });
+      state.pendingInputDeliveries.delete(response.requestId);
+      state.acceptedInputResponses.set(response.requestId, {
+        responseId: response.responseId,
+        answer: delivery.answer,
+        receipt: delivery.receipt,
+      });
+      delivery.resolve({
+        view: await recordAnsweredInput(state, response.requestId, response.responseId),
+        responseId: response.responseId,
+        receipt: delivery.receipt,
+        outcome: "accepted",
+      });
+    } catch (error) {
+      state.pendingInputDeliveries.delete(response.requestId);
+      delivery.reject(error instanceof Error ? error : new Error(String(error)));
+    }
+  }).catch((error) => {
+    const delivery = state.pendingInputDeliveries.get(response.requestId);
+    if (delivery?.responseId === response.responseId) {
+      state.pendingInputDeliveries.delete(response.requestId);
+      delivery.reject(error instanceof Error ? error : new Error(String(error)));
+    }
+  });
+}
+
+export async function answerRunTaskInput(options: {
+  runId: string;
+  requestId: string;
+  answer: string;
+  responseId: string;
+}): Promise<AnswerRunTaskInputResult> {
+  const state = tasks.get(options.runId);
+  if (!state) {
+    throw taskNotFound(options.runId);
+  }
+  const responseId = options.responseId.trim();
+  if (!responseId) {
+    throw new ValidationError("response_id must be a nonempty string", "unknown_validation_error");
+  }
+  const prepared = await serializeInputMutation(state, async (): Promise<
+    { result: AnswerRunTaskInputResult } | { delivery: PendingInputDelivery }
+  > => {
+    const accepted = state.acceptedInputResponses.get(options.requestId);
+    if (accepted) {
+      if (accepted.responseId !== responseId) {
+        throw new ValidationError(
+          `input request is already answered: ${options.requestId}`,
+          "input_request_already_answered",
+        );
+      }
+      if (accepted.answer !== options.answer) {
+        throw new ValidationError(
+          `response_id conflicts with its prior input: ${responseId}`,
+          "input_response_id_conflict",
+        );
+      }
+      return {
+        result: {
+          view: await getRunTask(options.runId),
+          responseId,
+          receipt: accepted.receipt,
+          outcome: "replayed",
+        },
+      };
+    }
+    const existingDelivery = state.pendingInputDeliveries.get(options.requestId);
+    if (existingDelivery) {
+      if (existingDelivery.responseId === responseId && existingDelivery.answer === options.answer) {
+        return { delivery: existingDelivery };
+      }
+      if (existingDelivery.responseId === responseId) {
+        throw new ValidationError(
+          `response_id conflicts with its prior input: ${responseId}`,
+          "input_response_id_conflict",
+        );
+      }
+      throw new ValidationError(
+        `input request is already answered: ${options.requestId}`,
+        "input_request_already_answered",
+      );
+    }
+    const requests = await listInputRequests({
+      mailboxRoot: state.mailboxRoot,
+      runId: state.runId,
+    });
+    const request = requests.find((entry) => entry.request_id === options.requestId);
+    if (!request) {
+      throw new ValidationError(
+        `input request is not part of run ${options.runId}: ${options.requestId}`,
+        "input_request_not_part_of_run",
+      );
+    }
+    if (request.status !== "pending") {
+      if (request.status === "closed") {
+        throw new ValidationError(`input request is already closed: ${options.requestId}`, "input_request_already_closed");
+      }
+      if (request.status === "timed_out") {
+        throw new ValidationError(`input request is already timed out: ${options.requestId}`, "input_request_already_timed_out");
+      }
+      throw new ValidationError(`input request is already answered: ${options.requestId}`, "input_request_already_answered");
+    }
+    if (state.cancelRequested || state.terminalizing || state.result || state.error) {
+      throw new ValidationError(`run is not accepting input: ${options.runId}`, "run_not_accepting_input");
+    }
+    validateInputResponse(request, options.answer);
+    if (!state.childControlSend) {
+      throw new ValidationError(`run is not accepting input: ${options.runId}`, "run_not_accepting_input");
+    }
+    const receipt = `input-${randomBytes(12).toString("hex")}`;
+    const sent = state.childControlSend(`${JSON.stringify({
+      type: "subagent007.input_response",
+      request_id: options.requestId,
+      response_id: responseId,
+      answer: options.answer,
+    })}\n`);
+    if (!sent) {
+      throw new ValidationError(`run is not accepting input: ${options.runId}`, "run_not_accepting_input");
+    }
+    let resolve!: (result: AnswerRunTaskInputResult) => void;
+    let reject!: (error: Error) => void;
+    const completion = new Promise<AnswerRunTaskInputResult>((resolveCompletion, rejectCompletion) => {
+      resolve = resolveCompletion;
+      reject = rejectCompletion;
+    });
+    const delivery: PendingInputDelivery = {
+      responseId,
+      answer: options.answer,
+      receipt,
+      completion,
+      resolve,
+      reject,
+    };
+    state.pendingInputDeliveries.set(options.requestId, delivery);
+    return { delivery };
+  });
+  return "result" in prepared ? prepared.result : prepared.delivery.completion;
 }

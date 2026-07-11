@@ -12,12 +12,19 @@ edges:
     condition: when a decision relates to system structure
   - target: context/stack.md
     condition: when a decision relates to technology choice
-last_updated: 2026-07-09
+last_updated: 2026-07-10
 ---
 
 # Decisions
 
 ## Decision Log
+
+### Acknowledged input is one version-2 contract
+**Date:** 2026-07-10
+**Status:** Active
+**Decision:** Durable runs expose one caller-input contract at durable-run version 2. `answer_run_input` requires `response_id`; the raw answer is held only in live process memory, crosses the private stdin control channel, and produces a receipt only after the correlated child waiter accepts it. The request/terminal mailbox records persist only safe identifiers, status, and receipt metadata.
+**Reasoning:** Bendum needs a dependable governed operator handoff without plaintext operational retention or a public mode decision. Retaining the former dual input paths would preserve incompatible delivery guarantees and unnecessary state.
+**Consequences:** Exact live retries return the original receipt without redelivery; changed answer bodies under the same response identity reject. A run-owned mutation queue makes acknowledgment, cancellation, finalization, and pending closure deterministic. Process loss fails the run closed, so no cross-restart answer recovery is promised.
 
 ### Validation reason codes are explicit data, not message parsing
 **Date:** 2026-07-09

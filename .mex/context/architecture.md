@@ -12,7 +12,7 @@ edges:
     condition: when specific technology details are needed
   - target: context/decisions.md
     condition: when understanding why the architecture is structured this way
-last_updated: 2026-07-09
+last_updated: 2026-07-10
 ---
 
 # Architecture
@@ -25,7 +25,7 @@ When configured, `src/activeChildLease.ts` acquires a local active-child lease b
 Child output becomes file-backed artifacts through `src/output.ts`, sanitized public events through run-event helpers, and failure records through `src/failureLog.ts`. Requested `final` output succeeds only when the child writes a final message; a clean exit without that artifact is classified as `missing_final_output`, with transcript output retained as diagnostics.
 Server-authored prompt provenance uses `src/prompt.ts` to project caller prompt text to a redacted public marker before it reaches public event views or transcript artifacts; child execution still receives the real composed prompt.
 Server-launched children receive a private recursive control payload in the child request file. `src/piChild.ts` exposes it only as a native `delegate` tool; `src/recursiveControl.ts` validates the private token and recursion depth, then `src/runTask.ts` validates caller lineage against active parent run state before the parent scheduler creates a descendant. Parent run views project recursive child lifecycle through sanitized `recursive_child_started` and `recursive_child_finished` public events so callers can see descendant start and terminal status/success without reading private recursive-control payloads.
-`get_run`, `answer_run_input`, and `cancel_run` operate on local filesystem-backed run snapshots and input mailbox records.
+`get_run`, `answer_run_input`, and `cancel_run` operate on local filesystem-backed run snapshots and input mailbox records. Every answer carries a response ID over the parent-owned child stdin control channel; the child emits a correlated acceptance event only after its waiter takes the response, and `runTask.ts` then records safe settlement metadata and returns the receipt. Its run-owned mutation queue orders acknowledgment, cancellation, finalization, and pending-request closure. Raw answers are never written to mailbox sidecars or public run surfaces.
 Operation-only semantic failures from those run-operation tools project as `kind:"operation_rejected"` instead of MCP text errors; child-invocation preflight failures remain `kind:"preflight_rejected"` with `child_started:false`.
 Named sessions add `src/session.ts` manifest/ledger/lock handling around the same child execution path. Manifest eligibility failures known before launch, such as missing `require_existing` sessions, reject before durable task registration with `preflight_rejected` and `child_started:false`; locked execution checks still run later as race protection. Terminal session failures logged after durable task creation preserve the caller tool, durable `run_id`, and `task_kind:"session"` so telemetry can be correlated with public run views.
 

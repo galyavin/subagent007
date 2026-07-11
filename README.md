@@ -87,7 +87,7 @@ Register directly when Pi auth keys are available to ordinary child processes:
 ```sh
 npm run build
 SERVER_PATH="$(pwd)/dist/server.js"
-npm run runtime:readiness -- --source-state-policy allow_dirty --expected-contract-name subagent007.durable_run --expected-contract-version 1
+npm run runtime:readiness -- --source-state-policy allow_dirty --expected-contract-name subagent007.durable_run --expected-contract-version 2
 codex mcp add subagent007-pi -- node "$SERVER_PATH"
 codex mcp get subagent007-pi
 ```
@@ -110,7 +110,7 @@ Child-invocation tools require:
 - `cwd`: absolute directory path
 - `prompt`: nonempty string
 
-Do not pass secrets unless the child model/tools may receive them and child output artifacts may contain them if echoed. Server-authored public events and transcript provenance render a redacted caller-prompt marker instead of raw `prompt`; final or transcript artifacts can still contain prompt-derived text emitted by the child. `answer_run_input.answer` is stored in the local mailbox settlement and omitted from public event views, but child output may contain answer-derived text if the child echoes or uses the answer.
+Do not pass secrets unless the child model/tools may receive them and child output artifacts may contain them if echoed. Server-authored public events and transcript provenance render a redacted caller-prompt marker instead of raw `prompt`; final or transcript artifacts can still contain prompt-derived text emitted by the child. Caller-input answers cross only the live parent/child control channel. Mailbox terminal records contain response identity and receipt, never the answer body or a content-derived digest.
 
 Optional common fields:
 
@@ -130,7 +130,7 @@ Child-invocation input rules:
 | `start_session_run` | `session_key` | `resume_mode`, `packet_policy`, `timeout_ms` | `continuity`, top-level `session_id` |
 | `run_subagent_session` | `session_key` | `resume_mode`, `packet_policy`, `timeout_ms` | `continuity`, top-level `session_id` |
 
-Operation-only tools do not accept `cwd` or `prompt`: `get_run` takes `run_id`; `cancel_run` takes `run_id`; `answer_run_input` takes `run_id`, `request_id`, and `answer`.
+Operation-only tools do not accept `cwd` or `prompt`: `get_run` takes `run_id`; `cancel_run` takes `run_id`; `answer_run_input` requires `run_id`, `request_id`, `response_id`, and `answer`. A successful receipt means the child-side waiter accepted that exact response. During a live run, an exact retry returns the prior receipt without redelivery; a changed answer under the same response identity is rejected.
 
 For raw Pi `continuity`, use `mode: "ephemeral"`, `mode: "fresh"`, or `mode: "resume"` with absolute `continuity.session_id`. Resume session ids must point to an existing, readable, nonempty session file. Prefer named sessions for durable project work; raw continuity is for callers that already manage Pi session files.
 
@@ -148,7 +148,7 @@ Result semantics:
 
 - `get_runtime_readiness` returns the concrete runtime snapshot from inside the running MCP server: resolved project root, server entrypoint, build/dist facts, git/source facts, durable-run contract compatibility, and public tool/capability surface. For pre-launch checks, use `npm run runtime:readiness`; it verifies `dist/server.js` exists before launching MCP, then calls `get_runtime_readiness`. A blocked result includes `status:"blocked"`, `ready:false`, and machine-readable `blocks[].class`.
   The default source policy is `require_clean`, which blocks dirty or unknown git state; `allow_dirty` permits dirty checkouts while still blocking unknown source state, and `allow_unknown` permits both dirty and unknown source state for package-style or exploratory probes.
-- `get_run_contract` returns the durable-run lifecycle contract. Version `1` defines non-terminal statuses `working` and `input_required`, terminal statuses `completed`, `failed`, `cancelled`, and `timed_out`, file-backed output references, bounded public excerpts, mailbox addressing by `run_id/request_id`, recursive lineage fields, session start tools under `tools.session_start`, and fail-closed restart drift behavior.
+- `get_run_contract` returns the durable-run lifecycle contract. Version `2` defines non-terminal statuses `working` and `input_required`, terminal statuses `completed`, `failed`, `cancelled`, and `timed_out`, file-backed output references, bounded public excerpts, mailbox addressing by `run_id/request_id`, recursive lineage fields, session start tools under `tools.session_start`, and fail-closed restart drift behavior. Its acknowledged-input guarantees require response IDs, make receipts evidence of child-waiter acceptance, support exact live replay, forbid operational answer persistence, and fail closed after provider loss.
 - Terminal views after child execution include `output_references` plus legacy `output_path`; read the referenced file for the full answer and check `written_output_mode`. Requested `final` output succeeds only when a final message is captured. A clean child exit without that final message fails with `reason_code:"missing_final_output"` and writes the public transcript as diagnostic output; timeout, cancellation, and other failures can also expose transcript output. Schema and preflight rejections do not create output artifacts.
 - Failed, timed-out, restart-drift, and structured rejection views include `error_class` and `reason_code` when the server can classify the failure; adapters should branch on those fields instead of parsing `error`.
 - Provider usage-limit failures use `reason_code:"usage_limit_reached"` and may include provider reset/retry fields such as `provider_status_code`, `provider_error_message`, `usage_limit_resets_in_seconds`, `usage_limit_retry_after_seconds`, and primary/secondary usage percentages. The same fields are copied to failure-log records.
@@ -206,13 +206,13 @@ Flow:
 1. Call `schedule_run` or `start_run`.
 2. Poll `get_run` with the returned `run_id`.
 3. If status is `input_required`, read `input_requests`.
-4. Call `answer_run_input` with `run_id`, `request_id`, and `answer`.
+4. Call `answer_run_input` with `run_id`, `request_id`, stable `response_id`, and `answer`; retain `input_response_receipt` for an exact idempotent retry.
 5. Keep polling until status is `completed`, `failed`, `cancelled`, or `timed_out`, then read `output_references` or legacy `output_path` when present.
 
 After `cancel_run`, an in-flight cancellation reports `status:"working"` with `active_phase:"cancelling"`.
 Continue polling until `status:"cancelled"` appears; that terminal view includes the settled cancellation metadata.
 
-Input requests are stored under `~/.codex/subagent007-pi/input-requests` by default. Each request has one terminal settlement: `answered`, `timed_out`, or `closed`. Multiple pending requests are legal; clients that auto-answer should do so only when exactly one request is pending and fail closed otherwise. Duplicate answers, stale request IDs, foreign request IDs, and late answers to closed or timed-out requests are rejected. Cancelling a run or reaching any terminal run state closes remaining pending requests.
+Input requests are stored under `~/.codex/subagent007-pi/input-requests` by default. Each request has one terminal settlement: `answered`, `timed_out`, or `closed`. Multiple pending requests are legal; clients that auto-answer should do so only when exactly one request is pending and fail closed otherwise. Duplicate answers, stale request IDs, foreign request IDs, and late answers to closed or timed-out requests are rejected. A run serializes answer acceptance, cancellation, finalization, and pending-request closure; the first committed outcome wins. Cancelling a run or reaching any terminal run state closes remaining pending requests.
 
 `timeout_ms` is optional for `schedule_run`, `start_run`, `start_session_run`, and `run_subagent_session`; omit it for broad or long durable work unless the caller intentionally wants a hard kill deadline. When provided, it is a hard response-budget cap: the child process is stopped before that budget is exhausted so the MCP tool can return timeout metadata and any public transcript. Values must leave at least one millisecond of effective child runtime after configured response headroom, kill grace, and force grace are reserved. Broad review, verification, scan, skill-bound, long-prompt, or write-like run requests with an underbudget `timeout_ms` are rejected before child launch with `reason_code:"timeout_underbudget_for_deadline_risk"`; use `wait_ms` for the initial scheduler wait, omit `timeout_ms` for long durable work, or set `timeout_ms` above the configured deadline-risk floor.
 

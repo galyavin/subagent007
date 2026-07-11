@@ -19,6 +19,7 @@ interface ProcessRunOptions {
     notify: HeartbeatNotify;
   };
   onOutputLine?: (line: string) => void | Promise<void>;
+  onControlReady?: (send: (message: string) => boolean) => void;
 }
 
 interface ProcessRunResult {
@@ -85,7 +86,22 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
     const child = spawn(options.command, options.args, {
       cwd: options.cwd,
       detached: process.platform !== "win32",
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    child.stdin.on("error", () => {
+      // A control-pipe error is resolved by the child terminal path; it is not proof of delivery.
+    });
+    options.onControlReady?.((message) => {
+      if (child.stdin.destroyed || !child.stdin.writable) {
+        return false;
+      }
+      try {
+        child.stdin.write(message);
+        return true;
+      } catch {
+        return false;
+      }
     });
 
     let timedOut = false;

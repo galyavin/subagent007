@@ -14,7 +14,7 @@ edges:
     condition: when setting up the dev environment or running the project for the first time
   - target: patterns/INDEX.md
     condition: when starting a task — check the pattern index for a matching pattern file
-last_updated: 2026-07-09
+last_updated: 2026-07-10
 ---
 
 # Session Bootstrap
@@ -25,6 +25,7 @@ Then read this file fully before doing anything else in this session.
 
 ## Current Project State
 **Working:**
+- Durable runs expose one version-2 acknowledged-input contract: every answer has a response ID, a receipt is created only after the child waiter accepts that response, exact live retries replay safely, and raw answer text remains only on the private live control path/Pi context.
 - MCP public tools expose one-shot, durable run, scheduler, named-session, mailbox, contract, readiness, and model-class surfaces.
 - Durable runs persist snapshots and public event ledgers, support cancellation and caller input, and fail closed on restart drift.
 - Model classes, config migration, model-health probes, observed campaign/probe tooling, and failure-log archival are implemented.

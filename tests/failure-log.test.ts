@@ -1017,37 +1017,36 @@ test("run-scoped input failures log resolved run context", async () => {
         name: "start_run",
         arguments: {
           cwd: projectDir,
-          prompt: "CANCEL_WAIT",
+          prompt: "REQUEST_INPUT_WAIT",
           timeout_ms: 6000,
         },
       });
       assert.notEqual(startedResponse.isError, true);
       const started = startedResponse.structuredContent as {
         run_id: string;
-        input_requests_dir: string;
+        input_requests: Array<{ request_id: string; status: string }>;
       };
-      const requestId = `${started.run_id}-abcdef123456`;
-      await fs.mkdir(started.input_requests_dir, { recursive: true });
-      await fs.writeFile(
-        path.join(started.input_requests_dir, `${requestId}.json`),
-        `${JSON.stringify({
-          schema_version: 1,
-          request_id: requestId,
-          run_id: started.run_id,
-          session_id: null,
-          created_at: new Date().toISOString(),
-          question: "Answer me",
-          options: [],
-          freeform: true,
-        })}\n`,
-      );
+      let requestId = started.input_requests.find((request) => request.status === "pending")?.request_id;
+      const deadline = Date.now() + 3000;
+      while (!requestId && Date.now() < deadline) {
+        const view = await client.callTool({ name: "get_run", arguments: { run_id: started.run_id } });
+        const inputRequests = (view.structuredContent as {
+          input_requests?: Array<{ request_id: string; status: string }>;
+        }).input_requests ?? [];
+        requestId = inputRequests.find((request) => request.status === "pending")?.request_id;
+        if (!requestId) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+      }
+      assert.ok(requestId);
 
       const firstAnswer = await client.callTool({
         name: "answer_run_input",
         arguments: {
           run_id: started.run_id,
           request_id: requestId,
-          answer: "first",
+          response_id: "failure-log-first-001",
+          answer: "FIRST_SECRET_ANSWER",
         },
       });
       assert.notEqual(firstAnswer.isError, true);
@@ -1057,7 +1056,8 @@ test("run-scoped input failures log resolved run context", async () => {
         arguments: {
           run_id: started.run_id,
           request_id: requestId,
-          answer: "second",
+          response_id: "failure-log-second-001",
+          answer: "SECOND_SECRET_ANSWER",
         },
       });
       assert.notEqual(duplicateAnswer.isError, true);
@@ -1076,7 +1076,7 @@ test("run-scoped input failures log resolved run context", async () => {
       assert.equal(failures[0].task_kind, "run");
       assert.equal(failures[0].cwd, projectDir);
       assert.equal(failures[0].cwd_class, "temp");
-      assert.doesNotMatch(JSON.stringify(failures[0]), /first|second/);
+      assert.doesNotMatch(JSON.stringify(failures[0]), /FIRST_SECRET_ANSWER|SECOND_SECRET_ANSWER/);
 
       await client.callTool({
         name: "cancel_run",

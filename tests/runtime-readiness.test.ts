@@ -206,7 +206,7 @@ test("runtime readiness returns a ready snapshot for a clean current build", asy
     processArgv: ["node", serverEntrypoint],
     source_state_policy: "require_clean",
     expected_contract_name: "subagent007.durable_run",
-    expected_contract_version: 1,
+    expected_contract_version: 2,
   });
 
   assert.equal(snapshot.ready, true);

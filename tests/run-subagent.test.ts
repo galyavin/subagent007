@@ -76,6 +76,9 @@ type RunSubagentMetadata = {
   child_started?: boolean;
   kind?: string;
   retry_guidance?: string;
+  input_response_id?: string;
+  input_response_receipt?: string;
+  input_response_outcome?: string;
   parent_run_id?: string;
   root_run_id?: string;
   recursion_depth?: number;
@@ -758,34 +761,53 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
         pending_cardinality?: string;
         safe_auto_answer?: string;
         multiple_pending_action?: string;
-        duplicate_answer?: string;
+        duplicate_response?: string;
         stale_request_id?: string;
         foreign_request_id?: string;
         terminal_pending_settlement?: string;
+        response_id?: string;
+        receipt?: string;
+        replay?: string;
+        raw_answer_persistence?: string;
+        process_loss?: string;
       };
     };
     assert.equal(contract.contract_name, "subagent007.durable_run");
-    assert.equal(contract.contract_version, 1);
+    assert.equal(contract.contract_version, 2);
     assert.deepEqual(contract.statuses?.terminal, ["completed", "failed", "cancelled", "timed_out"]);
     assert.deepEqual(contract.statuses?.non_terminal, ["working", "input_required"]);
     assert.equal(contract.capabilities?.includes("file_backed_output_references"), true);
     assert.equal(contract.capabilities?.includes("restart_drift_fail_closed"), true);
     assert.equal(contract.capabilities?.includes("recursive_delegate_lineage"), true);
+    assert.equal(contract.capabilities?.includes("acknowledged_run_input"), true);
+    assert.equal(contract.capabilities?.includes("live_response_replay"), true);
+    assert.equal(contract.capabilities?.includes("operational_answer_nonretention"), true);
     assert.deepEqual(contract.tools?.start, ["start_run", "schedule_run"]);
     assert.deepEqual(contract.tools?.session_start, ["start_session_run", "run_subagent_session"]);
     assert.equal(contract.input_mailbox?.waiting_status_terminal, false);
     assert.equal(contract.input_mailbox?.pending_cardinality, "zero_or_more");
-    assert.equal(contract.input_mailbox?.safe_auto_answer, "exactly_one_pending");
+    assert.equal(contract.input_mailbox?.safe_auto_answer, "caller_policy_required");
     assert.equal(contract.input_mailbox?.multiple_pending_action, "fail_closed");
-    assert.equal(contract.input_mailbox?.duplicate_answer, "rejected");
+    assert.equal(contract.input_mailbox?.duplicate_response, "exact_live_replay_only");
     assert.equal(contract.input_mailbox?.stale_request_id, "rejected");
     assert.equal(contract.input_mailbox?.foreign_request_id, "rejected");
     assert.equal(contract.input_mailbox?.terminal_pending_settlement, "closed_or_timed_out");
+    assert.equal(contract.input_mailbox?.response_id, "required");
+    assert.equal(contract.input_mailbox?.receipt, "child_waiter_accepted");
+    assert.equal(contract.input_mailbox?.replay, "live_exact_response");
+    assert.equal(contract.input_mailbox?.raw_answer_persistence, "forbidden");
+    assert.equal(contract.input_mailbox?.process_loss, "fails_closed");
+    const startRunTool = response.tools.find((entry) => entry.name === "start_run");
+    assert.ok(startRunTool);
+    assert.equal("input_protocol" in (startRunTool.inputSchema.properties as Record<string, unknown>), false);
+    const answerTool = response.tools.find((entry) => entry.name === "answer_run_input");
+    assert.ok(answerTool);
+    assert.ok((answerTool.inputSchema.required as string[]).includes("response_id"));
     const readinessResponse = await client.callTool({
       name: "get_runtime_readiness",
       arguments: {
         expected_contract_name: "subagent007.durable_run",
-        expected_contract_version: 1,
+        expected_contract_version: 2,
         source_state_policy: "allow_unknown",
       },
     });
@@ -1822,20 +1844,15 @@ test("MCP schedule_run supports caller input through the durable run mailbox", a
       name: "schedule_run",
       arguments: {
         cwd: projectDir,
-        prompt: "HEARTBEAT_LONG_WAIT",
+        prompt: "REQUEST_INPUT_WAIT",
         wait_ms: 0,
       },
     });
     assert.notEqual(startedResponse.isError, true);
     const started = startedResponse.structuredContent as RunSubagentMetadata;
-    const mailboxRoot = path.dirname(started.input_requests_dir);
-    const request = await createInputRequest({
-      mailboxRoot,
-      runId: started.run_id,
-      question: "Need clarification?",
-    });
-
     const inputRequired = await waitForInputRequired(client, started.run_id);
+    const request = inputRequired.input_requests.find((entry) => entry.status === "pending");
+    assert.ok(request);
     assert.equal(inputRequired.input_requests.some((input) => input.request_id === request.request_id), true);
 
     const answerResponse = await client.callTool({
@@ -1844,6 +1861,7 @@ test("MCP schedule_run supports caller input through the durable run mailbox", a
         run_id: started.run_id,
         request_id: request.request_id,
         answer: "continue",
+        response_id: "schedule-response-001",
       },
     });
     assert.notEqual(answerResponse.isError, true);
@@ -1851,6 +1869,7 @@ test("MCP schedule_run supports caller input through the durable run mailbox", a
     assert.equal(answered.status, "working");
     const terminal = await waitForTerminalRun(client, started.run_id);
     assert.equal(terminal.status, "completed");
+    assert.equal(await fs.readFile(terminal.output_path, "utf8"), "INPUT CONTINUED");
   });
 });
 
@@ -1924,7 +1943,7 @@ test("MCP start_run/get_run completes asynchronously with the same child contrac
     assert.equal(terminal.success, true);
     assert.equal(await fs.readFile(terminal.output_path, "utf8"), "FAST FINAL");
     assert.equal(terminal.contract_name, "subagent007.durable_run");
-    assert.equal(terminal.contract_version, 1);
+    assert.equal(terminal.contract_version, 2);
     assert.equal(terminal.output_references?.length, 1);
     assert.equal(terminal.output_references?.[0].kind, "file");
     assert.equal(terminal.output_references?.[0].path, terminal.output_path);
@@ -2164,22 +2183,13 @@ test("MCP start_run/get_run exposes active liveness and pending-input progress",
       assert.equal(pendingView.active_phase, "input_required");
       assert.ok(pendingView.input_requests.some((entry) => entry.request_id === request.request_id));
 
-      const answerResponse = await client.callTool({
-        name: "answer_run_input",
-        arguments: {
-          run_id: started.run_id,
-          request_id: request.request_id,
-          answer: "continue",
-        },
+      const cancelResponse = await client.callTool({
+        name: "cancel_run",
+        arguments: { run_id: started.run_id },
       });
-      assert.notEqual(answerResponse.isError, true);
-      const answeredView = answerResponse.structuredContent as RunSubagentMetadata;
-      assert.equal(answeredView.status, "working");
-      assert.equal(answeredView.active_phase, "running");
-
+      assert.notEqual(cancelResponse.isError, true);
       const terminal = await waitForTerminalRun(client, started.run_id);
-      assert.equal(terminal.status, "completed");
-      assert.equal(await fs.readFile(terminal.output_path, "utf8"), "HEARTBEAT LONG DONE");
+      assert.equal(terminal.status, "cancelled");
     },
     {
       env: {
@@ -2187,6 +2197,196 @@ test("MCP start_run/get_run exposes active liveness and pending-input progress",
       },
     },
   );
+});
+
+test("MCP input waits for child acceptance before returning an idempotent receipt", async () => {
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    const startedResponse = await client.callTool({
+      name: "start_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "REQUEST_INPUT_WAIT",
+      },
+    });
+    assert.notEqual(startedResponse.isError, true);
+    const started = startedResponse.structuredContent as RunSubagentMetadata;
+    const pending = await waitForInputRequired(client, started.run_id);
+    const request = pending.input_requests.find((entry) => entry.status === "pending");
+    assert.ok(request);
+
+    const answer = "SECRET_ANSWER";
+    const responseId = "response-001";
+    const answeredResponse = await client.callTool({
+      name: "answer_run_input",
+      arguments: {
+        run_id: started.run_id,
+        request_id: request.request_id,
+        answer,
+        response_id: responseId,
+      },
+    });
+    assert.notEqual(answeredResponse.isError, true);
+    const answered = answeredResponse.structuredContent as RunSubagentMetadata;
+    assert.equal(answered.status, "working");
+    assert.equal(answered.input_response_id, responseId);
+    assert.equal(typeof answered.input_response_receipt, "string");
+    assert.equal(answered.input_response_outcome, "accepted");
+    assert.equal(JSON.stringify(answered).includes(answer), false);
+
+    const conflictingReplay = await client.callTool({
+      name: "answer_run_input",
+      arguments: {
+        run_id: started.run_id,
+        request_id: request.request_id,
+        answer: "DIFFERENT_SECRET_ANSWER",
+        response_id: responseId,
+      },
+    });
+    const conflict = conflictingReplay.structuredContent as RunSubagentMetadata;
+    assert.equal(conflict.kind, "operation_rejected");
+    assert.equal(conflict.reason_code, "input_response_id_conflict");
+
+    const replayResponse = await client.callTool({
+      name: "answer_run_input",
+      arguments: {
+        run_id: started.run_id,
+        request_id: request.request_id,
+        answer,
+        response_id: responseId,
+      },
+    });
+    assert.notEqual(replayResponse.isError, true);
+    const replay = replayResponse.structuredContent as RunSubagentMetadata;
+    assert.equal(replay.input_response_receipt, answered.input_response_receipt);
+    assert.equal(replay.input_response_outcome, "replayed");
+
+    const terminal = await waitForTerminalRun(client, started.run_id);
+    assert.equal(terminal.status, "completed");
+    assert.equal(await fs.readFile(terminal.output_path, "utf8"), "INPUT CONTINUED");
+    assert.equal(JSON.stringify(terminal).includes(answer), false);
+    assert.equal((await fs.readFile(fakeLogPath, "utf8")).includes(answer), false);
+  });
+});
+
+test("accepted input remains settled when cancellation happens afterwards", async () => {
+  await connectFakeClient(async (client, { projectDir }) => {
+    const started = (await client.callTool({
+      name: "start_run",
+      arguments: { cwd: projectDir, prompt: "REQUEST_INPUT_WAIT" },
+    })).structuredContent as RunSubagentMetadata;
+    const pending = await waitForInputRequired(client, started.run_id);
+    const request = pending.input_requests.find((entry) => entry.status === "pending");
+    assert.ok(request);
+
+    const answeredResponse = await client.callTool({
+      name: "answer_run_input",
+      arguments: {
+        run_id: started.run_id,
+        request_id: request.request_id,
+        response_id: "answer-first-001",
+        answer: "continue",
+      },
+    });
+    assert.notEqual(answeredResponse.isError, true);
+    const answered = answeredResponse.structuredContent as RunSubagentMetadata;
+    assert.equal(answered.input_response_outcome, "accepted");
+
+    const cancelledResponse = await client.callTool({ name: "cancel_run", arguments: { run_id: started.run_id } });
+    assert.notEqual(cancelledResponse.isError, true);
+    const terminal = await waitForTerminalRun(client, started.run_id);
+    assert.equal(terminal.status, "cancelled");
+    assert.equal(terminal.input_requests.find((entry) => entry.request_id === request.request_id)?.status, "answered");
+  });
+});
+
+test("cancellation closes an input delivery that has not reached child acceptance", async () => {
+  await connectFakeClient(async (client, { projectDir }) => {
+    const started = (await client.callTool({
+      name: "start_run",
+      arguments: { cwd: projectDir, prompt: "REQUEST_INPUT_DELAYED_ACK" },
+    })).structuredContent as RunSubagentMetadata;
+    const pending = await waitForInputRequired(client, started.run_id);
+    const request = pending.input_requests.find((entry) => entry.status === "pending");
+    assert.ok(request);
+
+    const answerPromise = client.callTool({
+      name: "answer_run_input",
+      arguments: {
+        run_id: started.run_id,
+        request_id: request.request_id,
+        response_id: "cancel-first-001",
+        answer: "continue",
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const cancelledResponse = await client.callTool({ name: "cancel_run", arguments: { run_id: started.run_id } });
+    assert.notEqual(cancelledResponse.isError, true);
+    const answerResponse = await answerPromise;
+    assert.notEqual(answerResponse.isError, true);
+    const rejected = answerResponse.structuredContent as { kind?: string; reason_code?: string };
+    assert.equal(rejected.kind, "operation_rejected");
+    assert.equal(rejected.reason_code, "input_request_already_closed");
+    const terminal = await waitForTerminalRun(client, started.run_id);
+    assert.equal(terminal.status, "cancelled");
+    assert.equal(terminal.input_requests.find((entry) => entry.request_id === request.request_id)?.status, "closed");
+  });
+});
+
+test("child acceptance wins finalization that follows in the same output turn", async () => {
+  await connectFakeClient(async (client, { projectDir }) => {
+    const started = (await client.callTool({
+      name: "start_run",
+      arguments: { cwd: projectDir, prompt: "REQUEST_INPUT_ACK_THEN_EXIT" },
+    })).structuredContent as RunSubagentMetadata;
+    const pending = await waitForInputRequired(client, started.run_id);
+    const request = pending.input_requests.find((entry) => entry.status === "pending");
+    assert.ok(request);
+
+    const answeredResponse = await client.callTool({
+      name: "answer_run_input",
+      arguments: {
+        run_id: started.run_id,
+        request_id: request.request_id,
+        response_id: "ack-before-finalization-001",
+        answer: "continue",
+      },
+    });
+    assert.notEqual(answeredResponse.isError, true);
+    const answered = answeredResponse.structuredContent as RunSubagentMetadata;
+    assert.equal(answered.input_response_outcome, "accepted");
+    const terminal = await waitForTerminalRun(client, started.run_id);
+    assert.equal(terminal.status, "failed");
+    assert.equal(terminal.input_requests.find((entry) => entry.request_id === request.request_id)?.status, "answered");
+  });
+});
+
+test("child exit before acceptance rejects the delivery without a receipt", async () => {
+  await connectFakeClient(async (client, { projectDir }) => {
+    const started = (await client.callTool({
+      name: "start_run",
+      arguments: { cwd: projectDir, prompt: "REQUEST_INPUT_EXIT_BEFORE_ACK" },
+    })).structuredContent as RunSubagentMetadata;
+    const pending = await waitForInputRequired(client, started.run_id);
+    const request = pending.input_requests.find((entry) => entry.status === "pending");
+    assert.ok(request);
+
+    const answerResponse = await client.callTool({
+      name: "answer_run_input",
+      arguments: {
+        run_id: started.run_id,
+        request_id: request.request_id,
+        response_id: "exit-before-ack-001",
+        answer: "continue",
+      },
+    });
+    assert.notEqual(answerResponse.isError, true);
+    const rejected = answerResponse.structuredContent as { kind?: string; reason_code?: string };
+    assert.equal(rejected.kind, "operation_rejected");
+    assert.equal(rejected.reason_code, "run_not_accepting_input");
+    const terminal = await waitForTerminalRun(client, started.run_id);
+    assert.equal(terminal.status, "failed");
+    assert.equal(terminal.input_requests.find((entry) => entry.request_id === request.request_id)?.status, "closed");
+  });
 });
 
 test("MCP start_run/get_run exposes sanitized active public events", async () => {
@@ -2231,7 +2431,7 @@ test("MCP start_session_run exposes running_silent before first child output", a
         name: "start_session_run",
         arguments: {
           cwd: projectDir,
-          prompt: "HEARTBEAT_LONG_WAIT",
+          prompt: "REQUEST_INPUT_WAIT",
           session_key: "mcp-session:silent",
           resume_mode: "new",
         },
@@ -2246,6 +2446,19 @@ test("MCP start_session_run exposes running_silent before first child output", a
       assert.equal(started.status, "working");
       assert.equal(started.active_phase, "running_silent");
       assert.match(started.last_progress_message ?? "", /waiting for first public output/);
+      const pending = await waitForInputRequired(client, started.run_id);
+      const request = pending.input_requests.find((entry) => entry.status === "pending");
+      assert.ok(request);
+      const answerResponse = await client.callTool({
+        name: "answer_run_input",
+        arguments: {
+          run_id: started.run_id,
+          request_id: request.request_id,
+          response_id: "session-response-001",
+          answer: "continue",
+        },
+      });
+      assert.notEqual(answerResponse.isError, true);
       const terminal = await waitForTerminalRun(client, started.run_id);
       assert.equal(terminal.status, "completed");
     },
@@ -2299,22 +2512,20 @@ test("MCP start_session_run returns a durable pollable named-session task", asyn
 test("answer_run_input records no answer text in raw public event file", async () => {
   const runTasksDir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-input-events-"));
   await connectFakeClient(
-    async (client, { projectDir }) => {
+    async (client, { projectDir, fakeLogPath }) => {
       const startedResponse = await client.callTool({
         name: "start_run",
         arguments: {
           cwd: projectDir,
-          prompt: "HEARTBEAT_LONG_WAIT",
+          prompt: "REQUEST_INPUT_WAIT",
         },
       });
       assert.notEqual(startedResponse.isError, true);
       const started = startedResponse.structuredContent as RunSubagentMetadata;
       const mailboxRoot = path.dirname(started.input_requests_dir);
-      const request = await createInputRequest({
-        mailboxRoot,
-        runId: started.run_id,
-        question: "Need secret?",
-      });
+      const pending = await waitForInputRequired(client, started.run_id);
+      const request = pending.input_requests.find((entry) => entry.status === "pending");
+      assert.ok(request);
 
       const answerResponse = await client.callTool({
         name: "answer_run_input",
@@ -2322,6 +2533,7 @@ test("answer_run_input records no answer text in raw public event file", async (
           run_id: started.run_id,
           request_id: request.request_id,
           answer: "SECRET_ANSWER_SHOULD_NOT_LEAK",
+          response_id: "privacy-response-001",
         },
       });
       assert.notEqual(answerResponse.isError, true);
@@ -2330,6 +2542,16 @@ test("answer_run_input records no answer text in raw public event file", async (
       assert.doesNotMatch(rawEvents, /SECRET_ANSWER_SHOULD_NOT_LEAK/);
       const terminal = await waitForTerminalRun(client, started.run_id);
       assert.doesNotMatch(JSON.stringify(terminal.recent_events), /SECRET_ANSWER_SHOULD_NOT_LEAK/);
+      assert.doesNotMatch(
+        await fs.readFile(path.join(mailboxRoot, started.run_id, `${request.request_id}.terminal.json`), "utf8"),
+        /SECRET_ANSWER_SHOULD_NOT_LEAK/,
+      );
+      assert.doesNotMatch(
+        await fs.readFile(path.join(runTasksDir, `${started.run_id}.json`), "utf8"),
+        /SECRET_ANSWER_SHOULD_NOT_LEAK/,
+      );
+      assert.doesNotMatch(await fs.readFile(terminal.output_path, "utf8"), /SECRET_ANSWER_SHOULD_NOT_LEAK/);
+      assert.doesNotMatch(await fs.readFile(fakeLogPath, "utf8"), /SECRET_ANSWER_SHOULD_NOT_LEAK/);
     },
     {
       env: {
@@ -2581,50 +2803,6 @@ test("get_run persists stale active restart drift as terminal failed snapshot", 
   }
 });
 
-test("answer_run_input can answer a pending request belonging to a started run", async () => {
-  await connectFakeClient(async (client, { projectDir }) => {
-    const startedResponse = await client.callTool({
-      name: "start_run",
-      arguments: {
-        cwd: projectDir,
-        prompt: "HEARTBEAT_SLEEP",
-      },
-    });
-    const started = startedResponse.structuredContent as RunSubagentMetadata;
-    const mailboxRoot = path.dirname(started.input_requests_dir);
-    const pending = await listInputRequests({ mailboxRoot, runId: started.run_id });
-    assert.equal(pending.length, 0);
-
-    const requestId = `${started.run_id}-abcdef123456`;
-    await fs.writeFile(
-      path.join(started.input_requests_dir, `${requestId}.json`),
-      `${JSON.stringify({
-        schema_version: 1,
-        request_id: requestId,
-        run_id: started.run_id,
-        session_id: null,
-        created_at: new Date().toISOString(),
-        question: "Answer me",
-        options: [],
-        freeform: true,
-      })}\n`,
-    );
-
-    const response = await client.callTool({
-      name: "answer_run_input",
-      arguments: {
-        run_id: started.run_id,
-        request_id: requestId,
-        answer: "done",
-      },
-    });
-    assert.notEqual(response.isError, true);
-    const answered = await listInputRequests({ mailboxRoot, runId: started.run_id, status: "answered" });
-    assert.equal(answered.length, 1);
-    assert.equal(answered[0].request_id, requestId);
-  });
-});
-
 test("cancel_run closes pending input requests and rejects late answers", async () => {
   await connectFakeClient(
     async (client, { projectDir }) => {
@@ -2664,15 +2842,13 @@ test("cancel_run closes pending input requests and rejects late answers", async 
           run_id: started.run_id,
           request_id: request.request_id,
           answer: "late",
+          response_id: "late-response-001",
         },
       });
       assert.notEqual(lateAnswer.isError, true);
       const rejected = lateAnswer.structuredContent as { kind?: string; reason_code?: string };
       assert.equal(rejected.kind, "operation_rejected");
-      assert.ok(
-        rejected.reason_code === "run_not_accepting_input" ||
-          rejected.reason_code === "input_request_already_closed",
-      );
+      assert.equal(rejected.reason_code, "input_request_already_closed");
 
       const terminal = await waitForTerminalRun(client, started.run_id);
       assert.equal(terminal.status, "cancelled");

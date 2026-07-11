@@ -6,7 +6,7 @@ import {
 } from "./types.js";
 
 export const DURABLE_RUN_CONTRACT_NAME = "subagent007.durable_run";
-export const DURABLE_RUN_CONTRACT_VERSION = 1;
+export const DURABLE_RUN_CONTRACT_VERSION = 2;
 
 export { NON_TERMINAL_RUN_STATUSES, TERMINAL_RUN_STATUSES };
 export type DurableRunStatus = RunStatus;
@@ -19,6 +19,9 @@ export const DURABLE_RUN_CAPABILITIES = [
   "file_backed_output_references",
   "bounded_public_output_excerpt",
   "run_input_mailbox",
+  "acknowledged_run_input",
+  "live_response_replay",
+  "operational_answer_nonretention",
   "restart_drift_fail_closed",
   "recursive_delegate_lineage",
 ] as const;
@@ -51,12 +54,17 @@ export function durableRunContractView(): {
     waiting_status: "input_required";
     waiting_status_terminal: false;
     pending_cardinality: "zero_or_more";
-    safe_auto_answer: "exactly_one_pending";
+    safe_auto_answer: "caller_policy_required";
     multiple_pending_action: "fail_closed";
-    duplicate_answer: "rejected";
+    duplicate_response: "exact_live_replay_only";
     stale_request_id: "rejected";
     foreign_request_id: "rejected";
     terminal_pending_settlement: "closed_or_timed_out";
+    response_id: "required";
+    receipt: "child_waiter_accepted";
+    replay: "live_exact_response";
+    raw_answer_persistence: "forbidden";
+    process_loss: "fails_closed";
   };
 } {
   const buildSha = serverBuildSha();
@@ -88,12 +96,17 @@ export function durableRunContractView(): {
       waiting_status: "input_required",
       waiting_status_terminal: false,
       pending_cardinality: "zero_or_more",
-      safe_auto_answer: "exactly_one_pending",
+      safe_auto_answer: "caller_policy_required",
       multiple_pending_action: "fail_closed",
-      duplicate_answer: "rejected",
+      duplicate_response: "exact_live_replay_only",
       stale_request_id: "rejected",
       foreign_request_id: "rejected",
       terminal_pending_settlement: "closed_or_timed_out",
+      response_id: "required",
+      receipt: "child_waiter_accepted",
+      replay: "live_exact_response",
+      raw_answer_persistence: "forbidden",
+      process_loss: "fails_closed",
     },
   };
 }

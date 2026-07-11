@@ -511,6 +511,7 @@ server.registerTool(
       run_id: z.string().min(1),
       request_id: z.string().min(1),
       answer: z.string().min(1),
+      response_id: z.string().min(1),
     },
   },
   withRunFailureLogging("answer_run_input", async (request) => {
@@ -518,8 +519,14 @@ server.registerTool(
       runId: request.run_id,
       requestId: request.request_id,
       answer: request.answer,
+      responseId: request.response_id,
     });
-    return jsonObjectToolResult(result);
+    return jsonObjectToolResult({
+      ...result.view,
+      input_response_id: result.responseId,
+      input_response_receipt: result.receipt,
+      input_response_outcome: result.outcome,
+    });
   }),
 );
 

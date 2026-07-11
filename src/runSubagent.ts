@@ -90,6 +90,33 @@ interface PiChildRequestFile {
   recursiveControl?: RecursiveControlChildConfig;
 }
 
+export interface ChildInputResponseAccepted {
+  runId: string;
+  requestId: string;
+  responseId: string;
+}
+
+function inputResponseAcceptedFromLine(line: string): ChildInputResponseAccepted | undefined {
+  try {
+    const event = JSON.parse(line) as Record<string, unknown>;
+    if (
+      event.type !== "subagent007.input_response_accepted" ||
+      typeof event.run_id !== "string" ||
+      typeof event.request_id !== "string" ||
+      typeof event.response_id !== "string"
+    ) {
+      return undefined;
+    }
+    return {
+      runId: event.run_id,
+      requestId: event.request_id,
+      responseId: event.response_id,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 function defaultInputRequestTimeoutMs(): number {
   return safeIntegerFromEnv("SUBAGENT007_INPUT_REQUEST_TIMEOUT_MS", 24 * 60 * 60 * 1000, 1);
 }
@@ -159,7 +186,10 @@ async function writeChildRequestFile(request: PiChildRequestFile): Promise<{
 }> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-child-"));
   const requestPath = path.join(dir, `${randomBytes(6).toString("hex")}.json`);
-  await fs.writeFile(requestPath, `${JSON.stringify(request, null, 2)}\n`, "utf8");
+  await fs.writeFile(requestPath, `${JSON.stringify(request, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
   return {
     requestPath,
     cleanup: async () => {
@@ -414,6 +444,8 @@ export async function runSubagentCore(
     skillFilePath?: string;
     rootRunId?: string;
     recursionDepth?: number;
+    onChildControlReady?: (send: (message: string) => boolean) => void;
+    onInputResponseAccepted?: (response: ChildInputResponseAccepted) => void;
   } = {},
 ): Promise<RunSubagentResult> {
   if (!options.allowTimeout && request.timeout_ms !== undefined) {
@@ -486,8 +518,13 @@ export async function runSubagentCore(
           }
         : undefined,
       abortSignal: options.abortSignal,
+      onControlReady: options.onChildControlReady,
       onOutputLine: async (line) => {
         parsedSessionId ??= extractSubagentSessionId(line);
+        const accepted = inputResponseAcceptedFromLine(line);
+        if (accepted?.runId === runId) {
+          options.onInputResponseAccepted?.(accepted);
+        }
         await options.onOutputLine?.(line);
       },
     });

@@ -65,6 +65,7 @@ export type FailureReasonCode =
   | "input_request_already_timed_out"
   | "input_request_not_found"
   | "input_request_not_part_of_run"
+  | "input_response_id_conflict"
   | "session_already_exists"
   | "session_already_running"
   | "session_cwd_mismatch"

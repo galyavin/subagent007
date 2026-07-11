@@ -7,37 +7,28 @@ import { ValidationError, type FailureReasonCode } from "./types.js";
 const INPUT_REQUEST_STATUSES = ["pending", "answered", "timed_out", "closed"] as const;
 export type InputRequestStatus = (typeof INPUT_REQUEST_STATUSES)[number];
 type InputRequestSettlementOutcome = Exclude<InputRequestStatus, "pending">;
+const MAX_INPUT_ANSWER_CHARS = 16_384;
 
 export interface InputRequestRecord {
-  schema_version: 1;
+  schema_version: 2;
   request_id: string;
   run_id: string;
   session_id: string | null;
   created_at: string;
   question: string;
   options: string[];
+  option_ids: string[];
   freeform: boolean;
-}
-
-export interface InputAnswerRecord {
-  schema_version: 1;
-  request_id: string;
-  answer: string;
-  answered_at: string;
-}
-
-interface InputTimeoutRecord {
-  schema_version: 1;
-  request_id: string;
-  timed_out_at: string;
+  max_answer_chars: number;
 }
 
 export interface InputTerminalRecord {
-  schema_version: 1;
+  schema_version: 2;
   request_id: string;
   status: InputRequestSettlementOutcome;
   settled_at: string;
-  answer?: string;
+  response_id?: string;
+  receipt?: string;
   reason?: string;
 }
 
@@ -72,29 +63,12 @@ function requestPath(mailboxRoot: string, runId: string, requestId: string): str
   return path.join(mailboxRoot, runId, `${requestId}.json`);
 }
 
-function sidecarPathFor(recordPath: string, suffix: string): string {
-  return recordPath.replace(/\.json$/, suffix);
-}
-
-function answerPathFor(recordPath: string): string {
-  return sidecarPathFor(recordPath, ".answer.json");
-}
-
-function timeoutPathFor(recordPath: string): string {
-  return sidecarPathFor(recordPath, ".timed_out.json");
-}
-
 function terminalPathFor(recordPath: string): string {
-  return sidecarPathFor(recordPath, ".terminal.json");
+  return recordPath.replace(/\.json$/, ".terminal.json");
 }
 
 function isRequestRecordFile(file: import("node:fs").Dirent): boolean {
-  return file.isFile() &&
-    file.name.endsWith(".json") &&
-    !file.name.endsWith(".answer.json") &&
-    !file.name.endsWith(".timed_out.json") &&
-    !file.name.endsWith(".terminal.json") &&
-    !file.name.includes(".tmp-");
+  return file.isFile() && /-[a-f0-9]{12}\.json$/.test(file.name) && !file.name.includes(".tmp-");
 }
 
 async function readJson<T>(filePath: string): Promise<T | null> {
@@ -110,7 +84,11 @@ async function readJson<T>(filePath: string): Promise<T | null> {
 
 async function writeAtomicCreate(filePath: string, data: unknown): Promise<void> {
   const tmpPath = `${filePath}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
-  await fs.writeFile(tmpPath, `${JSON.stringify(data, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+  await fs.writeFile(tmpPath, `${JSON.stringify(data, null, 2)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
   try {
     await fs.link(tmpPath, filePath);
   } finally {
@@ -124,7 +102,9 @@ export async function createInputRequest(options: {
   sessionId?: string | null;
   question: string;
   choices?: string[];
+  optionIds?: string[];
   freeform?: boolean;
+  maxAnswerChars?: number;
 }): Promise<InputRequestRecord> {
   const runId = options.runId.trim();
   assertSafeId(runId, "run_id");
@@ -132,104 +112,62 @@ export async function createInputRequest(options: {
   if (question === "") {
     throw new ValidationError("question must be a nonempty string", "unknown_validation_error");
   }
+  const optionsList = options.choices ?? [];
+  const optionIds = options.optionIds ?? optionsList.map((_, index) => `option_${index + 1}`);
+  if (optionIds.length !== optionsList.length) {
+    throw new ValidationError("option_ids must have one entry for each option", "unknown_validation_error");
+  }
+  const seenOptionIds = new Set<string>();
+  for (const optionId of optionIds) {
+    assertSafeId(optionId, "option_id");
+    if (seenOptionIds.has(optionId)) {
+      throw new ValidationError("option_ids must be unique", "unknown_validation_error");
+    }
+    seenOptionIds.add(optionId);
+  }
+  const maxAnswerChars = options.maxAnswerChars ?? MAX_INPUT_ANSWER_CHARS;
+  if (!Number.isInteger(maxAnswerChars) || maxAnswerChars < 1 || maxAnswerChars > MAX_INPUT_ANSWER_CHARS) {
+    throw new ValidationError(
+      `max_answer_chars must be an integer from 1 to ${MAX_INPUT_ANSWER_CHARS}`,
+      "unknown_validation_error",
+    );
+  }
   const requestId = `${runId}-${randomBytes(6).toString("hex")}`;
   const record: InputRequestRecord = {
-    schema_version: 1,
+    schema_version: 2,
     request_id: requestId,
     run_id: runId,
     session_id: options.sessionId ?? null,
     created_at: new Date().toISOString(),
     question,
-    options: options.choices ?? [],
+    options: optionsList,
+    option_ids: optionIds,
     freeform: options.freeform ?? true,
+    max_answer_chars: maxAnswerChars,
   };
   const runDir = path.join(options.mailboxRoot, runId);
-  await fs.mkdir(runDir, { recursive: true });
-  await fs.writeFile(requestPath(options.mailboxRoot, runId, requestId), `${JSON.stringify(record, null, 2)}\n`, {
-    encoding: "utf8",
-    flag: "wx",
-  });
+  await fs.mkdir(runDir, { recursive: true, mode: 0o700 });
+  await fs.chmod(runDir, 0o700);
+  await writeAtomicCreate(requestPath(options.mailboxRoot, runId, requestId), record);
   return record;
-}
-
-function answerRecordFromTerminal(record: InputTerminalRecord): InputAnswerRecord | null {
-  if (record.status !== "answered" || typeof record.answer !== "string") {
-    return null;
-  }
-  return {
-    schema_version: 1,
-    request_id: record.request_id,
-    answer: record.answer,
-    answered_at: record.settled_at,
-  };
-}
-
-async function readSettledAnswer(recordPath: string): Promise<InputAnswerRecord | null> {
-  const terminal = await readJson<InputTerminalRecord>(terminalPathFor(recordPath));
-  if (terminal) {
-    return answerRecordFromTerminal(terminal);
-  }
-  return readJson<InputAnswerRecord>(answerPathFor(recordPath));
 }
 
 function settlementStatusView(status: unknown, settledAt: string): InputRequestStatusView | null {
   if (status === "answered") {
-    return {
-      status: "answered",
-      settled_at: settledAt,
-      answered_at: settledAt,
-    };
+    return { status: "answered", settled_at: settledAt, answered_at: settledAt };
   }
   if (status === "timed_out") {
-    return {
-      status: "timed_out",
-      settled_at: settledAt,
-      timed_out_at: settledAt,
-    };
+    return { status: "timed_out", settled_at: settledAt, timed_out_at: settledAt };
   }
   if (status === "closed") {
-    return {
-      status: "closed",
-      settled_at: settledAt,
-      closed_at: settledAt,
-    };
+    return { status: "closed", settled_at: settledAt, closed_at: settledAt };
   }
   return null;
 }
 
-function terminalStatusView(record: InputTerminalRecord): InputRequestStatusView | null {
-  return settlementStatusView(record.status, record.settled_at);
-}
-
-async function requestStatus(recordPath: string): Promise<{
-  status: InputRequestStatus;
-  settled_at?: string;
-  answered_at?: string;
-  timed_out_at?: string;
-  closed_at?: string;
-}> {
+async function requestStatus(recordPath: string): Promise<InputRequestStatusView> {
   const terminal = await readJson<InputTerminalRecord>(terminalPathFor(recordPath));
-  if (terminal) {
-    const terminalView = terminalStatusView(terminal);
-    if (terminalView) {
-      return terminalView;
-    }
-  }
-  const answer = await readJson<InputAnswerRecord>(answerPathFor(recordPath));
-  if (answer) {
-    const answerView = settlementStatusView("answered", answer.answered_at);
-    if (answerView) {
-      return answerView;
-    }
-  }
-  const timeout = await readJson<InputTimeoutRecord>(timeoutPathFor(recordPath));
-  if (timeout) {
-    const timeoutView = settlementStatusView("timed_out", timeout.timed_out_at);
-    if (timeoutView) {
-      return timeoutView;
-    }
-  }
-  return { status: "pending" };
+  return terminal ? settlementStatusView(terminal.status, terminal.settled_at) ?? { status: "pending" } : { status: "pending" };
 }
 
 async function findRequestPath(mailboxRoot: string, requestId: string): Promise<string> {
@@ -248,6 +186,14 @@ async function findRequestPath(mailboxRoot: string, requestId: string): Promise<
     }
     throw new ValidationError(`input request not found: ${requestId}`, "input_request_not_found");
   }
+}
+
+async function readRequiredInputRequest(recordPath: string, requestId: string): Promise<InputRequestRecord> {
+  const request = await readJson<InputRequestRecord>(recordPath);
+  if (!request || request.schema_version !== 2 || request.request_id !== requestId) {
+    throw new ValidationError(`input request not found: ${requestId}`, "input_request_not_found");
+  }
+  return request;
 }
 
 export async function listInputRequests(options: {
@@ -269,7 +215,6 @@ export async function listInputRequests(options: {
     }
     throw error;
   }
-
   for (const runEntry of runEntries) {
     if (!runEntry.isDirectory() || (options.runId && runEntry.name !== options.runId)) {
       continue;
@@ -282,7 +227,7 @@ export async function listInputRequests(options: {
       }
       const filePath = path.join(runDir, requestFile.name);
       const record = await readJson<InputRequestRecord>(filePath);
-      if (!record) {
+      if (!record || record.schema_version !== 2 || record.run_id !== runEntry.name) {
         continue;
       }
       const status = await requestStatus(filePath);
@@ -292,7 +237,6 @@ export async function listInputRequests(options: {
       views.push({ ...record, ...status });
     }
   }
-
   return views.sort((a, b) => a.created_at.localeCompare(b.created_at));
 }
 
@@ -313,136 +257,75 @@ async function settleInputRequestAtPath(options: {
   recordPath: string;
   requestId: string;
   outcome: InputRequestSettlementOutcome;
-  answer?: string;
+  responseId?: string;
+  receipt?: string;
   reason?: string;
 }): Promise<InputTerminalRecord> {
   if (options.outcome === "answered") {
-    if (typeof options.answer !== "string" || options.answer.trim() === "") {
-      throw new ValidationError("answer must be a nonempty string", "unknown_validation_error");
+    if (typeof options.responseId !== "string" || options.responseId.trim() === "") {
+      throw new ValidationError("response_id must be a nonempty string", "unknown_validation_error");
     }
-  } else if (options.answer !== undefined) {
-    throw new ValidationError(`${options.outcome} input request settlement cannot include an answer`, "unknown_validation_error");
+    assertSafeId(options.responseId, "response_id");
+    if (typeof options.receipt !== "string" || options.receipt.trim() === "") {
+      throw new ValidationError("receipt must be a nonempty string", "unknown_validation_error");
+    }
+  } else if (options.responseId !== undefined || options.receipt !== undefined) {
+    throw new ValidationError(`${options.outcome} input request settlement cannot include a response`, "unknown_validation_error");
   }
-
   const currentStatus = await requestStatus(options.recordPath);
   if (currentStatus.status !== "pending") {
     throw alreadySettledError(options.requestId, currentStatus.status);
   }
-
-  const settledAt = new Date().toISOString();
   const terminal: InputTerminalRecord = {
-    schema_version: 1,
+    schema_version: 2,
     request_id: options.requestId,
     status: options.outcome,
-    settled_at: settledAt,
-    ...(options.outcome === "answered" ? { answer: options.answer } : {}),
+    settled_at: new Date().toISOString(),
+    ...(options.outcome === "answered" ? { response_id: options.responseId, receipt: options.receipt } : {}),
     ...(options.reason ? { reason: options.reason } : {}),
   };
-
   try {
     await writeAtomicCreate(terminalPathFor(options.recordPath), terminal);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-      const settledStatus = await requestStatus(options.recordPath);
-      throw alreadySettledError(options.requestId, settledStatus.status);
+      throw alreadySettledError(options.requestId, (await requestStatus(options.recordPath)).status);
     }
     throw error;
   }
   return terminal;
 }
 
-export async function settleInputRequest(options: {
+export function validateInputResponse(request: InputRequestRecord, answer: string): void {
+  if (typeof answer !== "string" || answer.trim() === "") {
+    throw new ValidationError("answer must be a nonempty string", "unknown_validation_error");
+  }
+  if (answer.length > request.max_answer_chars) {
+    throw new ValidationError("answer exceeds max_answer_chars", "unknown_validation_error");
+  }
+  if (/\u0000/.test(answer)) {
+    throw new ValidationError("answer cannot contain NUL", "unknown_validation_error");
+  }
+  if (!request.freeform && !request.option_ids.includes(answer)) {
+    throw new ValidationError("answer must be a declared option id", "unknown_validation_error");
+  }
+}
+
+export async function settleInputResponse(options: {
   mailboxRoot?: string;
   requestId: string;
-  outcome: InputRequestSettlementOutcome;
-  answer?: string;
-  reason?: string;
+  responseId: string;
+  receipt: string;
 }): Promise<InputTerminalRecord> {
   const mailboxRoot = options.mailboxRoot ?? defaultInputRequestsDir();
   const recordPath = await findRequestPath(mailboxRoot, options.requestId);
+  await readRequiredInputRequest(recordPath, options.requestId);
   return settleInputRequestAtPath({
     recordPath,
     requestId: options.requestId,
-    outcome: options.outcome,
-    answer: options.answer,
-    reason: options.reason,
-  });
-}
-
-export async function answerInputRequest(options: {
-  mailboxRoot?: string;
-  requestId: string;
-  answer: string;
-}): Promise<InputAnswerRecord> {
-  const terminal = await settleInputRequest({
-    mailboxRoot: options.mailboxRoot,
-    requestId: options.requestId,
     outcome: "answered",
-    answer: options.answer,
+    responseId: options.responseId,
+    receipt: options.receipt,
   });
-  const answer = answerRecordFromTerminal(terminal);
-  if (!answer) {
-    throw new ValidationError(`input request was not answered: ${options.requestId}`, "unknown_validation_error");
-  }
-  return answer;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-export async function waitForInputAnswer(options: {
-  mailboxRoot: string;
-  runId: string;
-  requestId: string;
-  timeoutMs: number;
-  pollIntervalMs?: number;
-}): Promise<InputAnswerRecord> {
-  const recordPath = requestPath(options.mailboxRoot, options.runId, options.requestId);
-  const deadline = Date.now() + options.timeoutMs;
-  const pollIntervalMs = options.pollIntervalMs ?? 200;
-
-  while (Date.now() < deadline) {
-    const status = await requestStatus(recordPath);
-    if (status.status === "timed_out") {
-      throw new Error(`input request timed out: ${options.requestId}`);
-    }
-    if (status.status === "closed") {
-      throw new Error(`input request closed: ${options.requestId}`);
-    }
-    const answer = await readSettledAnswer(recordPath);
-    if (answer) {
-      return answer;
-    }
-    await sleep(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())));
-  }
-
-  try {
-    await settleInputRequestAtPath({
-      recordPath,
-      requestId: options.requestId,
-      outcome: "timed_out",
-      reason: "wait_for_input_answer timeout elapsed",
-    });
-  } catch (error) {
-    if (error instanceof ValidationError) {
-      const answer = await readSettledAnswer(recordPath);
-      if (answer) {
-        return answer;
-      }
-      const status = await requestStatus(recordPath);
-      if (status.status === "closed") {
-        throw new Error(`input request closed: ${options.requestId}`);
-      }
-      if (status.status === "timed_out") {
-        throw new Error(`input request timed out: ${options.requestId}`);
-      }
-    }
-    throw error;
-  }
-  throw new Error(`input request timed out: ${options.requestId}`);
 }
 
 export async function closePendingInputRequestsForRun(options: {
@@ -455,14 +338,13 @@ export async function closePendingInputRequestsForRun(options: {
   const closed: InputTerminalRecord[] = [];
   for (const request of pending) {
     try {
-      closed.push(
-        await settleInputRequest({
-          mailboxRoot,
-          requestId: request.request_id,
-          outcome: "closed",
-          reason: options.reason ?? "run reached a terminal state",
-        }),
-      );
+      const recordPath = await findRequestPath(mailboxRoot, request.request_id);
+      closed.push(await settleInputRequestAtPath({
+        recordPath,
+        requestId: request.request_id,
+        outcome: "closed",
+        reason: options.reason ?? "run reached a terminal state",
+      }));
     } catch (error) {
       if (!(error instanceof ValidationError) || !/already (answered|timed out|closed)/.test(error.message)) {
         throw error;

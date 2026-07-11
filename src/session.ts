@@ -16,7 +16,11 @@ import { defaultSessionsDir } from "./output.js";
 import { appendContractPacketInstruction, extractContractPacket } from "./packet.js";
 import { createPromptProvenance } from "./prompt.js";
 import type { HeartbeatNotify } from "./progress.js";
-import { resolveSkillFilePathForRequest, runSubagentCore } from "./runSubagent.js";
+import {
+  resolveSkillFilePathForRequest,
+  runSubagentCore,
+  type ChildInputResponseAccepted,
+} from "./runSubagent.js";
 import {
   MODEL_CLASSES,
   OUTPUT_MODES,
@@ -564,6 +568,8 @@ export async function runSubagentSession(
     rootRunId?: string;
     recursionDepth?: number;
     onOutputLine?: (line: string) => void | Promise<void>;
+    onChildControlReady?: (send: (message: string) => boolean) => void;
+    onInputResponseAccepted?: (response: ChildInputResponseAccepted) => void;
     failureLogTool?: Extract<FailureLogTool, "start_session_run" | "run_subagent_session">;
   } = {},
 ): Promise<RunSubagentSessionResult> {
@@ -629,6 +635,8 @@ export async function runSubagentSession(
       heartbeatIntervalMs: options.heartbeatIntervalMs,
       abortSignal: options.abortSignal,
       onOutputLine: options.onOutputLine,
+      onChildControlReady: options.onChildControlReady,
+      onInputResponseAccepted: options.onInputResponseAccepted,
       promptProvenance,
       skillFilePath,
       rootRunId: options.rootRunId,
