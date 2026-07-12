@@ -203,7 +203,7 @@ test("resolves caller fields over config defaults", async () => {
   assert.deepEqual(resolved.continuity, { mode: "resume", session_id: sessionFile });
   assert.equal(resolved.modelClass, "D");
   assert.equal(resolved.model, "openai-codex/gpt-5.6-terra");
-  assert.equal(resolved.thinkingLevel, "xhigh");
+  assert.equal(resolved.thinkingLevel, "high");
   assert.equal(resolved.skill, "pda-lite");
   assert.equal(resolved.outputMode, "final");
   assert.equal(Object.hasOwn(resolved, "toolProfile"), false);
@@ -424,7 +424,7 @@ test("resolves model classes to calibrated model and thinking level", async () =
     ["A", "openrouter/deepseek/deepseek-v4-flash", "high"],
     ["B", "openrouter/deepseek/deepseek-v4-pro", "high"],
     ["C", "openai-codex/gpt-5.6-luna", "xhigh"],
-    ["D", "openai-codex/gpt-5.6-terra", "xhigh"],
+    ["D", "openai-codex/gpt-5.6-terra", "high"],
     ["E", "openai-codex/gpt-5.6-sol", "high"],
   ] as const) {
     const resolved = await validateAndResolveRequest(

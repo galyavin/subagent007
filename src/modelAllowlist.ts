@@ -44,7 +44,7 @@ export const MODEL_CLASS_CALIBRATIONS: Record<ModelClass, {
   },
   D: {
     model: "openai-codex/gpt-5.6-terra",
-    thinkingLevel: "xhigh",
+    thinkingLevel: "high",
     description: "Complex multi-file debugging, planning, synthesis, and high-abstraction work.",
   },
   E: {
