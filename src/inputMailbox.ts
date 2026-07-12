@@ -206,28 +206,38 @@ export async function listInputRequests(options: {
     assertSafeId(options.runId, "run_id");
   }
   const views: InputRequestView[] = [];
-  let runEntries: import("node:fs").Dirent[];
-  try {
-    runEntries = await fs.readdir(mailboxRoot, { withFileTypes: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return [];
+  let runNames: string[];
+  if (options.runId) {
+    runNames = [options.runId];
+  } else {
+    try {
+      const runEntries = await fs.readdir(mailboxRoot, { withFileTypes: true });
+      runNames = runEntries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return [];
+      }
+      throw error;
     }
-    throw error;
   }
-  for (const runEntry of runEntries) {
-    if (!runEntry.isDirectory() || (options.runId && runEntry.name !== options.runId)) {
-      continue;
+  for (const runName of runNames) {
+    const runDir = path.join(mailboxRoot, runName);
+    let requestFiles: import("node:fs").Dirent[];
+    try {
+      requestFiles = await fs.readdir(runDir, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        continue;
+      }
+      throw error;
     }
-    const runDir = path.join(mailboxRoot, runEntry.name);
-    const requestFiles = await fs.readdir(runDir, { withFileTypes: true });
     for (const requestFile of requestFiles) {
       if (!isRequestRecordFile(requestFile)) {
         continue;
       }
       const filePath = path.join(runDir, requestFile.name);
       const record = await readJson<InputRequestRecord>(filePath);
-      if (!record || record.schema_version !== 2 || record.run_id !== runEntry.name) {
+      if (!record || record.schema_version !== 2 || record.run_id !== runName) {
         continue;
       }
       const status = await requestStatus(filePath);
@@ -352,4 +362,20 @@ export async function closePendingInputRequestsForRun(options: {
     }
   }
   return closed;
+}
+
+export async function removeTerminalInputRequestsForRun(options: {
+  mailboxRoot?: string;
+  runId: string;
+}): Promise<void> {
+  const mailboxRoot = options.mailboxRoot ?? defaultInputRequestsDir();
+  assertSafeId(options.runId, "run_id");
+  const pending = await listInputRequests({ mailboxRoot, runId: options.runId, status: "pending" });
+  if (pending.length > 0) {
+    throw new ValidationError(
+      `cannot compact input requests while run has pending input: ${options.runId}`,
+      "run_not_accepting_input",
+    );
+  }
+  await fs.rm(path.join(mailboxRoot, options.runId), { recursive: true, force: true });
 }

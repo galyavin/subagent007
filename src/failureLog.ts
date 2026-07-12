@@ -31,6 +31,7 @@ export type FailureClass =
   | "missing_session_id"
   | "missing_final_output"
   | "restart_drift"
+  | "resource_exhausted"
   | "session_error"
   | "signal_terminated"
   | "unknown_error";
@@ -139,6 +140,8 @@ function defaultReasonCode(failureClass: FailureClass): FailureReasonCode {
       return "missing_final_output";
     case "restart_drift":
       return "server_restarted_active_run";
+    case "resource_exhausted":
+      return "disk_reserve_exhausted";
     case "packet_failed":
       return "packet_required_invalid";
     case "validation_error":
@@ -196,9 +199,13 @@ export function failureClassForProcessResult(result: {
   timed_out: boolean;
   exit_code: number | null;
   stop_signal?: string | null;
+  reason_code?: FailureReasonCode;
 }): FailureClass {
   if (result.timed_out) {
     return "timeout";
+  }
+  if (result.reason_code === "disk_reserve_exhausted") {
+    return "resource_exhausted";
   }
   if (result.exit_code !== null && result.exit_code !== 0) {
     return "nonzero_exit";
@@ -242,6 +249,9 @@ function sessionFailureProjection(
 ): { failureClass: FailureClass; reasonCode: FailureReasonCode } {
   if (result.timed_out) {
     return { failureClass: "timeout", reasonCode: "timeout" };
+  }
+  if (result.reason_code === "disk_reserve_exhausted") {
+    return { failureClass: "resource_exhausted", reasonCode: "disk_reserve_exhausted" };
   }
   if (result.exit_code !== null && result.exit_code !== 0) {
     return { failureClass: "nonzero_exit", reasonCode: "nonzero_exit" };

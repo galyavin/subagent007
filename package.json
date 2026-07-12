@@ -8,8 +8,8 @@
     "subagent007-pi": "./dist/server.js"
   },
   "scripts": {
-    "clean:dist": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
-    "build": "npm run clean:dist && tsc -p tsconfig.json",
+    "clean:dist": "node scripts/build-atomic.mjs --clean-inactive",
+    "build": "node scripts/build-atomic.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "pretest:local": "npm run build",
     "test:local": "node scripts/run-tests-with-ledger-guard.mjs tests/*.test.ts",
@@ -26,22 +26,6 @@
     "observed-campaign": "node scripts/run-observed-campaign.mjs",
     "observed-mcp-probe": "node scripts/run-observed-mcp-probe.mjs",
     "failure-log:archive": "node scripts/archive-failure-log.mjs"
-  },
-  "knip": {
-    "entry": [
-      "src/piChild.ts",
-      "scripts/*.mjs",
-      "tests/*.test.ts",
-      "tests/helpers/*.ts"
-    ],
-    "project": [
-      "src/**/*.ts",
-      "tests/**/*.ts",
-      "scripts/*.mjs"
-    ],
-    "ignoreDependencies": [
-      "tsx"
-    ]
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.78.1",

@@ -2,11 +2,14 @@ import fs from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import { createOwnedTemporaryDir } from "./ownedTemporaryArtifact.js";
 import type { OutputMode, PromptProvenance } from "./types.js";
 import {
   preparePublicTranscriptFromProcessOutput,
-  preparePublicTranscriptFromProcessOutputFile,
+  projectProcessOutputLine,
+  provenancePublicLines,
   publicTranscriptContentFlags,
+  type PublicOutputLine,
 } from "./transcript.js";
 
 type PublicTranscriptContentFlags = ReturnType<typeof publicTranscriptContentFlags>;
@@ -25,7 +28,10 @@ export function defaultSubagentStatePath(envKey: string, leaf: string): string {
     : path.join(os.homedir(), ".codex", "subagent007-pi", leaf);
 }
 
-function defaultRunsDir(): string {
+export function resolveRunsDir(runsDir?: string): string {
+  if (runsDir) {
+    return path.resolve(runsDir);
+  }
   return defaultSubagentStatePath("SUBAGENT007_RUNS_DIR", "runs");
 }
 
@@ -55,7 +61,7 @@ export async function createFinalMessageTarget(
   if (outputMode !== "final") {
     return { cleanup: async () => {} };
   }
-  const outputLastMessageDir = await fs.mkdtemp(path.join(os.tmpdir(), tmpPrefix));
+  const outputLastMessageDir = await createOwnedTemporaryDir(tmpPrefix);
   return {
     outputLastMessagePath: path.join(outputLastMessageDir, "last-message.md"),
     cleanup: async () => {
@@ -82,8 +88,11 @@ async function writePreparedRunOutput(
   transcriptFlags: PublicTranscriptContentFlags,
 ): Promise<StoredRunOutput> {
   await fs.mkdir(runsDir, { recursive: true });
-  const outputPath = path.join(runsDir, `${timestampedRandomId()}.md`);
-  await fs.writeFile(outputPath, cleaned, { encoding: "utf8", flag: "wx" });
+  const id = timestampedRandomId();
+  const stagingPath = path.join(runsDir, `.${id}.partial`);
+  const outputPath = path.join(runsDir, `${id}.md`);
+  await fs.writeFile(stagingPath, cleaned, { encoding: "utf8", flag: "wx" });
+  await fs.rename(stagingPath, outputPath);
   return {
     outputPath: path.resolve(outputPath),
     sizeBytes: Buffer.byteLength(cleaned, "utf8"),
@@ -95,7 +104,7 @@ async function writePreparedRunOutput(
 
 export async function writeRunOutput(
   rawOutput: string,
-  runsDir = defaultRunsDir(),
+  runsDir = resolveRunsDir(),
   options: { processTranscript?: boolean; promptProvenance?: PromptProvenance } = {},
 ): Promise<StoredRunOutput> {
   const transcript = options.processTranscript
@@ -109,17 +118,151 @@ export async function writeRunOutput(
   return writePreparedRunOutput(runsDir, cleaned, transcriptFlags);
 }
 
-export async function writeRunOutputFromProcessOutputFile(
-  rawOutputPath: string,
-  runsDir = defaultRunsDir(),
-  options: { promptProvenance?: PromptProvenance } = {},
-): Promise<StoredRunOutput> {
-  const transcript = await preparePublicTranscriptFromProcessOutputFile(rawOutputPath, {
-    promptProvenance: options.promptProvenance,
-  });
-  const cleaned = stripAnsiAndControls(transcript.text);
-  const transcriptFlags = publicTranscriptContentFlags(cleaned);
-  return writePreparedRunOutput(runsDir, cleaned, transcriptFlags);
+export interface StreamingRunTranscript {
+  stagingPath: string;
+  appendProcessLine: (line: string) => Promise<void>;
+  finalize: () => Promise<StoredRunOutput>;
+  preservePartial: () => Promise<void>;
+  discard: () => Promise<void>;
+}
+
+export async function createStreamingRunTranscript(
+  runsDir = resolveRunsDir(),
+  options: { promptProvenance?: PromptProvenance; ownerId?: string } = {},
+): Promise<StreamingRunTranscript> {
+  const resolvedRunsDir = resolveRunsDir(runsDir);
+  await fs.mkdir(resolvedRunsDir, { recursive: true });
+  const id = timestampedRandomId();
+  const ownerPrefix = options.ownerId ? `${options.ownerId}.` : "";
+  const stagingPath = path.join(resolvedRunsDir, `.${ownerPrefix}${id}.partial`);
+  const outputPath = path.join(resolvedRunsDir, `${id}.md`);
+  const handle = await fs.open(stagingPath, "wx+");
+  const initialLines = provenancePublicLines(options.promptProvenance);
+  let mode: "undetermined" | "raw" | "structured" = "undetermined";
+  let blockCount = 0;
+  let closed = false;
+  let hasAssistantText = false;
+  let hasSubagentWarning = false;
+  let hasSubagentError = false;
+
+  const appendBlock = async (text: string, classification?: PublicOutputLine): Promise<void> => {
+    const cleaned = stripAnsiAndControls(text);
+    if (cleaned.trim() === "") {
+      return;
+    }
+    await handle.appendFile(`${blockCount > 0 ? "\n\n" : ""}${cleaned}`, "utf8");
+    blockCount += 1;
+    hasAssistantText ||= classification?.kind === "assistant";
+    hasSubagentWarning ||= classification?.kind === "warning";
+    hasSubagentError ||= classification?.kind === "error";
+  };
+
+  const resetToInitialLines = async (): Promise<void> => {
+    await handle.truncate(0);
+    blockCount = 0;
+    hasAssistantText = false;
+    hasSubagentWarning = false;
+    hasSubagentError = false;
+    for (const line of initialLines) {
+      await appendBlock(line.text, line);
+    }
+  };
+
+  await resetToInitialLines();
+
+  const closeHandle = async (): Promise<void> => {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    await handle.sync();
+    await handle.close();
+  };
+
+  return {
+    stagingPath: path.resolve(stagingPath),
+    appendProcessLine: async (line) => {
+      if (closed) {
+        throw new Error("cannot append to a closed run transcript");
+      }
+      const projection = projectProcessOutputLine(line);
+      if (projection.controlsTranscriptMode && mode !== "structured") {
+        mode = "structured";
+        await resetToInitialLines();
+      }
+      if (mode === "structured") {
+        if (projection.publicLine && !(options.promptProvenance && projection.publicLine.kind === "user")) {
+          await appendBlock(projection.publicLine.text, projection.publicLine);
+        }
+        return;
+      }
+      if (projection.publicLine) {
+        await appendBlock(projection.publicLine.text, projection.publicLine);
+        return;
+      }
+      if (projection.rawFallbackLine !== null) {
+        mode = "raw";
+        await appendBlock(projection.rawFallbackLine);
+      }
+    },
+    finalize: async () => {
+      if (blockCount === 0) {
+        await appendBlock("[subagent007 transcript unavailable: no public events captured]");
+      }
+      await closeHandle();
+      await fs.rename(stagingPath, outputPath);
+      const stats = await fs.stat(outputPath);
+      return {
+        outputPath: path.resolve(outputPath),
+        sizeBytes: stats.size,
+        hasPublicAssistantText: hasAssistantText,
+        hasPublicSubagentWarning: hasSubagentWarning,
+        hasPublicSubagentError: hasSubagentError,
+      };
+    },
+    preservePartial: closeHandle,
+    discard: async () => {
+      try {
+        await closeHandle();
+      } finally {
+        await fs.rm(stagingPath, { force: true });
+      }
+    },
+  };
+}
+
+export async function recoverStreamingRunTranscript(
+  stagingPath: string,
+  runId: string,
+): Promise<{ outputPath: string; sizeBytes: number } | undefined> {
+  const basename = path.basename(stagingPath);
+  const prefix = `.${runId}.`;
+  if (!basename.startsWith(prefix) || !basename.endsWith(".partial")) {
+    return undefined;
+  }
+  const outputId = basename.slice(prefix.length, -".partial".length);
+  if (outputId === "") {
+    return undefined;
+  }
+  const outputPath = path.join(path.dirname(stagingPath), `${outputId}.md`);
+  try {
+    await fs.rename(stagingPath, outputPath);
+    const stats = await fs.stat(outputPath);
+    return { outputPath: path.resolve(outputPath), sizeBytes: stats.size };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+    try {
+      const stats = await fs.stat(outputPath);
+      return { outputPath: path.resolve(outputPath), sizeBytes: stats.size };
+    } catch (successorError) {
+      if ((successorError as NodeJS.ErrnoException).code === "ENOENT") {
+        return undefined;
+      }
+      throw successorError;
+    }
+  }
 }
 
 export function runOutputReference(

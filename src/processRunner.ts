@@ -1,11 +1,15 @@
-import { spawn } from "node:child_process";
-import fs from "node:fs";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fsp from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { DEFAULT_HEARTBEAT_INTERVAL_MS, type HeartbeatNotify } from "./progress.js";
 import type { TimeoutBudget } from "./timeoutBudget.js";
 import type { RunStopReason } from "./types.js";
+
+export interface DiskReserveGuard {
+  path: string;
+  minimumFreeBytes: number;
+  checkIntervalMs: number;
+}
 
 interface ProcessRunOptions {
   command: string;
@@ -18,69 +22,37 @@ interface ProcessRunOptions {
     message?: (beat: number) => string | undefined | Promise<string | undefined>;
     notify: HeartbeatNotify;
   };
+  diskReserve?: DiskReserveGuard;
   onOutputLine?: (line: string) => void | Promise<void>;
   onControlReady?: (send: (message: string) => boolean) => void;
 }
 
 interface ProcessRunResult {
-  outputPath: string;
-  outputSizeBytes: number;
   exitCode: number | null;
   stopSignal: NodeJS.Signals | null;
   timedOut: boolean;
   cancelled: boolean;
+  resourceExhausted: boolean;
   stopReason: RunStopReason;
   durationMs: number;
 }
 
 function timeoutMarker(budget: TimeoutBudget): string {
-  return [
-    "",
-    `[subagent007 timeout] requested_timeout_ms=${budget.requestedTimeoutMs} resolved_timeout_ms=${budget.resolvedTimeoutMs} timeout_floor_ms=${budget.minRequestedTimeoutMs} effective_timeout_ms=${budget.effectiveTimeoutMs} timeout_headroom_ms=${budget.responseHeadroomMs} kill_grace_ms=${budget.killGraceMs} force_grace_ms=${budget.forceGraceMs}`,
-    "",
-  ].join("\n");
+  return `[subagent007 timeout] requested_timeout_ms=${budget.requestedTimeoutMs} resolved_timeout_ms=${budget.resolvedTimeoutMs} timeout_floor_ms=${budget.minRequestedTimeoutMs} effective_timeout_ms=${budget.effectiveTimeoutMs} timeout_headroom_ms=${budget.responseHeadroomMs} kill_grace_ms=${budget.killGraceMs} force_grace_ms=${budget.forceGraceMs}`;
+}
+
+export async function availableDiskBytes(filePath: string): Promise<number> {
+  const stats = await fsp.statfs(filePath);
+  return Number(stats.bavail) * Number(stats.bsize);
+}
+
+function isDiskExhaustionError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === "ENOSPC" || code === "EDQUOT";
 }
 
 export async function runChildProcess(options: ProcessRunOptions): Promise<ProcessRunResult> {
   const startedAt = Date.now();
-  const outputDir = await fsp.mkdtemp(path.join(os.tmpdir(), "subagent007-process-output-"));
-  const outputPath = path.join(outputDir, "combined-output.log");
-  const outputStream = fs.createWriteStream(outputPath, { flags: "wx" });
-  let outputSizeBytes = 0;
-  let outputEnded = false;
-  let pendingLine = "";
-
-  const emitOutputLine = (line: string) => {
-    if (!options.onOutputLine) {
-      return;
-    }
-    try {
-      void Promise.resolve(options.onOutputLine(line)).catch(() => {
-        // Active output projection is best-effort and must not affect the child process.
-      });
-    } catch {
-      // Active output projection is best-effort and must not affect the child process.
-    }
-  };
-
-  const writeOutput = (chunk: Buffer | string) => {
-    if (outputEnded) {
-      return;
-    }
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    outputSizeBytes += buffer.byteLength;
-    outputStream.write(buffer);
-  };
-
-  const collectChunk = (chunk: Buffer) => {
-    writeOutput(chunk);
-    pendingLine += chunk.toString("utf8");
-    const lines = pendingLine.split(/\r?\n/);
-    pendingLine = lines.pop() ?? "";
-    for (const line of lines) {
-      emitOutputLine(line);
-    }
-  };
 
   return new Promise((resolve) => {
     const child = spawn(options.command, options.args, {
@@ -90,7 +62,7 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
     });
 
     child.stdin.on("error", () => {
-      // A control-pipe error is resolved by the child terminal path; it is not proof of delivery.
+      // The child terminal path, not the control pipe, owns run settlement.
     });
     options.onControlReady?.((message) => {
       if (child.stdin.destroyed || !child.stdin.writable) {
@@ -106,22 +78,28 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
 
     let timedOut = false;
     let cancelled = false;
+    let resourceExhausted = false;
     let closed = false;
     let settled = false;
     let spawnError: Error | undefined;
+    let outputError: Error | undefined;
     let timeout: NodeJS.Timeout | undefined;
     let killTimeout: NodeJS.Timeout | undefined;
     let forceTimeout: NodeJS.Timeout | undefined;
     let heartbeatInterval: NodeJS.Timeout | undefined;
+    let diskInterval: NodeJS.Timeout | undefined;
     let heartbeatBeat = 0;
     let heartbeatInFlight = false;
+    let diskCheckInFlight = false;
     let abortListener: (() => void) | undefined;
     let cleanupOnParentExit: (() => void) | undefined;
     let terminationStarted = false;
+    let lastSignalSent: NodeJS.Signals | null = null;
+    let outputChain: Promise<void> = Promise.resolve();
     const forceFinishDelayMs = options.timeoutBudget.killGraceMs + options.timeoutBudget.forceGraceMs;
 
     const clearTimers = () => {
-      for (const timer of [timeout, killTimeout, forceTimeout, heartbeatInterval]) {
+      for (const timer of [timeout, killTimeout, forceTimeout, heartbeatInterval, diskInterval]) {
         if (timer) {
           clearTimeout(timer);
         }
@@ -132,62 +110,6 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
       if (cleanupOnParentExit) {
         process.removeListener("exit", cleanupOnParentExit);
       }
-    };
-
-    const sendHeartbeat = () => {
-      if (!options.heartbeat || heartbeatInFlight) {
-        return;
-      }
-      heartbeatInFlight = true;
-      heartbeatBeat += 1;
-      const beat = heartbeatBeat;
-      try {
-        void (async () => {
-          try {
-            const message = await options.heartbeat?.message?.(beat);
-            await options.heartbeat?.notify(beat, message);
-          } catch {
-            // Progress notifications are best-effort and must not affect the child process.
-          } finally {
-            heartbeatInFlight = false;
-          }
-        })();
-      } catch {
-        heartbeatInFlight = false;
-      }
-    };
-
-    let lastSignalSent: NodeJS.Signals | null = null;
-
-    const finish = (exitCode: number | null, stopSignal: NodeJS.Signals | null = lastSignalSent) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimers();
-      const stopReason: RunStopReason = spawnError
-        ? "spawn_error"
-        : timedOut
-          ? "timeout"
-          : cancelled
-            ? "cancelled"
-            : exitCode === 0
-              ? "completed"
-              : "failed";
-      const result = {
-        outputPath,
-        outputSizeBytes,
-        exitCode: spawnError ? null : exitCode,
-        stopSignal: spawnError ? null : stopSignal,
-        timedOut,
-        cancelled,
-        stopReason,
-        durationMs: Date.now() - startedAt,
-      };
-      outputEnded = true;
-      outputStream.end(() => {
-        resolve(result);
-      });
     };
 
     const signalChild = (signal: NodeJS.Signals) => {
@@ -209,18 +131,33 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
       child.kill(signal);
     };
 
-    cleanupOnParentExit = () => {
-      if (!settled && !closed) {
-        signalChild("SIGKILL");
+    const finish = (exitCode: number | null, stopSignal: NodeJS.Signals | null = lastSignalSent) => {
+      if (settled) {
+        return;
       }
-    };
-    process.once("exit", cleanupOnParentExit);
-
-    const appendControlMarker = (marker: string) => {
-      writeOutput(marker);
-      for (const line of marker.split(/\r?\n/)) {
-        emitOutputLine(line);
-      }
+      settled = true;
+      clearTimers();
+      const stopReason: RunStopReason = spawnError
+        ? "spawn_error"
+        : resourceExhausted
+          ? "resource_exhausted"
+          : timedOut
+            ? "timeout"
+            : cancelled
+              ? "cancelled"
+              : exitCode === 0 && !outputError
+                ? "completed"
+                : "failed";
+      const result: ProcessRunResult = {
+        exitCode: spawnError ? null : exitCode,
+        stopSignal: spawnError ? null : stopSignal,
+        timedOut,
+        cancelled,
+        resourceExhausted,
+        stopReason,
+        durationMs: Date.now() - startedAt,
+      };
+      void outputChain.finally(() => resolve(result));
     };
 
     const startGracefulTermination = () => {
@@ -241,11 +178,97 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
       }, forceFinishDelayMs);
     };
 
+    const queueOutputLine = (line: string): Promise<void> => {
+      const operation = outputChain.then(async () => {
+        await options.onOutputLine?.(line);
+      });
+      outputChain = operation.catch((error: unknown) => {
+        outputError ??= error instanceof Error ? error : new Error(String(error));
+        if (isDiskExhaustionError(error)) {
+          resourceExhausted = true;
+        }
+        startGracefulTermination();
+      });
+      return operation;
+    };
+
+    const appendControlMarker = (marker: string) => {
+      void queueOutputLine(marker).catch(() => {
+        // A failed transcript write already triggers child termination above.
+      });
+    };
+
+    const consumeStream = async (stream: ChildProcessWithoutNullStreams["stdout"]): Promise<void> => {
+      const decoder = new StringDecoder("utf8");
+      let pendingLine = "";
+      for await (const chunk of stream) {
+        pendingLine += decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        const lines = pendingLine.split(/\r?\n/);
+        pendingLine = lines.pop() ?? "";
+        for (const line of lines) {
+          await queueOutputLine(line);
+        }
+      }
+      pendingLine += decoder.end();
+      if (pendingLine.trim() !== "") {
+        await queueOutputLine(pendingLine);
+      }
+    };
+
+    const sendHeartbeat = () => {
+      if (!options.heartbeat || heartbeatInFlight) {
+        return;
+      }
+      heartbeatInFlight = true;
+      heartbeatBeat += 1;
+      const beat = heartbeatBeat;
+      void (async () => {
+        try {
+          const message = await options.heartbeat?.message?.(beat);
+          await options.heartbeat?.notify(beat, message);
+        } catch {
+          // Progress notifications are best-effort.
+        } finally {
+          heartbeatInFlight = false;
+        }
+      })();
+    };
+
+    const checkDiskReserve = () => {
+      if (!options.diskReserve || diskCheckInFlight || settled || resourceExhausted) {
+        return;
+      }
+      diskCheckInFlight = true;
+      void (async () => {
+        try {
+          const freeBytes = await availableDiskBytes(options.diskReserve!.path);
+          if (freeBytes < options.diskReserve!.minimumFreeBytes) {
+            resourceExhausted = true;
+            appendControlMarker(
+              `[subagent007 disk reserve exhausted] available_bytes=${freeBytes} minimum_free_bytes=${options.diskReserve!.minimumFreeBytes}`,
+            );
+            startGracefulTermination();
+          }
+        } catch (error) {
+          outputError ??= error instanceof Error ? error : new Error(String(error));
+          startGracefulTermination();
+        } finally {
+          diskCheckInFlight = false;
+        }
+      })();
+    };
+
+    cleanupOnParentExit = () => {
+      if (!settled && !closed) {
+        signalChild("SIGKILL");
+      }
+    };
+    process.once("exit", cleanupOnParentExit);
+
     if (options.timeoutBudget.effectiveTimeoutMs !== null) {
       timeout = setTimeout(() => {
         timedOut = true;
-        const marker = timeoutMarker(options.timeoutBudget);
-        appendControlMarker(marker);
+        appendControlMarker(timeoutMarker(options.timeoutBudget));
         startGracefulTermination();
       }, options.timeoutBudget.effectiveTimeoutMs);
     }
@@ -255,8 +278,7 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
         return;
       }
       cancelled = true;
-      const marker = "\n[subagent007 cancelled]\n";
-      appendControlMarker(marker);
+      appendControlMarker("[subagent007 cancelled]");
       startGracefulTermination();
     };
     if (options.abortSignal?.aborted) {
@@ -271,19 +293,29 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
         options.heartbeat.intervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
       );
     }
+    if (options.diskReserve) {
+      diskInterval = setInterval(checkDiskReserve, options.diskReserve.checkIntervalMs);
+      checkDiskReserve();
+    }
 
-    child.stdout.on("data", collectChunk);
-    child.stderr.on("data", collectChunk);
+    const consumers = Promise.all([
+      consumeStream(child.stdout),
+      consumeStream(child.stderr),
+    ]).catch((error: unknown) => {
+      outputError ??= error instanceof Error ? error : new Error(String(error));
+      if (isDiskExhaustionError(error)) {
+        resourceExhausted = true;
+      }
+      startGracefulTermination();
+    });
+
     child.on("error", (error) => {
       spawnError = error;
-      writeOutput(`\n[spawn error] ${error.message}\n`);
+      appendControlMarker(`[spawn error] ${error.message}`);
     });
     child.on("close", (code, signal) => {
       closed = true;
-      if (pendingLine.trim() !== "") {
-        emitOutputLine(pendingLine);
-      }
-      finish(code, signal);
+      void consumers.finally(() => finish(code, signal));
     });
   });
 }

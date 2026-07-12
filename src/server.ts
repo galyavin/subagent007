@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { acquireBuildReleaseLease } from "./buildReleaseLease.js";
+import { reconcileOwnedTemporaryArtifacts } from "./ownedTemporaryArtifact.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -32,6 +34,7 @@ import {
   runSubagentSessionTaskAndWait,
   scheduleRunTask,
   runSubagentOneShotTask,
+  reconcilePersistedActiveRunTasks,
   startSessionRunTask,
   startRunTask,
 } from "./runTask.js";
@@ -53,6 +56,18 @@ import {
   TOOL_PROFILES,
   ValidationError,
 } from "./types.js";
+
+acquireBuildReleaseLease(import.meta.url);
+void reconcileOwnedTemporaryArtifacts().catch((error: unknown) => {
+  console.error(
+    `[subagent007 temp reconciliation warning] ${error instanceof Error ? error.message : String(error)}`,
+  );
+});
+void reconcilePersistedActiveRunTasks().catch((error: unknown) => {
+  console.error(
+    `[subagent007 restart reconciliation warning] ${error instanceof Error ? error.message : String(error)}`,
+  );
+});
 
 const server = new McpServer({
   name: "subagent007-pi",
@@ -134,6 +149,8 @@ async function preflightRejectedResult(
       ? TIMEOUT_UNDERBUDGET_GUIDANCE
     : reasonCode === "local_capacity_exhausted"
       ? "Retry after an active child run completes or raise SUBAGENT007_MAX_ACTIVE_CHILDREN."
+    : reasonCode === "disk_reserve_exhausted"
+      ? "Free local disk space or lower SUBAGENT007_MIN_FREE_DISK_BYTES only if the host reserve is intentionally smaller."
     : undefined;
   if (reasonCode !== "timeout_underbudget_for_deadline_risk") {
     await logFailure({

@@ -13,7 +13,6 @@ import {
   runSubagentCore as runSubagent,
   RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT,
 } from "../src/runSubagent.js";
-import { preparePublicTranscriptFromProcessOutput } from "../src/transcript.js";
 import { createFakePiChild } from "./helpers/fakePiChild.js";
 import { readJsonl, sha256File, withEnv } from "./helpers/testUtils.js";
 
@@ -258,6 +257,36 @@ async function waitForFileText(filePath: string, pattern: RegExp): Promise<strin
   throw new Error(`timed out waiting for ${filePath} to match ${pattern}: ${String(lastError)}`);
 }
 
+async function waitForPathMissing(filePath: string): Promise<void> {
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    try {
+      await fs.stat(filePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return;
+      }
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`timed out waiting for path removal: ${filePath}`);
+}
+
+async function hasActiveLeaseForRun(activeChildrenDir: string, runId: string): Promise<boolean> {
+  const entries = await fs.readdir(activeChildrenDir).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) {
+      continue;
+    }
+    const lease = JSON.parse(await fs.readFile(path.join(activeChildrenDir, entry), "utf8")) as { run_id?: string };
+    if (lease.run_id === runId) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function assertCancellationInProgressOrSettled(metadata: RunSubagentMetadata): void {
   if (metadata.active_phase === "cancelling") {
     assert.equal(metadata.status, "working");
@@ -445,6 +474,26 @@ test("start_run rejects before child launch when the configured local child fuse
   );
 });
 
+test("start_run returns typed disk-reserve preflight rejection before child launch", async () => {
+  await connectFakeClient(
+    async (client, { projectDir, fakeLogPath }) => {
+      const response = await client.callTool({
+        name: "start_run",
+        arguments: { cwd: projectDir, prompt: "FAST", output_mode: "final" },
+      });
+      assert.notEqual(response.isError, true);
+      const rejected = response.structuredContent as RunSubagentMetadata;
+      assert.equal(rejected.status, "rejected");
+      assert.equal(rejected.kind, "preflight_rejected");
+      assert.equal(rejected.reason_code, "disk_reserve_exhausted");
+      assert.equal(rejected.child_started, false);
+      const childLogs = await readJsonl(fakeLogPath).catch(() => []);
+      assert.equal(childLogs.length, 0);
+    },
+    { env: { SUBAGENT007_MIN_FREE_DISK_BYTES: String(Number.MAX_SAFE_INTEGER) } },
+  );
+});
+
 test("runSubagent accepts legacy explicit tool profile without runtime profile state", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-tool-profile-"));
   const projectDir = path.join(tmp, "project");
@@ -574,85 +623,59 @@ test("runSubagent rejects timeout_ms unless internal callers opt into timed work
   );
 });
 
-test("public transcript flags describe persisted rendered content", async () => {
-  const assistantEvent = JSON.stringify({
-    type: "message_end",
-    message: {
-      role: "assistant",
-      content: [{ type: "text", text: "PUBLIC ASSISTANT TEXT" }],
+test("runSubagent rejects below-reserve disk before child launch", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-disk-preflight-"));
+  const projectDir = path.join(tmp, "project");
+  const runsDir = path.join(tmp, "runs");
+  const fake = await createFakePiChild();
+  await fs.mkdir(projectDir, { recursive: true });
+
+  await withEnv(
+    {
+      SUBAGENT007_PI_CHILD_PATH: fake.childPath,
+      FAKE_PI_LOG_PATH: fake.logPath,
+      SUBAGENT007_MIN_FREE_DISK_BYTES: String(Number.MAX_SAFE_INTEGER),
     },
-  });
-
-  await withEnv({ SUBAGENT007_MAX_TRANSCRIPT_BYTES: undefined }, async () => {
-    const transcript = preparePublicTranscriptFromProcessOutput(assistantEvent);
-    assert.equal(transcript.hasAssistantText, true);
-    assert.match(transcript.text, /PUBLIC ASSISTANT TEXT/);
-  });
-
-  await withEnv({ SUBAGENT007_MAX_TRANSCRIPT_BYTES: "20" }, async () => {
-    const transcript = preparePublicTranscriptFromProcessOutput(assistantEvent);
-    assert.equal(transcript.hasAssistantText, false);
-    assert.match(transcript.text, /\[subagent007 transcript truncated at 20 bytes\]/);
-    assert.doesNotMatch(transcript.text, /PUBLIC ASSISTANT TEXT/);
-  });
-
-  await withEnv({ SUBAGENT007_MAX_TRANSCRIPT_BYTES: "not-a-number" }, async () => {
-    const transcript = preparePublicTranscriptFromProcessOutput(assistantEvent);
-    assert.equal(transcript.hasAssistantText, true);
-    assert.doesNotMatch(transcript.text, /\[subagent007 transcript truncated/);
-    assert.match(transcript.text, /PUBLIC ASSISTANT TEXT/);
-  });
+    async () => {
+      await assert.rejects(
+        runSubagent({ cwd: projectDir, prompt: "FAST", model_class: "C" }, { runsDir }),
+        (error: NodeJS.ErrnoException & { reasonCode?: string }) =>
+          error.reasonCode === "disk_reserve_exhausted",
+      );
+      const childLogs = await readJsonl(fake.logPath).catch(() => []);
+      assert.equal(childLogs.length, 0);
+    },
+  );
 });
 
-test("public transcript flags classify deterministic public content classes", async () => {
-  const assistantEvent = JSON.stringify({
-    type: "message_end",
-    message: {
-      role: "assistant",
-      content: [{ type: "text", text: "assistant text" }],
+test("runSubagent persists an untruncated file-backed transcript larger than 256 KiB", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-large-transcript-run-"));
+  const projectDir = path.join(tmp, "project");
+  const runsDir = path.join(tmp, "runs");
+  const fake = await createFakePiChild();
+  await fs.mkdir(projectDir, { recursive: true });
+
+  await withEnv(
+    {
+      SUBAGENT007_PI_CHILD_PATH: fake.childPath,
+      FAKE_PI_LOG_PATH: fake.logPath,
     },
-  });
-  const warningEvent = JSON.stringify({ type: "subagent007.warning", message: "watch this" });
-  const errorEvent = JSON.stringify({ type: "subagent007.error", error: "failed cleanly" });
-  const userEvent = JSON.stringify({
-    type: "message_end",
-    message: {
-      role: "user",
-      content: [{ type: "text", text: "user-only text" }],
+    async () => {
+      const result = await runSubagent(
+        { cwd: projectDir, prompt: "LARGE_TRANSCRIPT", model_class: "C", output_mode: "transcript" },
+        { runsDir },
+      );
+      const output = await fs.readFile(result.output_path, "utf8");
+      assert.equal(result.success, true);
+      assert.equal(result.written_output_mode, "transcript");
+      assert.equal(Buffer.byteLength(output, "utf8") > 256 * 1024, true);
+      assert.match(output, /LARGE PUBLIC/);
+      assert.doesNotMatch(output, /transcript truncated/);
     },
-  });
-
-  await withEnv({ SUBAGENT007_MAX_TRANSCRIPT_BYTES: undefined }, async () => {
-    const assistant = preparePublicTranscriptFromProcessOutput(assistantEvent);
-    assert.equal(assistant.hasAssistantText, true);
-    assert.equal(assistant.hasSubagentWarning, false);
-    assert.equal(assistant.hasSubagentError, false);
-
-    const warning = preparePublicTranscriptFromProcessOutput(warningEvent);
-    assert.equal(warning.hasAssistantText, false);
-    assert.equal(warning.hasSubagentWarning, true);
-    assert.equal(warning.hasSubagentError, false);
-
-    const error = preparePublicTranscriptFromProcessOutput(errorEvent);
-    assert.equal(error.hasAssistantText, false);
-    assert.equal(error.hasSubagentWarning, false);
-    assert.equal(error.hasSubagentError, true);
-
-    for (const rawOutput of [
-      "raw child text",
-      userEvent,
-      "[subagent007 timeout] requested_timeout_ms=120 resolved_timeout_ms=120",
-      "[subagent007 cancelled]",
-    ]) {
-      const transcript = preparePublicTranscriptFromProcessOutput(rawOutput);
-      assert.equal(transcript.hasAssistantText, false, rawOutput);
-      assert.equal(transcript.hasSubagentWarning, false, rawOutput);
-      assert.equal(transcript.hasSubagentError, false, rawOutput);
-    }
-  });
+  );
 });
 
-test("partial output availability is pure timeout plus public child content", () => {
+test("partial output availability requires terminal interruption plus public child content", () => {
   const base = {
     timedOut: true,
     hasPublicAssistantText: false,
@@ -665,6 +688,15 @@ test("partial output availability is pure timeout plus public child content", ()
   assert.equal(partialOutputAvailableForRun({ ...base, hasPublicSubagentWarning: true }), true);
   assert.equal(partialOutputAvailableForRun({ ...base, hasPublicSubagentError: true }), true);
   assert.equal(partialOutputAvailableForRun(base), false);
+  assert.equal(
+    partialOutputAvailableForRun({
+      ...base,
+      timedOut: false,
+      resourceExhausted: true,
+      hasPublicAssistantText: true,
+    }),
+    true,
+  );
   assert.equal(
     partialOutputAvailableForRun({
       ...base,
@@ -760,6 +792,7 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       contract_version?: number;
       statuses?: { non_terminal?: string[]; terminal?: string[] };
       capabilities?: string[];
+      output_reference?: { transcript_size_policy?: string };
       tools?: {
         start?: string[];
         session_start?: string[];
@@ -790,6 +823,13 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.equal(contract.capabilities?.includes("acknowledged_run_input"), true);
     assert.equal(contract.capabilities?.includes("live_response_replay"), true);
     assert.equal(contract.capabilities?.includes("operational_answer_nonretention"), true);
+    assert.equal(contract.capabilities?.includes("terminal_state_compaction"), true);
+    assert.equal(contract.capabilities?.includes("complete_file_backed_transcripts"), true);
+    assert.equal(contract.capabilities?.includes("disk_reserve_fail_closed"), true);
+    assert.equal(
+      contract.output_reference?.transcript_size_policy,
+      "unbounded_file",
+    );
     assert.deepEqual(contract.tools?.start, ["start_run", "schedule_run"]);
     assert.deepEqual(contract.tools?.session_start, ["start_session_run", "run_subagent_session"]);
     assert.equal(contract.input_mailbox?.waiting_status_terminal, false);
@@ -1271,8 +1311,14 @@ test("MCP run_subagent auto-promotes skill-bound work without one-shot health ga
       assert.equal(logs[0].request.skillFilePath, skillPath);
       assert.equal(logs[0].request.model, "openrouter/deepseek/deepseek-v4-flash");
 
-      const rawEvents = await fs.readFile(path.join(runTasksDir, `${metadata.run_id}.events.jsonl`), "utf8");
-      assert.match(rawEvents, /\[auto_promoted\] run_subagent -> durable_run/);
+      const persisted = JSON.parse(
+        await fs.readFile(path.join(runTasksDir, `${metadata.run_id}.json`), "utf8"),
+      ) as RunSubagentMetadata;
+      assert.match(JSON.stringify(persisted.recent_events), /\[auto_promoted\] run_subagent -> durable_run/);
+      await assert.rejects(
+        fs.stat(path.join(runTasksDir, `${metadata.run_id}.events.jsonl`)),
+        /ENOENT/,
+      );
 
       const runView = await client.callTool({
         name: "get_run",
@@ -1360,7 +1406,7 @@ test("run_subagent writes public transcripts without thinking event payloads", a
   });
 });
 
-test("run_subagent raw public event file omits thinking payloads", async () => {
+test("run_subagent terminal snapshot omits thinking payloads and removes the raw event file", async () => {
   const runTasksDir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-events-"));
   await connectFakeClient(
     async (client, { projectDir }) => {
@@ -1375,12 +1421,16 @@ test("run_subagent raw public event file omits thinking payloads", async () => {
       });
       assert.notEqual(response.isError, true);
       const metadata = response.structuredContent as RunSubagentMetadata;
-      const rawEvents = await fs.readFile(path.join(runTasksDir, `${metadata.run_id}.events.jsonl`), "utf8");
-      assert.equal(rawEvents.includes(PUBLIC_PROMPT_REDACTED_MARKER), true);
-      assert.doesNotMatch(rawEvents, /SECRET_PROMPT_SHOULD_NOT_LEAK/);
-      assert.doesNotMatch(rawEvents, /RAW_THINKING_TRANSCRIPT/);
-      assert.doesNotMatch(rawEvents, /SECRET_THINKING_SHOULD_NOT_LEAK/);
-      assert.doesNotMatch(rawEvents, /thinking_delta|assistantMessageEvent/);
+      const persisted = await fs.readFile(path.join(runTasksDir, `${metadata.run_id}.json`), "utf8");
+      assert.equal(persisted.includes(PUBLIC_PROMPT_REDACTED_MARKER), true);
+      assert.doesNotMatch(persisted, /SECRET_PROMPT_SHOULD_NOT_LEAK/);
+      assert.doesNotMatch(persisted, /RAW_THINKING_TRANSCRIPT/);
+      assert.doesNotMatch(persisted, /SECRET_THINKING_SHOULD_NOT_LEAK/);
+      assert.doesNotMatch(persisted, /thinking_delta|assistantMessageEvent/);
+      await assert.rejects(
+        fs.stat(path.join(runTasksDir, `${metadata.run_id}.events.jsonl`)),
+        /ENOENT/,
+      );
       const recentEventsText = JSON.stringify(metadata.recent_events);
       const lastPublicOutputExcerpt = metadata.last_public_output_excerpt ?? "";
       assert.equal(recentEventsText.includes(PUBLIC_PROMPT_REDACTED_MARKER), true);
@@ -1936,7 +1986,7 @@ test("MCP start_run/get_run completes asynchronously with the same child contrac
       name: "start_run",
       arguments: {
         cwd: projectDir,
-        prompt: "FAST",
+        prompt: "HEARTBEAT_SLEEP",
       },
     });
     assert.notEqual(startedResponse.isError, true);
@@ -1944,19 +1994,25 @@ test("MCP start_run/get_run completes asynchronously with the same child contrac
     assert.equal(["working", "completed"].includes(started.status), true);
     assert.equal(["running_silent", "completed"].includes(started.active_phase ?? ""), true);
     assert.equal(typeof started.last_phase_at, "string");
+    const activeChildrenDir = process.env.SUBAGENT007_ACTIVE_CHILDREN_DIR;
+    assert.equal(typeof activeChildrenDir, "string");
+    if (started.status === "working") {
+      assert.equal(await hasActiveLeaseForRun(activeChildrenDir!, started.run_id), true);
+    }
 
     const terminal = await waitForTerminalRun(client, started.run_id);
     assert.equal(terminal.status, "completed");
     assert.equal(terminal.active_phase, "completed");
     assert.equal(terminal.success, true);
-    assert.equal(await fs.readFile(terminal.output_path, "utf8"), "FAST FINAL");
+    assert.equal(await fs.readFile(terminal.output_path, "utf8"), "HEARTBEAT DONE");
     assert.equal(terminal.contract_name, "subagent007.durable_run");
     assert.equal(terminal.contract_version, 2);
     assert.equal(terminal.output_references?.length, 1);
     assert.equal(terminal.output_references?.[0].kind, "file");
     assert.equal(terminal.output_references?.[0].path, terminal.output_path);
     assert.equal(terminal.output_references?.[0].output_mode, terminal.written_output_mode);
-    assert.equal(terminal.output_references?.[0].size_bytes, Buffer.byteLength("FAST FINAL", "utf8"));
+    assert.equal(terminal.output_references?.[0].size_bytes, Buffer.byteLength("HEARTBEAT DONE", "utf8"));
+    assert.equal(await hasActiveLeaseForRun(activeChildrenDir!, started.run_id), false);
   });
 });
 
@@ -2550,10 +2606,10 @@ test("answer_run_input records no answer text in raw public event file", async (
       assert.doesNotMatch(rawEvents, /SECRET_ANSWER_SHOULD_NOT_LEAK/);
       const terminal = await waitForTerminalRun(client, started.run_id);
       assert.doesNotMatch(JSON.stringify(terminal.recent_events), /SECRET_ANSWER_SHOULD_NOT_LEAK/);
-      assert.doesNotMatch(
-        await fs.readFile(path.join(mailboxRoot, started.run_id, `${request.request_id}.terminal.json`), "utf8"),
-        /SECRET_ANSWER_SHOULD_NOT_LEAK/,
-      );
+      assert.ok(terminal.input_requests.some((entry) =>
+        entry.request_id === request.request_id && entry.status === "answered"
+      ));
+      await waitForPathMissing(path.join(mailboxRoot, started.run_id));
       assert.doesNotMatch(
         await fs.readFile(path.join(runTasksDir, `${started.run_id}.json`), "utf8"),
         /SECRET_ANSWER_SHOULD_NOT_LEAK/,
@@ -2672,6 +2728,9 @@ test("get_run can read a completed run snapshot after MCP server restart", async
       runId = started.run_id;
       const terminal = await waitForTerminalRun(client, runId);
       assert.equal(terminal.status, "completed");
+      assert.ok(terminal.recent_events?.some((event) => event.event === "completed"));
+      await waitForPathMissing(path.join(stateDir, "run-tasks", `${runId}.events.jsonl`));
+      await waitForPathMissing(path.join(stateDir, "input-requests", runId));
     } finally {
       await client.close();
     }
@@ -2705,10 +2764,15 @@ test("get_run persists stale active restart drift as terminal failed snapshot", 
   const runTasksDir = path.join(stateDir, "run-tasks");
   const inputRequestsDir = path.join(stateDir, "input-requests");
   const configPath = path.join(stateDir, "config.json");
+  const runsDir = path.join(stateDir, "runs");
   const runId = "2026-06-19T000000000Z-stale";
+  const partialOutputPath = path.join(runsDir, `.${runId}.2026-06-19T000000000Z-recovered.partial`);
+  const publishedOutputPath = path.join(runsDir, "2026-06-19T000000000Z-recovered.md");
   const inputRequestsRunDir = path.join(inputRequestsDir, runId);
   await fs.mkdir(runTasksDir, { recursive: true });
   await fs.mkdir(inputRequestsRunDir, { recursive: true });
+  await fs.mkdir(runsDir, { recursive: true });
+  await fs.writeFile(publishedOutputPath, "[assistant]\nPUBLIC RECOVERED PARTIAL");
   await fs.writeFile(configPath, JSON.stringify({ default_model_class: "C" }));
   await fs.writeFile(
     path.join(runTasksDir, `${runId}.json`),
@@ -2722,6 +2786,7 @@ test("get_run persists stale active restart drift as terminal failed snapshot", 
       input_requests: [],
       active_phase: "input_required",
       last_phase_at: "2026-06-19T00:00:01.000Z",
+      partial_output_path: partialOutputPath,
     }, null, 2)}\n`,
   );
   await fs.writeFile(
@@ -2770,7 +2835,7 @@ test("get_run persists stale active restart drift as terminal failed snapshot", 
     assert.equal(metadata.reason_code, "server_restarted_active_run");
     assert.equal(metadata.exit_code, null);
     assert.equal(metadata.timed_out, false);
-    assert.equal(metadata.partial_output_available, false);
+    assert.equal(metadata.partial_output_available, true);
     assert.equal(metadata.resume_possible, false);
     assert.equal(metadata.requested_timeout_ms, null);
     assert.equal(metadata.resolved_timeout_ms, null);
@@ -2778,7 +2843,10 @@ test("get_run persists stale active restart drift as terminal failed snapshot", 
     assert.equal(metadata.session_id, "pi-session-stale");
     assert.equal(metadata.session_established, true);
     assert.equal(Array.isArray(metadata.output_references), true);
-    assert.equal(metadata.output_references?.length, 0);
+    assert.equal(metadata.output_references?.length, 1);
+    assert.equal(metadata.output_path, publishedOutputPath);
+    assert.equal(await fs.readFile(metadata.output_path, "utf8"), "[assistant]\nPUBLIC RECOVERED PARTIAL");
+    await assert.rejects(fs.stat(partialOutputPath), /ENOENT/);
     assert.equal(typeof metadata.duration_ms, "number");
     assert.equal(metadata.contract_name, "subagent007.durable_run");
     assert.equal(metadata.input_requests.some((entry) => entry.status === "pending"), false);
@@ -2786,6 +2854,8 @@ test("get_run persists stale active restart drift as terminal failed snapshot", 
       entry.request_id === request.request_id && entry.status === "closed"
     ));
     assert.ok(metadata.recent_events?.some((event) => event.event === "failed"));
+    await assert.rejects(fs.stat(path.join(runTasksDir, `${runId}.events.jsonl`)), /ENOENT/);
+    await assert.rejects(fs.stat(inputRequestsRunDir), /ENOENT/);
 
     const persisted = JSON.parse(await fs.readFile(path.join(runTasksDir, `${runId}.json`), "utf8")) as RunSubagentMetadata;
     assert.equal(persisted.status, "failed");
@@ -2793,10 +2863,10 @@ test("get_run persists stale active restart drift as terminal failed snapshot", 
     assert.equal(persisted.reason_code, "server_restarted_active_run");
     assert.equal(persisted.exit_code, null);
     assert.equal(persisted.timed_out, false);
-    assert.equal(persisted.partial_output_available, false);
+    assert.equal(persisted.partial_output_available, true);
     assert.equal(persisted.resume_possible, false);
     assert.equal(persisted.session_id, "pi-session-stale");
-    assert.equal(persisted.output_references?.length, 0);
+    assert.equal(persisted.output_references?.length, 1);
 
     const secondResponse = await client.callTool({
       name: "get_run",
@@ -2806,6 +2876,9 @@ test("get_run persists stale active restart drift as terminal failed snapshot", 
     const second = secondResponse.structuredContent as RunSubagentMetadata;
     assert.equal(second.status, "failed");
     assert.equal(second.finished_at, metadata.finished_at);
+    assert.ok(second.input_requests.some((entry) =>
+      entry.request_id === request.request_id && entry.status === "closed"
+    ));
   } finally {
     await client.close();
   }

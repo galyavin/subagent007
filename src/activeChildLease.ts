@@ -3,10 +3,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { safeIntegerFromEnv } from "./env.js";
 import { defaultSubagentStatePath } from "./output.js";
+import { processIsDefinitelyGone } from "./processLiveness.js";
 import { ValidationError } from "./types.js";
 
 const MAX_ACTIVE_CHILDREN_ENV = "SUBAGENT007_MAX_ACTIVE_CHILDREN";
 const ACTIVE_CHILDREN_DIR_ENV = "SUBAGENT007_ACTIVE_CHILDREN_DIR";
+export const DEFAULT_MAX_ACTIVE_CHILDREN = 24;
 const LOCK_STALE_MS = 5_000;
 const LOCK_RETRY_MS = 10;
 const LOCK_ATTEMPTS = 100;
@@ -28,23 +30,11 @@ function activeChildrenDir(): string {
 }
 
 function maxActiveChildren(): number {
-  return safeIntegerFromEnv(MAX_ACTIVE_CHILDREN_ENV, 0, 0);
+  return safeIntegerFromEnv(MAX_ACTIVE_CHILDREN_ENV, DEFAULT_MAX_ACTIVE_CHILDREN, 0);
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function processIsDefinitelyGone(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) {
-    return true;
-  }
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ESRCH";
-  }
 }
 
 async function readLease(filePath: string): Promise<ActiveChildLeaseRecord | null> {
@@ -152,4 +142,9 @@ export async function acquireActiveChildLease(runId?: string): Promise<ActiveChi
       },
     };
   });
+}
+
+export async function hasLiveActiveChildLease(runId: string): Promise<boolean> {
+  const active = await pruneStaleLeases(activeChildrenDir());
+  return active.some((lease) => lease.run_id === runId);
 }

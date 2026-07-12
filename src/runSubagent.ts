@@ -1,5 +1,4 @@
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { assertConfiguredChildEntrypointAvailable } from "./childEntrypoint.js";
@@ -11,13 +10,16 @@ import {
   type InputRequestView,
 } from "./inputMailbox.js";
 import {
+  createStreamingRunTranscript,
   createFinalMessageTarget,
   defaultSubagentStatePath,
   runOutputReference,
   readFinalMessage,
+  type StreamingRunTranscript,
   writeRunOutput,
-  writeRunOutputFromProcessOutputFile,
 } from "./output.js";
+import { assertDiskReserveAvailable } from "./diskReserve.js";
+import { createOwnedTemporaryDir } from "./ownedTemporaryArtifact.js";
 import { createPromptProvenance } from "./prompt.js";
 import { runChildProcess } from "./processRunner.js";
 import type { HeartbeatNotify } from "./progress.js";
@@ -42,7 +44,6 @@ import {
 } from "./recursiveControl.js";
 
 const DEFAULT_RUN_SUBAGENT_TIMEOUT_MS = 110_000;
-const FAILURE_OUTPUT_TAIL_BYTES = 64 * 1024;
 export const RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT =
   "Use schedule_run or start_run with explicit timeout_ms for broad, exploratory, interactive, cancellable, polling, or long-running work.";
 
@@ -184,7 +185,7 @@ async function writeChildRequestFile(request: PiChildRequestFile): Promise<{
   requestPath: string;
   cleanup: () => Promise<void>;
 }> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-child-"));
+  const dir = await createOwnedTemporaryDir("subagent007-pi-child-");
   const requestPath = path.join(dir, `${randomBytes(6).toString("hex")}.json`);
   await fs.writeFile(requestPath, `${JSON.stringify(request, null, 2)}\n`, {
     encoding: "utf8",
@@ -218,35 +219,19 @@ export function extractSubagentSessionId(output: string): string | null {
 
 export function partialOutputAvailableForRun(input: {
   timedOut: boolean;
+  resourceExhausted?: boolean;
   finalMessage?: string;
   hasPublicAssistantText: boolean;
   hasPublicSubagentWarning: boolean;
   hasPublicSubagentError: boolean;
 }): boolean {
   return Boolean(
-    input.timedOut &&
+    (input.timedOut || input.resourceExhausted) &&
       (input.finalMessage ||
         input.hasPublicAssistantText ||
         input.hasPublicSubagentWarning ||
         input.hasPublicSubagentError),
   );
-}
-
-async function readOutputTail(filePath: string): Promise<string> {
-  const stats = await fs.stat(filePath);
-  const start = Math.max(0, stats.size - FAILURE_OUTPUT_TAIL_BYTES);
-  const length = stats.size - start;
-  if (length === 0) {
-    return "";
-  }
-  const handle = await fs.open(filePath, "r");
-  try {
-    const buffer = Buffer.alloc(length);
-    await handle.read(buffer, 0, length, start);
-    return buffer.toString("utf8");
-  } finally {
-    await handle.close();
-  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -316,43 +301,36 @@ function usageLimitMetadataFromErrorEvent(event: Record<string, unknown>): Usage
 }
 
 function parseSubagentErrorEvent(line: string): Record<string, unknown> | undefined {
-  if (!line.includes("[subagent007 error]")) {
-    return undefined;
-  }
-  const jsonStart = line.indexOf("{");
-  if (jsonStart < 0) {
+  if (!line.includes("[subagent007 error]") && !line.includes("\"type\":\"subagent007.error\"")) {
     return undefined;
   }
   try {
-    return asRecord(JSON.parse(line.slice(jsonStart)));
+    const jsonStart = line.indexOf("{");
+    if (jsonStart < 0) {
+      return undefined;
+    }
+    const event = asRecord(JSON.parse(line.slice(jsonStart)));
+    return event?.type === "subagent007.error" || line.includes("[subagent007 error]")
+      ? event
+      : undefined;
   } catch {
     return undefined;
   }
 }
 
-function childFailureMetadataFromOutput(outputText: string): ChildFailureMetadata {
-  for (const line of outputText.split(/\r?\n/)) {
-    const errorEvent = parseSubagentErrorEvent(line);
-    const providerError = asRecord(errorEvent?.error);
-    if (providerError?.type === "usage_limit_reached") {
-      return {
-        reasonCode: "usage_limit_reached",
-        usageLimitMetadata: usageLimitMetadataFromErrorEvent(errorEvent ?? {}),
-      };
-    }
-    if (line.includes("[subagent007 error]") && line.includes("\"type\":\"usage_limit_reached\"")) {
-      return { reasonCode: "usage_limit_reached" };
-    }
+function childFailureMetadataFromLine(line: string): ChildFailureMetadata {
+  const errorEvent = parseSubagentErrorEvent(line);
+  const providerError = asRecord(errorEvent?.error);
+  if (providerError?.type === "usage_limit_reached") {
+    return {
+      reasonCode: "usage_limit_reached",
+      usageLimitMetadata: usageLimitMetadataFromErrorEvent(errorEvent ?? {}),
+    };
+  }
+  if (line.includes("\"type\":\"usage_limit_reached\"")) {
+    return { reasonCode: "usage_limit_reached" };
   }
   return {};
-}
-
-async function childFailureMetadataFromOutputFile(filePath: string): Promise<ChildFailureMetadata> {
-  try {
-    return childFailureMetadataFromOutput(await readOutputTail(filePath));
-  } catch {
-    return {};
-  }
 }
 
 function runErrorTaxonomy(input: {
@@ -365,6 +343,7 @@ function runErrorTaxonomy(input: {
   sessionMode: RunSubagentSessionMode;
   sessionEstablished: boolean;
   missingFinalOutput: boolean;
+  resourceExhausted: boolean;
   childFailureReasonCode?: FailureReasonCode;
 }): { error_class?: string; reason_code?: FailureReasonCode } {
   if (input.success || input.cancelled) {
@@ -372,6 +351,9 @@ function runErrorTaxonomy(input: {
   }
   if (input.timedOut || input.stopReason === "timeout") {
     return { error_class: "timeout", reason_code: "timeout" };
+  }
+  if (input.resourceExhausted || input.stopReason === "resource_exhausted") {
+    return { error_class: "resource_exhausted", reason_code: "disk_reserve_exhausted" };
   }
   if (input.stopReason === "spawn_error") {
     return { error_class: "unknown_error", reason_code: "spawn_error" };
@@ -446,6 +428,7 @@ export async function runSubagentCore(
     recursionDepth?: number;
     onChildControlReady?: (send: (message: string) => boolean) => void;
     onInputResponseAccepted?: (response: ChildInputResponseAccepted) => void;
+    onTranscriptStaged?: (stagingPath: string) => void | Promise<void>;
   } = {},
 ): Promise<RunSubagentResult> {
   if (!options.allowTimeout && request.timeout_ms !== undefined) {
@@ -465,9 +448,10 @@ export async function runSubagentCore(
   const finalMessageTarget = await createFinalMessageTarget(resolved.outputMode, "subagent007-pi-final-");
 
   let childRequest: { requestPath: string; cleanup: () => Promise<void> } | undefined;
-  let processOutputPath: string | undefined;
+  let transcript: StreamingRunTranscript | undefined;
   try {
     const childEntrypoint = await assertPiChildEntrypointAvailable();
+    const diskReserve = await assertDiskReserveAvailable(options.runsDir);
     const timeoutBudget = computeTimeoutBudget(
       resolved.timeoutMs ?? (options.allowTimeout ? undefined : defaultRunSubagentTimeoutMs()),
     );
@@ -476,6 +460,11 @@ export async function runSubagentCore(
       publicPrompt: resolved.prompt,
       skill: resolved.skill,
     });
+    transcript = await createStreamingRunTranscript(options.runsDir, {
+      promptProvenance,
+      ownerId: runId,
+    });
+    await options.onTranscriptStaged?.(transcript.stagingPath);
     const childSkillFilePath = resolved.skill ? skillAudit.resolvedSkillPath ?? skillFilePath : undefined;
     const childPayload: PiChildRequestFile = {
       prompt: promptProvenance.composed_child_prompt,
@@ -505,6 +494,7 @@ export async function runSubagentCore(
     };
     childRequest = await writeChildRequestFile(childPayload);
     let parsedSessionId: string | null = null;
+    let childFailure: ChildFailureMetadata = {};
     const processResult = await runChildProcess({
       command: process.execPath,
       args: [childEntrypoint, childRequest.requestPath],
@@ -518,29 +508,39 @@ export async function runSubagentCore(
           }
         : undefined,
       abortSignal: options.abortSignal,
+      diskReserve,
       onControlReady: options.onChildControlReady,
       onOutputLine: async (line) => {
+        await transcript?.appendProcessLine(line);
         parsedSessionId ??= extractSubagentSessionId(line);
+        const lineFailure = childFailureMetadataFromLine(line);
+        if (lineFailure.reasonCode || lineFailure.usageLimitMetadata) {
+          childFailure = lineFailure;
+        }
         const accepted = inputResponseAcceptedFromLine(line);
         if (accepted?.runId === runId) {
           options.onInputResponseAccepted?.(accepted);
         }
-        await options.onOutputLine?.(line);
+        try {
+          await options.onOutputLine?.(line);
+        } catch {
+          // Active event projection remains best-effort; transcript persistence is authoritative.
+        }
       },
     });
-    processOutputPath = processResult.outputPath;
-    const childFailure = processResult.exitCode !== null && processResult.exitCode !== 0
-      ? await childFailureMetadataFromOutputFile(processResult.outputPath)
-      : {};
     const finalMessage = await readFinalMessage(finalMessageTarget.outputLastMessagePath);
     const writtenOutputMode: OutputMode = finalMessage ? "final" : "transcript";
     const output = finalMessage
       ? await writeRunOutput(finalMessage, options.runsDir)
-      : await writeRunOutputFromProcessOutputFile(processResult.outputPath, options.runsDir, {
-          promptProvenance,
-        });
+      : await transcript.finalize();
+    if (finalMessage) {
+      await transcript.discard();
+    }
     const processSuccess =
-      processResult.exitCode === 0 && !processResult.timedOut && !processResult.cancelled;
+      processResult.exitCode === 0 &&
+      !processResult.timedOut &&
+      !processResult.cancelled &&
+      !processResult.resourceExhausted;
     const sessionId = sessionMode.kind === "fresh"
       ? parsedSessionId
       : sessionMode.kind === "resume"
@@ -556,6 +556,7 @@ export async function runSubagentCore(
       processSuccess && !missingFinalOutput && (sessionMode.kind !== "fresh" || sessionEstablished);
     const partialOutputAvailable = partialOutputAvailableForRun({
       timedOut: processResult.timedOut,
+      resourceExhausted: processResult.resourceExhausted,
       finalMessage,
       hasPublicAssistantText: output.hasPublicAssistantText,
       hasPublicSubagentWarning: output.hasPublicSubagentWarning,
@@ -614,6 +615,7 @@ export async function runSubagentCore(
         sessionMode,
         sessionEstablished,
         missingFinalOutput,
+        resourceExhausted: processResult.resourceExhausted,
         childFailureReasonCode: childFailure.reasonCode,
       }),
       ...(childFailure.usageLimitMetadata ?? {}),
@@ -626,8 +628,9 @@ export async function runSubagentCore(
   } finally {
     await finalMessageTarget.cleanup();
     await childRequest?.cleanup();
-    if (processOutputPath) {
-      await fs.rm(path.dirname(processOutputPath), { recursive: true, force: true });
-    }
+    // An unsettled .partial transcript is intentionally retained for crash/failure recovery.
+    await transcript?.preservePartial().catch(() => {
+      // Preserve the original run failure when the filesystem cannot even close the partial artifact.
+    });
   }
 }

@@ -11,7 +11,7 @@ triggers:
 edges:
   - target: context/architecture.md
     condition: when a convention depends on understanding the system structure
-last_updated: 2026-07-11
+last_updated: 2026-07-12
 ---
 
 # Conventions
@@ -44,7 +44,7 @@ last_updated: 2026-07-11
 - Session terminal failures logged after durable task creation must preserve caller context: `tool` matches the public entrypoint (`start_session_run` or `run_subagent_session`), `run_id` matches the public durable run, and `task_kind` is `session`.
 - Requested `final` output must not silently degrade to successful transcript output. A clean child exit without a captured final message is a typed `missing_final_output` terminal failure; keep run result metadata, session projection, failure logs, README, and tests synchronized.
 - When adding an environment variable, update source constants, README environment docs, and `npm run docs:check` coverage.
-- When changing child execution, verify timeout/cancel/parent-exit cleanup because fake child descendants can otherwise outlive the test run.
+- When changing child execution, verify timeout/cancel/disk-reserve/parent-exit cleanup because fake child descendants can otherwise outlive the test run or exhaust host storage.
 - Compatibility aliases such as `list_allowed_models`, legacy `skill`, and legacy `tool_profile` are intentional unless a migration explicitly removes them.
 - Legacy `tool_profile` is boundary-only compatibility: validate accepted values, but do not add `toolProfile`, `resolved_tool_profile`, or failure-log profile fields downstream.
 - `ValidationError.reasonCode` is the semantic authority for failure reason mapping. Do not infer public reason codes from English message text.

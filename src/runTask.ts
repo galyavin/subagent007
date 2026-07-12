@@ -20,6 +20,7 @@ import {
   defaultInputRequestsDir,
   listInputRequests,
   newRunId,
+  removeTerminalInputRequestsForRun,
   settleInputResponse,
   validateInputResponse,
   type InputRequestView,
@@ -42,6 +43,8 @@ import {
   publicOutputExcerptProjection,
   readRunPublicEvents,
   recentEventsProjection,
+  removeRunPublicEvents,
+  terminalEventsProjection,
 } from "./runEvents.js";
 import { publicOutputLineFromProcessLine } from "./transcript.js";
 import {
@@ -67,10 +70,11 @@ import {
   type RunSubagentOneShotIncompatibility,
   validateAndResolveRequest,
 } from "./validate.js";
-import { defaultSubagentStatePath } from "./output.js";
+import { defaultSubagentStatePath, recoverStreamingRunTranscript, runOutputReference } from "./output.js";
 import { assertModelClassUsableForOneShot } from "./modelHealth.js";
 import { safeIntegerFromEnv } from "./env.js";
-import { acquireActiveChildLease, type ActiveChildLease } from "./activeChildLease.js";
+import { acquireActiveChildLease, hasLiveActiveChildLease, type ActiveChildLease } from "./activeChildLease.js";
+import { assertDiskReserveAvailable } from "./diskReserve.js";
 
 type RunTaskStatus = DurableRunStatus;
 const TERMINAL_RUN_STATUS_SET = new Set<RunTaskStatus>(TERMINAL_RUN_STATUSES);
@@ -118,6 +122,7 @@ export interface RunTaskView extends Partial<RunSubagentResult>, Partial<RunSuba
   error?: string;
   error_class?: string;
   reason_code?: FailureReasonCode;
+  partial_output_path?: string;
 }
 
 export interface RunTaskLineage {
@@ -138,6 +143,7 @@ interface RunTaskState {
   finishedAt?: string;
   mailboxRoot: string;
   inputRequestsDir: string;
+  terminalInputRequests?: InputRequestView[];
   abortController: AbortController;
   taskKind: "run" | "session";
   result?: RunTaskTerminalResult;
@@ -168,6 +174,7 @@ interface RunTaskState {
   pendingInputDeliveries: Map<string, PendingInputDelivery>;
   inputMutationQueue: Promise<void>;
   terminalizing: boolean;
+  partialOutputPath?: string;
 }
 
 interface PendingInputDelivery {
@@ -196,6 +203,7 @@ type RunTaskProgressView = Pick<
 >;
 
 const tasks = new Map<string, RunTaskState>();
+const restartDriftReconciliations = new Map<string, Promise<RunTaskView>>();
 const DEFAULT_SCHEDULE_WAIT_MS = 1_000;
 const DEFAULT_SCHEDULE_MAX_WAIT_MS = 30_000;
 const SCHEDULE_MAX_WAIT_ENV = "SUBAGENT007_SCHEDULE_RUN_MAX_WAIT_MS";
@@ -219,11 +227,47 @@ async function writeTaskSnapshot(view: RunTaskView): Promise<void> {
   ) {
     return;
   }
-  await fs.mkdir(defaultRunTasksDir(), { recursive: true });
-  const recordPath = taskRecordPath(view.run_id);
+  const runTasksDir = defaultRunTasksDir();
+  const terminal = isTerminalRunStatus(view.status);
+  let snapshot = view;
+  if (terminal) {
+    const persistedEvents = await readRunPublicEvents(runTasksDir, view.run_id);
+    const existingEvents = existing?.recent_events ?? [];
+    const viewEvents = view.recent_events ?? [];
+    const canonicalEvents = terminalEventsProjection(
+      [...existingEvents, ...persistedEvents, ...viewEvents].sort((left, right) =>
+        left.occurred_at.localeCompare(right.occurred_at)
+      ),
+    );
+    snapshot = {
+      ...view,
+      recent_events: canonicalEvents,
+      ...(canonicalEvents.length > 0
+        ? { last_public_output_excerpt: publicOutputExcerptProjection(canonicalEvents) }
+        : {}),
+    };
+  }
+  await fs.mkdir(runTasksDir, { recursive: true });
+  const recordPath = taskRecordPath(snapshot.run_id);
   const tmpPath = `${recordPath}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
-  await fs.writeFile(tmpPath, `${JSON.stringify(view, null, 2)}\n`, "utf8");
+  await fs.writeFile(tmpPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
   await fs.rename(tmpPath, recordPath);
+  if (terminal) {
+    const cleanupResults = await Promise.allSettled([
+      removeRunPublicEvents(runTasksDir, snapshot.run_id),
+      removeTerminalInputRequestsForRun({
+        mailboxRoot: path.dirname(snapshot.input_requests_dir),
+        runId: snapshot.run_id,
+      }),
+    ]);
+    for (const result of cleanupResults) {
+      if (result.status === "rejected") {
+        console.error(
+          `[subagent007 warning] terminal state cleanup failed for run ${snapshot.run_id}: ${String(result.reason)}`,
+        );
+      }
+    }
+  }
 }
 
 async function readTaskSnapshot(runId: string): Promise<RunTaskView | null> {
@@ -304,6 +348,16 @@ function setTaskPhase(state: RunTaskState, phase: RunTaskActivePhase, occurredAt
   if (state.terminalSnapshotStarted) {
     return;
   }
+  if (
+    state.cancelRequested
+    && phase !== "cancelling"
+    && phase !== "cancelled"
+    && phase !== "timed_out"
+    && phase !== "completed"
+    && phase !== "failed"
+  ) {
+    return;
+  }
   state.activePhase = phase;
   state.lastPhaseAt = occurredAt;
 }
@@ -359,6 +413,7 @@ function syntheticTerminalFailureEnvelope(options: {
   sessionEstablished?: boolean;
   outputPath?: string;
   outputReferences?: RunTaskView["output_references"];
+  partialOutputAvailable?: boolean;
 }): Pick<
   RunTaskView,
   | "success"
@@ -380,7 +435,7 @@ function syntheticTerminalFailureEnvelope(options: {
     success: false,
     exit_code: null,
     timed_out: false,
-    partial_output_available: false,
+    partial_output_available: options.partialOutputAvailable ?? false,
     resume_possible: false,
     duration_ms: elapsedMsBetween(options.startedAt, options.finishedAt),
     requested_timeout_ms: null,
@@ -514,6 +569,7 @@ function activeRunTaskView(state: RunTaskState, inputRequests: InputRequestView[
     input_requests_dir: state.inputRequestsDir,
     input_requests: inputRequests,
     ...activeProgressView(state),
+    ...(state.partialOutputPath ? { partial_output_path: state.partialOutputPath } : {}),
   };
 }
 
@@ -769,7 +825,8 @@ async function registerRunTaskStateWithChildLease(
     await recordParentChildRun(state);
     return childLease;
   } catch (error) {
-    await releaseChildLease(childLease);
+    state.error = error instanceof Error ? error : new Error(String(error));
+    await finalizeRegisteredRunTask(state, childLease, "run registration failed");
     throw error;
   }
 }
@@ -780,6 +837,43 @@ async function releaseChildLease(childLease: ActiveChildLease): Promise<void> {
   } catch {
     // Capacity accounting is a guardrail; release failure must not mask the run outcome.
   }
+}
+
+async function hasDurableTerminalSnapshot(runId: string): Promise<boolean> {
+  const snapshot = await readTaskSnapshot(runId).catch(() => null);
+  return snapshot !== null && isTerminalRunStatus(snapshot.status);
+}
+
+async function finalizeRegisteredRunTask(
+  state: RunTaskState,
+  childLease: ActiveChildLease,
+  closeReason: string,
+): Promise<void> {
+  let terminalDurable = false;
+  try {
+    await finalizeRunTask(state, closeReason);
+    terminalDurable = true;
+  } finally {
+    terminalDurable ||= await hasDurableTerminalSnapshot(state.runId);
+    if (terminalDurable) {
+      await releaseChildLease(childLease);
+    }
+  }
+}
+
+function containBackgroundRunFailure(state: RunTaskState, promise: Promise<void>): Promise<void> {
+  return promise.catch(async (error: unknown) => {
+    if (await hasDurableTerminalSnapshot(state.runId)) {
+      return;
+    }
+    state.error = error instanceof Error ? error : new Error(String(error));
+    state.result = undefined;
+    state.finishedAt ??= new Date().toISOString();
+    state.terminalizing = true;
+    console.error(
+      `[subagent007 background failure] run_id=${state.runId} ${state.error.message}`,
+    );
+  });
 }
 
 async function appendClosedInputEvents(
@@ -827,6 +921,8 @@ async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
     ? "cancelled"
     : result.error_class === "timeout"
       ? "timeout"
+      : result.error_class === "resource_exhausted"
+        ? "resource_exhausted"
       : result.error_class === "missing_final_output"
         ? "missing_final_output"
       : result.error_class === "missing_session_id"
@@ -838,6 +934,8 @@ async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
     ? "cancelled_before_first_output"
     : failureClass === "timeout"
       ? "timeout"
+      : failureClass === "resource_exhausted"
+        ? "disk_reserve_exhausted"
       : failureClass === "missing_session_id"
         ? "missing_session_id"
         : failureClass === "missing_final_output"
@@ -910,6 +1008,7 @@ async function finalizeRunTask(state: RunTaskState, closeReason: string): Promis
       return;
     }
     state.finishedAt = new Date().toISOString();
+    normalizeAcceptedCancellation(state);
     state.childControlSend = undefined;
     state.acceptedInputResponses.clear();
     const closed = await closePendingInputRequestsForRun({
@@ -931,6 +1030,10 @@ async function finalizeRunTask(state: RunTaskState, closeReason: string): Promis
       state.terminalSnapshotStarted = true;
       return;
     }
+    state.terminalInputRequests = await listInputRequests({
+      mailboxRoot: state.mailboxRoot,
+      runId: state.runId,
+    });
     state.terminalSnapshotStarted = true;
     await logTerminalRunTaskFailure(state);
     await writeTaskSnapshot(await getRunTask(state.runId));
@@ -940,6 +1043,21 @@ async function finalizeRunTask(state: RunTaskState, closeReason: string): Promis
 
 function durableTaskCloseReason(state: RunTaskState): string {
   return state.cancelRequested ? "run cancelled" : "run reached a terminal state";
+}
+
+function normalizeAcceptedCancellation(state: RunTaskState): void {
+  if (!state.cancelRequested || !state.result || state.result.stop_reason === "cancelled") {
+    return;
+  }
+  state.result = {
+    ...state.result,
+    status: "cancelled",
+    success: false,
+    timed_out: false,
+    stop_reason: "cancelled",
+    error_class: undefined,
+    reason_code: undefined,
+  };
 }
 
 async function logBackgroundHandlerError(
@@ -1173,12 +1291,17 @@ function taskChildRuntimeOptions(
   heartbeatIntervalMs?: number;
   abortSignal: AbortSignal;
   onOutputLine: (line: string) => Promise<void>;
+  onTranscriptStaged: (stagingPath: string) => Promise<void>;
 } {
   return {
     heartbeat: (beat, message) => handleTaskHeartbeat(state, beat, message, options.heartbeat),
     heartbeatIntervalMs: options.heartbeatIntervalMs,
     abortSignal: state.abortController.signal,
     onOutputLine: (line) => observeOutputLine(state, line),
+    onTranscriptStaged: async (stagingPath) => {
+      state.partialOutputPath = stagingPath;
+      await writeTaskSnapshot(await getRunTask(state.runId));
+    },
   };
 }
 
@@ -1283,6 +1406,15 @@ async function persistRestartDriftSnapshot(
   const finishedAt = new Date().toISOString();
   const sessionEvents = eventsForFailureLog(snapshot, eventProjection);
   const sessionId = snapshot.session_id ?? sessionIdFromEvents(sessionEvents);
+  const recoveredOutput = snapshot.output_path || !snapshot.partial_output_path
+    ? undefined
+    : await recoverStreamingRunTranscript(snapshot.partial_output_path, snapshot.run_id);
+  const outputPath = snapshot.output_path ?? recoveredOutput?.outputPath;
+  const outputReferences = snapshot.output_references?.length
+    ? snapshot.output_references
+    : recoveredOutput
+      ? [runOutputReference(recoveredOutput.outputPath, recoveredOutput.sizeBytes, "transcript")]
+      : [];
   const failureEnvelope = syntheticTerminalFailureEnvelope({
     startedAt: snapshot.started_at,
     finishedAt,
@@ -1290,8 +1422,9 @@ async function persistRestartDriftSnapshot(
     reasonCode: "server_restarted_active_run",
     sessionId,
     sessionEstablished: snapshot.session_established ?? sessionId !== null,
-    outputPath: snapshot.output_path,
-    outputReferences: snapshot.output_references,
+    outputPath,
+    outputReferences,
+    partialOutputAvailable: recoveredOutput !== undefined,
   });
   const mailboxRoot = path.dirname(snapshot.input_requests_dir);
   await closePendingInputRequestsForRun({
@@ -1319,6 +1452,7 @@ async function persistRestartDriftSnapshot(
     last_phase_at: finishedAt,
     input_requests: inputRequests,
     ...failureEnvelope,
+    partial_output_path: undefined,
     error: "run is not active in this MCP server process; the server may have restarted",
   };
   await logFailure({
@@ -1333,7 +1467,7 @@ async function persistRestartDriftSnapshot(
     success: false,
     exit_code: null,
     timed_out: false,
-    partial_output_available: false,
+    partial_output_available: staleView.partial_output_available,
     resume_possible: false,
     duration_ms: staleView.duration_ms,
     requested_timeout_ms: staleView.requested_timeout_ms,
@@ -1353,6 +1487,21 @@ async function persistRestartDriftSnapshot(
   return staleView;
 }
 
+function persistRestartDriftSnapshotOnce(
+  snapshot: RunTaskView,
+  eventProjection: Pick<RunTaskView, "recent_events" | "last_public_output_excerpt">,
+): Promise<RunTaskView> {
+  const existing = restartDriftReconciliations.get(snapshot.run_id);
+  if (existing) {
+    return existing;
+  }
+  const reconciliation = persistRestartDriftSnapshot(snapshot, eventProjection).finally(() => {
+    restartDriftReconciliations.delete(snapshot.run_id);
+  });
+  restartDriftReconciliations.set(snapshot.run_id, reconciliation);
+  return reconciliation;
+}
+
 export async function getRunTask(runId: string): Promise<RunTaskView> {
   const state = tasks.get(runId);
   if (!state) {
@@ -1364,11 +1513,30 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
     const inputRequests = await listInputRequests({ mailboxRoot, runId });
     const eventProjection = await loadSnapshotEvents(snapshot);
     if (snapshot.status === "working" || snapshot.status === "input_required") {
-      return persistRestartDriftSnapshot({ ...contractFields(), ...snapshot, input_requests: inputRequests }, eventProjection);
+      if (await hasLiveActiveChildLease(runId)) {
+        return {
+          ...contractFields(),
+          ...snapshot,
+          ...eventProjection,
+          input_requests: inputRequests,
+        };
+      }
+      return persistRestartDriftSnapshotOnce(
+        { ...contractFields(), ...snapshot, input_requests: inputRequests },
+        eventProjection,
+      );
     }
-    return { ...contractFields(), ...snapshot, ...eventProjection, input_requests: inputRequests };
+    return {
+      ...contractFields(),
+      ...snapshot,
+      ...eventProjection,
+      input_requests: snapshot.input_requests ?? inputRequests,
+    };
   }
-  const inputRequests = await listInputRequests({ mailboxRoot: state.mailboxRoot, runId: state.runId });
+  const inputRequests = state.terminalInputRequests ?? await listInputRequests({
+    mailboxRoot: state.mailboxRoot,
+    runId: state.runId,
+  });
   if ((state.result || state.error) && !state.terminalSnapshotStarted) {
     return activeRunTaskView(state, inputRequests);
   }
@@ -1420,6 +1588,28 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
   return activeRunTaskView(state, inputRequests);
 }
 
+export async function reconcilePersistedActiveRunTasks(): Promise<number> {
+  const runTasksDir = defaultRunTasksDir();
+  const entries = await fs.readdir(runTasksDir).catch(() => []);
+  let reconciled = 0;
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) {
+      continue;
+    }
+    const runId = entry.slice(0, -".json".length);
+    const snapshot = await readTaskSnapshot(runId).catch(() => null);
+    if (snapshot?.status !== "working" && snapshot?.status !== "input_required") {
+      continue;
+    }
+    if (await hasLiveActiveChildLease(runId)) {
+      continue;
+    }
+    await getRunTask(runId);
+    reconciled += 1;
+  }
+  return reconciled;
+}
+
 export async function startRunTask(
   request: RunSubagentRequest,
   options: {
@@ -1436,14 +1626,22 @@ export async function startRunTask(
   assertDeadlineRiskTimeoutBudget(request, resolved, failureLogTool);
   const skillFilePath = resolveSkillFilePathForRequest(resolved);
   await assertPiChildEntrypointAvailable();
+  await assertDiskReserveAvailable(options.runsDir);
 
   const state = createRunTaskState("run", undefined, options.lineage);
   state.failureLogTool = failureLogTool;
   const childLease = await registerRunTaskStateWithChildLease(state, request);
+  try {
+    await prepareChildRun(state);
+  } catch (error) {
+    state.error = error as Error;
+    await logBackgroundHandlerError(failureLogTool, request, error);
+    await finalizeRegisteredRunTask(state, childLease, durableTaskCloseReason(state));
+    return getRunTask(state.runId);
+  }
 
-  state.promise = (async () => {
+  state.promise = containBackgroundRunFailure(state, (async () => {
     try {
-      await prepareChildRun(state);
       state.result = await runSubagentCore(request, {
         runId: state.runId,
         mailboxRoot: state.mailboxRoot,
@@ -1458,10 +1656,9 @@ export async function startRunTask(
       state.error = error as Error;
       await logBackgroundHandlerError(failureLogTool, request, error);
     } finally {
-      await releaseChildLease(childLease);
-      await finalizeRunTask(state, durableTaskCloseReason(state));
+      await finalizeRegisteredRunTask(state, childLease, durableTaskCloseReason(state));
     }
-  })();
+  })());
 
   return getRunTask(state.runId);
 }
@@ -1587,10 +1784,17 @@ export async function startSessionRunTask(
   );
   state.failureLogTool = failureLogTool;
   const childLease = await registerRunTaskStateWithChildLease(state, request);
+  try {
+    await prepareChildRun(state);
+  } catch (error) {
+    state.error = error as Error;
+    await logBackgroundHandlerError(failureLogTool, request, error);
+    await finalizeRegisteredRunTask(state, childLease, durableTaskCloseReason(state));
+    return getRunTask(state.runId);
+  }
 
-  state.promise = (async () => {
+  state.promise = containBackgroundRunFailure(state, (async () => {
     try {
-      await prepareChildRun(state);
       state.result = await runSubagentSession(request, {
         sessionsDir: options.sessionsDir,
         mailboxRoot: state.mailboxRoot,
@@ -1605,10 +1809,9 @@ export async function startSessionRunTask(
       state.error = error as Error;
       await logBackgroundHandlerError(failureLogTool, request, error);
     } finally {
-      await releaseChildLease(childLease);
-      await finalizeRunTask(state, durableTaskCloseReason(state));
+      await finalizeRegisteredRunTask(state, childLease, durableTaskCloseReason(state));
     }
-  })();
+  })());
 
   return getRunTask(state.runId);
 }
@@ -1656,6 +1859,7 @@ async function runSubagentPromotedTask(
     heartbeatIntervalMs?: number;
   },
 ): Promise<RunTaskView> {
+  await assertDiskReserveAvailable(options.runsDir);
   const promotion: RunSubagentPromotion = {
     auto_promoted_from: "run_subagent",
     promotion_reason_code: incompatibility.reason_code,
@@ -1676,11 +1880,12 @@ async function runSubagentPromotedTask(
     }, "run_subagent auto-promoted to durable run");
     await writeTaskSnapshot(await getRunTask(state.runId));
   } catch (error) {
-    await releaseChildLease(childLease);
+    state.error = error instanceof Error ? error : new Error(String(error));
+    await finalizeRegisteredRunTask(state, childLease, durableTaskCloseReason(state));
     throw error;
   }
 
-  state.promise = (async () => {
+  state.promise = containBackgroundRunFailure(state, (async () => {
     try {
       await prepareChildRun(state);
       const result = await runSubagentCore(request, {
@@ -1701,10 +1906,9 @@ async function runSubagentPromotedTask(
       state.error = error as Error;
       await logBackgroundHandlerError("run_subagent", request, error);
     } finally {
-      await releaseChildLease(childLease);
-      await finalizeRunTask(state, durableTaskCloseReason(state));
+      await finalizeRegisteredRunTask(state, childLease, durableTaskCloseReason(state));
     }
-  })();
+  })());
 
   return waitForReturnableRun(await getRunTask(state.runId), PROMOTED_RUN_WAIT_MS);
 }
@@ -1732,11 +1936,12 @@ export async function runSubagentOneShotTask(
   }
   await assertModelClassUsableForOneShot(resolved.modelClass);
   await assertPiChildEntrypointAvailable();
+  await assertDiskReserveAvailable(options.runsDir);
 
   const state = createRunTaskState("run");
   const childLease = await registerRunTaskStateWithChildLease(state, request);
 
-  state.promise = (async () => {
+  state.promise = containBackgroundRunFailure(state, (async () => {
     try {
       await prepareChildRun(state);
       state.result = await runSubagentCore(request, {
@@ -1752,10 +1957,9 @@ export async function runSubagentOneShotTask(
       state.error = error as Error;
       await logBackgroundHandlerError("run_subagent", request, error);
     } finally {
-      await releaseChildLease(childLease);
-      await finalizeRunTask(state, "run reached a terminal state");
+      await finalizeRegisteredRunTask(state, childLease, "run reached a terminal state");
     }
-  })();
+  })());
 
   await state.promise;
   const view = await getRunTask(state.runId);
@@ -1831,7 +2035,11 @@ export async function resolveRunOperationContext(runId: string): Promise<RunOper
       runId,
       taskKind: state.taskKind,
       ...(state.sessionKey ? { sessionKey: state.sessionKey } : {}),
-      ...(typeof startedEvent?.metadata?.cwd === "string" ? { cwd: startedEvent.metadata.cwd } : {}),
+      ...(state.cwd
+        ? { cwd: state.cwd }
+        : typeof startedEvent?.metadata?.cwd === "string"
+          ? { cwd: startedEvent.metadata.cwd }
+          : {}),
     };
   }
   const snapshot = await readTaskSnapshot(runId);
@@ -1839,7 +2047,7 @@ export async function resolveRunOperationContext(runId: string): Promise<RunOper
     return { runId };
   }
   const events = await readRunPublicEvents(defaultRunTasksDir(), runId);
-  const cwd = cwdFromRunStartedEvent(events);
+  const cwd = cwdFromRunStartedEvent(events.length > 0 ? events : snapshot.recent_events ?? []);
   return {
     runId,
     ...(snapshot.task_kind ? { taskKind: snapshot.task_kind } : {}),
@@ -1986,7 +2194,7 @@ export async function answerRunTaskInput(options: {
         "input_request_already_answered",
       );
     }
-    const requests = await listInputRequests({
+    const requests = state.terminalInputRequests ?? await listInputRequests({
       mailboxRoot: state.mailboxRoot,
       runId: state.runId,
     });

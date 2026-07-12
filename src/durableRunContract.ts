@@ -17,11 +17,14 @@ export const DURABLE_RUN_CAPABILITIES = [
   "first_class_timed_out_status",
   "explicit_error_taxonomy",
   "file_backed_output_references",
+  "complete_file_backed_transcripts",
   "bounded_public_output_excerpt",
+  "disk_reserve_fail_closed",
   "run_input_mailbox",
   "acknowledged_run_input",
   "live_response_replay",
   "operational_answer_nonretention",
+  "terminal_state_compaction",
   "restart_drift_fail_closed",
   "recursive_delegate_lineage",
 ] as const;
@@ -47,6 +50,7 @@ export function durableRunContractView(): {
     field: "output_references";
     kind: "file";
     bounded_inline_fields: ["recent_events", "last_public_output_excerpt"];
+    transcript_size_policy: "unbounded_file";
     legacy_path_field: "output_path";
   };
   input_mailbox: {
@@ -89,6 +93,7 @@ export function durableRunContractView(): {
       field: "output_references",
       kind: "file",
       bounded_inline_fields: ["recent_events", "last_public_output_excerpt"],
+      transcript_size_policy: "unbounded_file",
       legacy_path_field: "output_path",
     },
     input_mailbox: {

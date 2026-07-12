@@ -13,7 +13,7 @@ edges:
     condition: when specific technology versions or library details are needed
   - target: context/architecture.md
     condition: when understanding how components connect during setup
-last_updated: 2026-07-08
+last_updated: 2026-07-12
 ---
 
 # Setup
@@ -21,12 +21,12 @@ last_updated: 2026-07-08
 ## Prerequisites
 - Node.js `>=22.19.0`.
 - npm, using the committed `package-lock.json`.
-- A working Pi install and Pi model/auth configuration visible to the MCP process.
+- Pi-compatible model/auth configuration visible to the MCP process. Normal MCP execution uses the bundled `@earendil-works/pi-*` dependencies; a separate `pi` CLI is optional inventory input for `npm run models:reconcile`.
 - `mex` CLI for project memory checks and logs.
 
 ## First-time Setup
 1. Run `npm ci`.
-2. Ensure `pi --list-models` works in the same environment that will launch the MCP server.
+2. Ensure Pi-compatible auth/model configuration is visible in the environment that will launch the MCP server.
 3. Optionally create `~/.codex/subagent007-pi/config.json` to override or explicitly pin the default `{"default_model_class":"C"}` policy.
 4. Run `npm run build`.
 5. Run `npm test`.
@@ -34,14 +34,14 @@ last_updated: 2026-07-08
 
 ## Environment Variables
 - Required in practice: Pi auth/model configuration visible to the server process.
-- Optional config/state paths: `SUBAGENT007_CONFIG_PATH`, `SUBAGENT007_RUNS_DIR`, `SUBAGENT007_RUN_TASKS_DIR`, `SUBAGENT007_PI_RAW_SESSIONS_DIR`, `SUBAGENT007_SESSIONS_DIR`, `SUBAGENT007_INPUT_REQUESTS_DIR`, `SUBAGENT007_FAILURE_LOG_PATH`, `SUBAGENT007_MODEL_HEALTH_PATH`, `SUBAGENT007_ACTIVE_CHILDREN_DIR`.
-- Optional runtime/child controls: `SUBAGENT007_PI_AGENT_DIR`, `PI_CODING_AGENT_DIR`, `SUBAGENT007_PI_SKILL_PATHS`, `SUBAGENT007_PI_CHILD_PATH`, `SUBAGENT007_MAX_ACTIVE_CHILDREN`, `SUBAGENT007_MAX_RECURSION_DEPTH`.
-- Optional timeout/progress controls: `SUBAGENT007_INPUT_REQUEST_TIMEOUT_MS`, `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`, `SUBAGENT007_SCHEDULE_RUN_MAX_WAIT_MS`, `SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS`, `SUBAGENT007_DEADLINE_RISK_TIMEOUT_FLOOR_MS`, `SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS`, `SUBAGENT007_TIMEOUT_KILL_GRACE_MS`, `SUBAGENT007_TIMEOUT_FORCE_GRACE_MS`, `SUBAGENT007_HEARTBEAT_INTERVAL_MS`, `SUBAGENT007_MAX_TRANSCRIPT_BYTES`, `SUBAGENT007_SESSION_LOCK_LEASE_MS`.
+- Optional config/state paths: `SUBAGENT007_CONFIG_PATH`, `SUBAGENT007_RUNS_DIR`, `SUBAGENT007_RUN_TASKS_DIR`, `SUBAGENT007_PI_RAW_SESSIONS_DIR`, `SUBAGENT007_SESSIONS_DIR`, `SUBAGENT007_INPUT_REQUESTS_DIR`, `SUBAGENT007_FAILURE_LOG_PATH`, `SUBAGENT007_MODEL_HEALTH_PATH`, `SUBAGENT007_ACTIVE_CHILDREN_DIR`, `SUBAGENT007_TEMP_DIR`.
+- Optional runtime/child controls: `SUBAGENT007_PI_AGENT_DIR`, `PI_CODING_AGENT_DIR`, `SUBAGENT007_PI_SKILL_PATHS`, `SUBAGENT007_PI_CHILD_PATH`, `SUBAGENT007_MAX_ACTIVE_CHILDREN` (default `8`; `0` disables), `SUBAGENT007_MAX_RECURSION_DEPTH`.
+- Optional timeout/progress/resource controls: `SUBAGENT007_INPUT_REQUEST_TIMEOUT_MS`, `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`, `SUBAGENT007_SCHEDULE_RUN_MAX_WAIT_MS`, `SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS`, `SUBAGENT007_DEADLINE_RISK_TIMEOUT_FLOOR_MS`, `SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS`, `SUBAGENT007_TIMEOUT_KILL_GRACE_MS`, `SUBAGENT007_TIMEOUT_FORCE_GRACE_MS`, `SUBAGENT007_HEARTBEAT_INTERVAL_MS`, `SUBAGENT007_SESSION_LOCK_LEASE_MS`, `SUBAGENT007_MIN_FREE_DISK_BYTES` (default 5 GiB).
 - Optional failure/campaign metadata: `SUBAGENT007_FAILURE_LOG=off`, `SUBAGENT007_BUILD_SHA`, `GIT_COMMIT`, `SUBAGENT007_RECORD_SOURCE`, `SUBAGENT007_CAMPAIGN_ID`, `SUBAGENT007_CAMPAIGN_LEDGER_PATH`, `SUBAGENT007_COVERAGE_MANIFEST_PATH`.
 
 ## Common Commands
-- `npm run clean:dist` — remove built output.
-- `npm run build` — rebuild `dist/` from TypeScript.
+- `npm run clean:dist` — prune inactive, unleased build releases while preserving live entrypoints.
+- `npm run build` — compile a versioned release and atomically switch `dist/current` without removing live entrypoints.
 - `npm run typecheck` — check source and tests without emitting.
 - `npm test` / `npm run test:local` — run the full Node test suite through the ledger guard.
 - `npm run docs:check` — verify README runtime facts against source constants.

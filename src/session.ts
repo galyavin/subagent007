@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { loadConfig } from "./config.js";
+import { assertDiskReserveAvailable } from "./diskReserve.js";
 import { safeIntegerFromEnv } from "./env.js";
 import {
   failureClassForSessionResult,
@@ -14,6 +15,7 @@ import {
 import { resolveAllowedModelRef } from "./modelAllowlist.js";
 import { defaultSessionsDir } from "./output.js";
 import { appendContractPacketInstruction, extractContractPacket } from "./packet.js";
+import { processIsDefinitelyGone } from "./processLiveness.js";
 import { createPromptProvenance } from "./prompt.js";
 import type { HeartbeatNotify } from "./progress.js";
 import {
@@ -194,6 +196,7 @@ export async function validateRunSubagentSessionRequestPreflight(
   assertDeadlineRiskTimeoutBudget(request, resolved, toolName);
   const cwd = await fs.realpath(resolved.cwd);
   const sessionsDir = options.sessionsDir ?? defaultSessionsDir();
+  await assertDiskReserveAvailable(sessionsDir);
   const sessionDir = sessionDirFor(sessionsDir, cwd, sessionKey);
   const manifest = await readManifest(path.join(sessionDir, "manifest.json"));
   assertNewSessionAllowed(manifest, resumeMode, sessionKey);
@@ -237,15 +240,6 @@ async function readLockOwner(lockPath: string): Promise<LockOwner | null> {
     return JSON.parse(await fs.readFile(lockPath, "utf8")) as LockOwner;
   } catch {
     return null;
-  }
-}
-
-function processIsDefinitelyGone(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ESRCH";
   }
 }
 
@@ -607,6 +601,7 @@ export async function runSubagentSession(
       // The active run will fail if lock ownership loss affects the session write path.
     });
   }, Math.max(100, Math.floor(sessionLockLeaseMs() / 3)));
+  let attemptPiSessionDir: string | undefined;
 
   try {
     let manifest = await readManifest(manifestPath);
@@ -624,6 +619,7 @@ export async function runSubagentSession(
     const sequence = (manifest?.run_count ?? 0) + 1;
     const runId = `${String(sequence).padStart(4, "0")}-${randomBytes(6).toString("hex")}`;
     const childRunId = options.childRunId ?? runId;
+    attemptPiSessionDir = path.join(sessionDir, "attempt-pi-sessions", runId);
     const attemptSession = await prepareAttemptSession(sessionDir, runId, manifest);
     const runResult = await runSubagentCore(sessionRunRequest(resolved, attemptSession.runManifest), {
       runId: childRunId,
@@ -821,6 +817,17 @@ export async function runSubagentSession(
     return result;
   } finally {
     clearInterval(leaseRefreshInterval);
+    if (attemptPiSessionDir) {
+      const attemptDir = attemptPiSessionDir;
+      await fs.rm(attemptDir, { recursive: true, force: true }).catch((error) => {
+        console.error(
+          `[subagent007 warning] attempt cleanup failed for ${path.basename(attemptDir)}: ${String(error)}`,
+        );
+      });
+      await fs.rmdir(path.dirname(attemptDir)).catch(() => {
+        // Preserve the parent when another historical attempt remains.
+      });
+    }
     await sessionLock.release();
   }
 }

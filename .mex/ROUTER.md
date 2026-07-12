@@ -14,7 +14,7 @@ edges:
     condition: when setting up the dev environment or running the project for the first time
   - target: patterns/INDEX.md
     condition: when starting a task — check the pattern index for a matching pattern file
-last_updated: 2026-07-11
+last_updated: 2026-07-12
 ---
 
 # Session Bootstrap
@@ -28,6 +28,9 @@ Then read this file fully before doing anything else in this session.
 - Durable runs expose one version-2 acknowledged-input contract: every answer has a response ID, a receipt is created only after the child waiter accepts that response, exact live retries replay safely, and raw answer text remains only on the private live control path/Pi context.
 - MCP public tools expose one-shot, durable run, scheduler, named-session, mailbox, contract, readiness, and model-class surfaces.
 - Durable runs persist snapshots and public event ledgers, support cancellation and caller input, and fail closed on restart drift.
+- Terminal runs compact bounded public events and settled input views into the authoritative snapshot before removing redundant event-ledger and mailbox files; named-session attempt workspaces are removed after promotion or failure telemetry is durable.
+- Child output streams directly into complete sanitized public transcripts with backpressure; no normal raw process-output spool exists. A 5 GiB default disk reserve and finite default active-child ceiling stop work before host exhaustion, while owner-based startup reconciliation removes only provably abandoned runtime temp directories.
+- Builds publish versioned releases through an atomic `dist/current` switch; stable entrypoints remain available and live server release leases prevent cleanup races.
 - Model classes, config migration, model-health probes, observed campaign/probe tooling, and failure-log archival are implemented.
 - Internal model-class calibration uses the current Pi registry, and the bundled Pi coding-agent dependency is kept new enough to resolve every calibrated class model during child execution.
 - Observed campaign tool-listing asserts the exact 12-tool public MCP surface and `skill_name` vs legacy `skill` schema guidance instead of treating `listTools()` as liveness-only.
@@ -41,7 +44,7 @@ Then read this file fully before doing anything else in this session.
 - The durable-run contract exposes session start tools under `tools.session_start`, while preserving the existing `tools.start` tuple for run-only adapters.
 - Skill binding normalization and schema descriptions are centralized in `src/skillBinding.ts`; prompt-level skill invocation syntax is rejected unless the caller binds `skill_name`/legacy `skill`.
 - Failure reason codes come from explicit `ValidationError.reasonCode`; failure logging does not infer semantic codes from message text.
-- SAF repairs are in place for provider usage-limit metadata, parent-exit child-process cleanup, opt-in active-child launch fusing, structured run-operation semantic rejections, packet-required not-ready taxonomy, public prompt projection, and named-session manifest preflight eligibility.
+- SAF repairs are in place for provider usage-limit metadata, parent-exit child-process cleanup, finite-by-default active-child launch fusing, structured run-operation semantic rejections, packet-required not-ready taxonomy, public prompt projection, and named-session manifest preflight eligibility.
 - Requested `final` output is a hard contract: a clean child exit without a captured final message fails as `missing_final_output` and writes the public transcript only as diagnostic output.
 - Server-launched children receive a native `delegate` tool backed by private parent-owned recursive control IPC; recursive descendants are normal durable runs with `parent_run_id`, `root_run_id`, `recursion_depth`, and direct `child_run_ids` in run views.
 - Parent run views now also project recursive child lifecycle through sanitized `recursive_child_started` and `recursive_child_finished` public events, including child run id, lineage, terminal status, and success metadata without private recursive-control payloads.

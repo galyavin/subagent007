@@ -87,8 +87,30 @@ export async function readRunPublicEvents(
   return events;
 }
 
+export async function removeRunPublicEvents(runTasksDir: string, runId: string): Promise<void> {
+  await fs.rm(runEventFilePath(runTasksDir, runId), { force: true });
+}
+
 export function recentEventsProjection(events: RunPublicEvent[]): RunPublicEvent[] {
   return events.slice(-MAX_RECENT_EVENTS);
+}
+
+export function terminalEventsProjection(events: RunPublicEvent[]): RunPublicEvent[] {
+  const unique: RunPublicEvent[] = [];
+  const seen = new Set<string>();
+  for (const event of events) {
+    const key = JSON.stringify(event);
+    if (!seen.has(key)) {
+      seen.add(key);
+      unique.push(event);
+    }
+  }
+  const recent = recentEventsProjection(unique);
+  const started = unique.find((event) => event.event === "run_started");
+  if (!started || recent.includes(started)) {
+    return recent;
+  }
+  return [started, ...recent.slice(-(MAX_RECENT_EVENTS - 1))];
 }
 
 export function publicOutputExcerptProjection(events: RunPublicEvent[]): string | undefined {

@@ -5,7 +5,12 @@ import path from "node:path";
 import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { failureReasonCodeForError } from "../src/failureLog.js";
+import {
+  failureClassForProcessResult,
+  failureClassForSessionResult,
+  failureReasonCodeForError,
+  failureReasonCodeForSessionResult,
+} from "../src/failureLog.js";
 import { ValidationError } from "../src/types.js";
 import { createFakePiChild } from "./helpers/fakePiChild.js";
 import { readJsonl } from "./helpers/testUtils.js";
@@ -57,6 +62,26 @@ type FailureRecord = {
 };
 
 const TIMESTAMPED_EVENT_ID_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{9}Z-[0-9a-f]{12}$/;
+
+test("disk-reserve exhaustion remains typed ahead of exit and signal fallbacks", () => {
+  const processFailure = {
+    timed_out: false,
+    exit_code: 1,
+    stop_signal: "SIGTERM",
+    reason_code: "disk_reserve_exhausted" as const,
+  };
+  assert.equal(failureClassForProcessResult(processFailure), "resource_exhausted");
+
+  const sessionFailure = {
+    session_established: true,
+    packet_parse_status: "not_run",
+    timed_out: false,
+    exit_code: 1,
+    reason_code: "disk_reserve_exhausted" as const,
+  };
+  assert.equal(failureClassForSessionResult(sessionFailure, true), "resource_exhausted");
+  assert.equal(failureReasonCodeForSessionResult(sessionFailure, true), "disk_reserve_exhausted");
+});
 
 test("failure reason mapping uses explicit validation reason codes", () => {
   assert.equal(
@@ -438,7 +463,7 @@ test("schedule_run terminal child failures keep the schedule_run tool identity",
   });
 });
 
-test("restart drift failure stays authoritative when the stale owner later times out", async () => {
+test("restart drift is logged once after the owner process exits", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-restart-drift-log-"));
   const projectDir = path.join(tmp, "project");
   const stateDir = path.join(tmp, "state");
@@ -496,6 +521,10 @@ test("restart drift failure stays authoritative when the stale owner later times
     assert.notEqual(startedResponse.isError, true);
     const started = startedResponse.structuredContent as { run_id: string };
 
+    const ownerPid = transportA.pid;
+    assert.equal(typeof ownerPid, "number");
+    process.kill(ownerPid!, "SIGKILL");
+    await clientA.close().catch(() => {});
     await clientB.connect(transportB);
     const driftResponse = await clientB.callTool({
       name: "get_run",

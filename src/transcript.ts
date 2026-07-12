@@ -1,13 +1,4 @@
-import { createReadStream } from "node:fs";
-import readline from "node:readline";
-import { safeIntegerFromEnv } from "./env.js";
 import type { PromptProvenance, RunPublicEventKind, RunPublicEventName } from "./types.js";
-
-const DEFAULT_MAX_TRANSCRIPT_BYTES = 256 * 1024;
-
-function maxTranscriptBytes(): number {
-  return safeIntegerFromEnv("SUBAGENT007_MAX_TRANSCRIPT_BYTES", DEFAULT_MAX_TRANSCRIPT_BYTES, 1);
-}
 
 function textPartsFromContent(content: unknown): string[] {
   if (!Array.isArray(content)) {
@@ -37,10 +28,6 @@ export interface PublicTranscript {
   hasSubagentError: boolean;
 }
 
-function removeTrailingTruncationMarker(value: string): string {
-  return value.replace(/\n\n\[subagent007 transcript truncated at \d+ bytes\]\n$/, "");
-}
-
 function renderedHasLabeledContent(text: string, label: string): boolean {
   let offset = 0;
   while (offset < text.length) {
@@ -48,7 +35,7 @@ function renderedHasLabeledContent(text: string, label: string): boolean {
     if (index === -1) {
       return false;
     }
-    const remainder = removeTrailingTruncationMarker(text.slice(index + label.length));
+    const remainder = text.slice(index + label.length);
     if (remainder.trim() !== "") {
       return true;
     }
@@ -121,11 +108,17 @@ function publicLineForEvent(event: Record<string, unknown>): PublicOutputLine | 
 
 function publicMarkerLine(line: string): PublicOutputLine | null {
   const trimmed = line.trim();
-  return trimmed.startsWith("[subagent007 timeout]") || trimmed === "[subagent007 cancelled]"
+  return trimmed.startsWith("[subagent007 timeout]") ||
+    trimmed === "[subagent007 cancelled]" ||
+    trimmed.startsWith("[subagent007 disk reserve exhausted]")
     ? {
         text: trimmed,
         kind: "terminal",
-        event: trimmed.startsWith("[subagent007 timeout]") ? "timeout" : "cancellation_settled",
+        event: trimmed.startsWith("[subagent007 timeout]")
+          ? "timeout"
+          : trimmed === "[subagent007 cancelled]"
+            ? "cancellation_settled"
+            : "failed",
       }
     : null;
 }
@@ -149,17 +142,7 @@ function eventControlsTranscriptMode(event: Record<string, unknown>): boolean {
   return event.type !== "subagent007.lifecycle" && event.type !== "subagent007.session";
 }
 
-function truncateUtf8(value: string, maxBytes: number): string {
-  const buffer = Buffer.from(value, "utf8");
-  if (buffer.byteLength <= maxBytes) {
-    return value;
-  }
-  const marker = `\n\n[subagent007 transcript truncated at ${maxBytes} bytes]\n`;
-  const markerBytes = Buffer.byteLength(marker, "utf8");
-  return `${buffer.subarray(0, Math.max(0, maxBytes - markerBytes)).toString("utf8")}${marker}`;
-}
-
-function provenancePublicLines(promptProvenance?: PromptProvenance): PublicOutputLine[] {
+export function provenancePublicLines(promptProvenance?: PromptProvenance): PublicOutputLine[] {
   if (!promptProvenance) {
     return [];
   }
@@ -172,51 +155,6 @@ function provenancePublicLines(promptProvenance?: PromptProvenance): PublicOutpu
       ? [{ kind: "packet" as const, event: "message" as const, text: promptProvenance.packet_marker }]
       : []),
   ];
-}
-
-class BoundedTranscriptParts {
-  private readonly parts: string[] = [];
-  private bytes = 0;
-  private truncated = false;
-
-  constructor(private readonly maxBytes: number) {}
-
-  appendBlock(text: string): void {
-    if (text.trim() === "" || this.truncated) {
-      return;
-    }
-    const separator = this.parts.length > 0 ? "\n\n" : "";
-    const candidate = `${separator}${text}`;
-    const candidateBytes = Buffer.byteLength(candidate, "utf8");
-    if (this.bytes + candidateBytes <= this.maxBytes) {
-      this.parts.push(candidate);
-      this.bytes += candidateBytes;
-      return;
-    }
-
-    const marker = `\n\n[subagent007 transcript truncated at ${this.maxBytes} bytes]\n`;
-    const markerBytes = Buffer.byteLength(marker, "utf8");
-    const remaining = Math.max(0, this.maxBytes - this.bytes - markerBytes);
-    if (remaining > 0) {
-      this.parts.push(Buffer.from(candidate, "utf8").subarray(0, remaining).toString("utf8"));
-    }
-    this.parts.push(marker);
-    this.bytes = this.maxBytes;
-    this.truncated = true;
-  }
-
-  text(): string {
-    return this.parts.join("");
-  }
-}
-
-function appendInitialPublicLines(
-  accumulator: BoundedTranscriptParts,
-  promptProvenance?: PromptProvenance,
-): void {
-  for (const line of provenancePublicLines(promptProvenance)) {
-    accumulator.appendBlock(line.text);
-  }
 }
 
 export function preparePublicTranscriptFromProcessOutput(
@@ -260,59 +198,39 @@ export function preparePublicTranscriptFromProcessOutput(
   const fallback = sawStructuredEvent && text.trim() === ""
     ? "[subagent007 transcript unavailable: no public events captured]"
     : text;
-  const renderedText = truncateUtf8(fallback, maxTranscriptBytes());
   return {
-    text: renderedText,
-    ...publicTranscriptContentFlags(renderedText),
+    text: fallback,
+    ...publicTranscriptContentFlags(fallback),
   };
 }
 
-export async function preparePublicTranscriptFromProcessOutputFile(
-  rawOutputPath: string,
-  options: { promptProvenance?: PromptProvenance } = {},
-): Promise<PublicTranscript> {
-  const maxBytes = maxTranscriptBytes();
-  const publicParts = new BoundedTranscriptParts(maxBytes);
-  const rawParts = new BoundedTranscriptParts(maxBytes);
-  appendInitialPublicLines(publicParts, options.promptProvenance);
-  appendInitialPublicLines(rawParts, options.promptProvenance);
-  let sawStructuredEvent = false;
+export interface ProcessLineProjection {
+  controlsTranscriptMode: boolean;
+  publicLine: PublicOutputLine | null;
+  rawFallbackLine: string | null;
+}
 
-  const lines = readline.createInterface({
-    input: createReadStream(rawOutputPath, { encoding: "utf8" }),
-    crlfDelay: Infinity,
-  });
-  for await (const line of lines) {
-    const markerLine = publicMarkerLine(line);
-    if (markerLine) {
-      publicParts.appendBlock(markerLine.text);
-      rawParts.appendBlock(markerLine.text);
-      continue;
-    }
-    const parsedEvent = eventObjectFromJsonLine(line);
-    if (parsedEvent) {
-      if (eventControlsTranscriptMode(parsedEvent)) {
-        sawStructuredEvent = true;
-      }
-      const publicLine = publicLineForEvent(parsedEvent);
-      if (publicLine && (!options.promptProvenance || publicLine.kind !== "user")) {
-        publicParts.appendBlock(publicLine.text);
-      }
-      continue;
-    }
-    if (line.trim() !== "") {
-      rawParts.appendBlock(line);
-    }
+export function projectProcessOutputLine(line: string): ProcessLineProjection {
+  const markerLine = publicMarkerLine(line);
+  if (markerLine) {
+    return {
+      controlsTranscriptMode: false,
+      publicLine: markerLine,
+      rawFallbackLine: markerLine.text,
+    };
   }
-
-  const selectedText = sawStructuredEvent ? publicParts.text() : rawParts.text();
-  const fallback = sawStructuredEvent && selectedText.trim() === ""
-    ? "[subagent007 transcript unavailable: no public events captured]"
-    : selectedText;
-  const renderedText = truncateUtf8(fallback, maxBytes);
+  const parsedEvent = eventObjectFromJsonLine(line);
+  if (parsedEvent) {
+    return {
+      controlsTranscriptMode: eventControlsTranscriptMode(parsedEvent),
+      publicLine: publicLineForEvent(parsedEvent),
+      rawFallbackLine: null,
+    };
+  }
   return {
-    text: renderedText,
-    ...publicTranscriptContentFlags(renderedText),
+    controlsTranscriptMode: false,
+    publicLine: null,
+    rawFallbackLine: line.trim() === "" ? null : line,
   };
 }
 

@@ -19,7 +19,14 @@ export const RESUME_MODES = ["new", "resume_or_new", "require_existing"] as cons
 export type ResumeMode = (typeof RESUME_MODES)[number];
 export const PACKET_PARSE_STATUSES = ["valid", "missing", "invalid", "not_run"] as const;
 export type PacketParseStatus = (typeof PACKET_PARSE_STATUSES)[number];
-export const RUN_STOP_REASONS = ["completed", "failed", "timeout", "cancelled", "spawn_error"] as const;
+export const RUN_STOP_REASONS = [
+  "completed",
+  "failed",
+  "timeout",
+  "cancelled",
+  "spawn_error",
+  "resource_exhausted",
+] as const;
 export type RunStopReason = (typeof RUN_STOP_REASONS)[number];
 
 export type FailureReasonCode =
@@ -30,6 +37,7 @@ export type FailureReasonCode =
   | "cwd_inaccessible"
   | "cwd_not_absolute"
   | "cwd_not_directory"
+  | "disk_reserve_exhausted"
   | "handler_error"
   | "invalid_output_mode"
   | "invalid_packet_policy"

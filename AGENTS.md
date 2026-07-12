@@ -18,7 +18,7 @@ A private MCP server that delegates work to a separate Pi-backed child agent thr
 - Do not set `SUBAGENT007_PI_CHILD_PATH` for normal MCP use; it is for tests and controlled probes.
 
 ## Commands
-- Clean build output: `npm run clean:dist`
+- Prune inactive build releases: `npm run clean:dist`
 - Build: `npm run build`
 - Typecheck: `npm run typecheck`
 - Test: `npm test`

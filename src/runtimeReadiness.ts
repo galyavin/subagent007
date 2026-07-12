@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
   DURABLE_RUN_CAPABILITIES,
@@ -11,6 +10,7 @@ import {
 } from "./durableRunContract.js";
 import { configuredChildEntrypointPath } from "./childEntrypoint.js";
 import { SERVER_VERSION, serverBuildSha } from "./runtimeMetadata.js";
+import { projectRootFromModuleUrl } from "./projectRoot.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -150,7 +150,7 @@ function sourceStatePolicyFromInput(value: unknown): SourceStatePolicy {
 }
 
 function defaultProjectRoot(): string {
-  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  return projectRootFromModuleUrl(import.meta.url);
 }
 
 function defaultServerEntrypoint(projectRoot: string, processArgv: string[]): string {

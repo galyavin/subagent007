@@ -8,6 +8,7 @@ import {
   createInputRequest,
   listInputRequests,
   newRunId,
+  removeTerminalInputRequestsForRun,
   settleInputResponse,
   validateInputResponse,
 } from "../src/inputMailbox.js";
@@ -98,4 +99,25 @@ test("legacy answer sidecars are not interpreted as request records", async () =
   const requests = await listInputRequests({ mailboxRoot, runId: request.run_id });
   assert.equal(requests.length, 1);
   assert.equal(requests[0].status, "pending");
+});
+
+test("terminal mailbox compaction refuses pending input and removes settled run state", async () => {
+  const mailboxRoot = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-mailbox-compact-"));
+  const runId = newRunId();
+  await createInputRequest({
+    mailboxRoot,
+    runId,
+    question: "May this mailbox be compacted?",
+  });
+
+  await assert.rejects(
+    removeTerminalInputRequestsForRun({ mailboxRoot, runId }),
+    /cannot compact input requests while run has pending input/,
+  );
+  assert.equal((await listInputRequests({ mailboxRoot, runId })).length, 1);
+
+  await closePendingInputRequestsForRun({ mailboxRoot, runId });
+  await removeTerminalInputRequestsForRun({ mailboxRoot, runId });
+  await assert.rejects(fs.stat(path.join(mailboxRoot, runId)), /ENOENT/);
+  assert.equal((await listInputRequests({ mailboxRoot, runId })).length, 0);
 });

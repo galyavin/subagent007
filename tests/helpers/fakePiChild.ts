@@ -189,6 +189,8 @@ export async function createFakePiChild(tmpPrefix = "subagent007-fake-pi-"): Pro
       "  writeEvent({ type: 'message_end', message: { role: 'user', content: [{ type: 'text', text: 'user prompt' }] } });",
       "  writeEvent({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: 'SECRET_THINKING_SHOULD_NOT_LEAK' } });",
       "  writeEvent({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'PUBLIC ASSISTANT TEXT' }] } });",
+      "} else if (request.prompt.includes('LARGE_TRANSCRIPT')) {",
+      "  writeEvent({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'LARGE PUBLIC ' + 'x'.repeat(300 * 1024) }] } });",
       "} else if (request.prompt.includes('PACKET_INCONCLUSIVE')) {",
       "  writeFinal(packetFinal({ verdict: 'inconclusive', summary: 'not ready', findings: [], blockers: ['needs evidence'], next_step: 'repair' }));",
       "} else if (request.prompt.includes('PACKET_NEEDS_REPAIR')) {",

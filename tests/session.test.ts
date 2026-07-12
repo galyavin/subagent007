@@ -266,6 +266,7 @@ test("run_subagent_session creates, resumes, and appends an auditable Pi ledger"
       assert.equal(created.run_record.subagent_session_id, created.subagent_session_id);
       assert.equal(created.run_record.attempt_subagent_session_id, created.attempt_subagent_session_id);
       assert.equal(created.run_record.attempt_session_established, true);
+      await assert.rejects(fs.stat(path.dirname(created.attempt_subagent_session_id ?? "")), /ENOENT/);
 
       const manifest = JSON.parse(await fs.readFile(created.manifest_path, "utf8")) as SessionManifest;
       assert.equal(manifest.session_key, "coherent-execution:T001");
@@ -314,6 +315,7 @@ test("run_subagent_session creates, resumes, and appends an auditable Pi ledger"
       assert.equal(resumed.subagent_session_id, created.subagent_session_id);
       assert.match(resumed.attempt_subagent_session_id ?? "", /attempt-pi-sessions\/0003-/);
       assert.equal(resumed.attempt_session_established, true);
+      await assert.rejects(fs.stat(path.dirname(resumed.attempt_subagent_session_id ?? "")), /ENOENT/);
       assert.equal(resumed.model_changed_from_manifest, true);
       assert.equal(Object.hasOwn(resumed, "thinking_level_changed_from_manifest"), false);
       const finalManifest = JSON.parse(await fs.readFile(created.manifest_path, "utf8")) as Record<string, unknown>;
@@ -654,6 +656,7 @@ test("run_subagent_session can require packets without making packet logic part 
       assert.equal(attempts[0].action, "not_created");
       assert.equal(attempts[0].attempt_subagent_session_id, missing.attempt_subagent_session_id);
       assert.equal(attempts[0].attempt_session_established, true);
+      await assert.rejects(fs.stat(path.dirname(missing.attempt_subagent_session_id ?? "")), /ENOENT/);
 
       const valid = await runSubagentSession(
         {
@@ -900,6 +903,7 @@ test("run_subagent_session does not commit non-ready required packet resumes", a
       assert.equal(attempts[0].subagent_session_id, created.subagent_session_id);
       assert.equal(attempts[0].attempt_subagent_session_id, failed.attempt_subagent_session_id);
       assert.equal(attempts[0].attempt_session_established, true);
+      await assert.rejects(fs.stat(path.dirname(failed.attempt_subagent_session_id ?? "")), /ENOENT/);
     },
   );
 });

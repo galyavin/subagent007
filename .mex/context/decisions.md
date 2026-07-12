@@ -12,12 +12,33 @@ edges:
     condition: when a decision relates to system structure
   - target: context/stack.md
     condition: when a decision relates to technology choice
-last_updated: 2026-07-10
+last_updated: 2026-07-12
 ---
 
 # Decisions
 
 ## Decision Log
+
+### Complete public transcripts replace raw child spools
+**Date:** 2026-07-12
+**Status:** Active
+**Decision:** Child output is parsed incrementally and written directly to one sanitized public transcript staging file. Canonical transcript files have no per-artifact byte cap; bounded MCP events and excerpts remain separate projections. A protected free-space reserve stops a run cleanly before host exhaustion instead of silently truncating its transcript.
+**Reasoning:** The former 256 KiB render cap discarded useful output but did not constrain the unbounded private `combined-output.log` files that exhausted the disk. Removing the redundant raw spool eliminates the dangerous accumulation path and makes backpressure, publication, and cleanup share one observable owner.
+**Consequences:** Resource exhaustion is a typed `resource_exhausted` / `disk_reserve_exhausted` failure across run results, sessions, and failure telemetry. Canonical transcripts are durable outputs, not default retention targets. Public partial transcript files are named by run ownership; recovery converges on the same referenced output whether interruption occurs before or after the atomic `.partial` to `.md` rename.
+
+### Build publication keeps runnable entrypoints continuously available
+**Date:** 2026-07-12
+**Status:** Active
+**Decision:** Builds compile into versioned release directories, atomically switch `dist/current`, and keep stable launcher files present. Live server processes lease their release; cleanup removes only inactive unleased releases while retaining the current and immediately previous release.
+**Reasoning:** Deleting shared `dist/` before compilation created a caller-visible window where server and child entrypoints did not exist. Versioned publication separates compilation failure from runtime availability and gives release cleanup an observable owner.
+**Consequences:** `npm run clean:dist` prunes inactive releases instead of deleting live entrypoints. Runtime code locates the project root independently of its versioned release depth.
+
+### Terminal snapshots own compacted durable run state
+**Date:** 2026-07-12
+**Status:** Active
+**Decision:** Active runs keep append-only public event ledgers and input mailbox files. After terminal input settlement and terminal event projection, the atomically renamed terminal snapshot becomes authoritative for bounded events and settled input views; only then are the redundant event ledger and run mailbox directory removed. Named-session attempt directories are likewise removed after canonical promotion or durable failure telemetry.
+**Reasoning:** The previous create-only filesystem lifecycle made successful tests and production terminal state grow monotonically. Snapshot-first compaction preserves restart inspection and input status while assigning cleanup to the owner that can observe safe terminal persistence.
+**Consequences:** `get_run` must use terminal snapshot input/event projections rather than treating absent compacted files as empty live state. Active-child leases remain held until that terminal snapshot is durable; a persistence failure retains ownership fail-closed rather than exposing false restart drift. Attempt session ids are historical telemetry, not durable readable paths. Outputs, terminal snapshots, canonical sessions, active runs, and pending inputs are not retention targets.
 
 ### Acknowledged input is one version-2 contract
 **Date:** 2026-07-10
@@ -85,9 +106,9 @@ last_updated: 2026-07-10
 ### Local capacity exhaustion rejects instead of queues
 **Date:** 2026-06-30
 **Status:** Active
-**Decision:** `SUBAGENT007_MAX_ACTIVE_CHILDREN` is an opt-in local launch fuse that rejects before child launch with `local_capacity_exhausted`; it does not queue.
+**Decision:** `SUBAGENT007_MAX_ACTIVE_CHILDREN` is a finite local launch fuse, defaulting to 8, that rejects before child launch with `local_capacity_exhausted`; explicit `0` disables it and it does not queue.
 **Reasoning:** The real risk is uncontrolled concurrent child processes on one machine. Queueing would add ordering, durability, cancellation, and fairness semantics that are not needed for a local guard.
-**Alternatives considered:** Always-on capacity management (rejected because default behavior should stay unchanged), queueing (rejected as extra semantics), no local fuse (rejected because orphaned/overlapping child work was already a practical risk).
+**Alternatives considered:** An unbounded default (rejected because orphaned or overlapping child work already exhausted host resources), queueing (rejected as extra ordering and durability semantics), and a permanently fixed ceiling (rejected because host capacity varies).
 **Consequences:** Callers must retry after active work completes or raise the configured ceiling; tests must preserve `child_started:false` for this rejection.
 
 ### Public model input is model_class, not concrete model ids

@@ -312,6 +312,7 @@ test("runChildProcess emits optional heartbeats without changing process output"
   await fs.mkdir(projectDir, { recursive: true });
 
   const beats: number[] = [];
+  const outputLines: string[] = [];
   const result = await runChildProcess({
     command: process.execPath,
     args: [scriptPath, "HEARTBEAT_SLEEP"],
@@ -327,11 +328,14 @@ test("runChildProcess emits optional heartbeats without changing process output"
         beats.push(beat);
       },
     },
+    onOutputLine: (line) => {
+      outputLines.push(line);
+    },
   });
 
   assert.equal(result.exitCode, 0);
   assert.equal(result.timedOut, false);
-  assert.equal(await fs.readFile(result.outputPath, "utf8"), "HEARTBEAT DONE");
+  assert.equal(outputLines.join("\n"), "HEARTBEAT DONE");
   assert.equal(beats.length > 0, true);
   assert.deepEqual(beats, Array.from({ length: beats.length }, (_, index) => index + 1));
 });
@@ -385,6 +389,7 @@ test("runChildProcess swallows heartbeat failures", async () => {
   await fs.mkdir(projectDir, { recursive: true });
 
   let attempts = 0;
+  const outputLines: string[] = [];
   const result = await runChildProcess({
     command: process.execPath,
     args: [scriptPath, "HEARTBEAT_SLEEP"],
@@ -401,12 +406,42 @@ test("runChildProcess swallows heartbeat failures", async () => {
         throw new Error("progress failed");
       },
     },
+    onOutputLine: (line) => {
+      outputLines.push(line);
+    },
   });
 
   assert.equal(result.exitCode, 0);
   assert.equal(result.timedOut, false);
-  assert.equal(await fs.readFile(result.outputPath, "utf8"), "HEARTBEAT DONE");
+  assert.equal(outputLines.join("\n"), "HEARTBEAT DONE");
   assert.equal(attempts > 0, true);
+});
+
+test("runChildProcess stops a child before it consumes the protected disk reserve", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-disk-reserve-"));
+  const scriptPath = await createProcessScript();
+  const outputLines: string[] = [];
+  const result = await runChildProcess({
+    command: process.execPath,
+    args: [scriptPath, "HEARTBEAT_SLEEP"],
+    cwd: tmp,
+    timeoutBudget: computeTimeoutBudget(undefined, {
+      killGraceMs: 50,
+      forceGraceMs: 50,
+    }),
+    diskReserve: {
+      path: tmp,
+      minimumFreeBytes: Number.MAX_SAFE_INTEGER,
+      checkIntervalMs: 10,
+    },
+    onOutputLine: (line) => {
+      outputLines.push(line);
+    },
+  });
+
+  assert.equal(result.resourceExhausted, true);
+  assert.equal(result.stopReason, "resource_exhausted");
+  assert.match(outputLines.join("\n"), /\[subagent007 disk reserve exhausted\]/);
 });
 
 test("runChildProcess clears heartbeat interval after timeout", async () => {
@@ -416,6 +451,7 @@ test("runChildProcess clears heartbeat interval after timeout", async () => {
   await fs.mkdir(projectDir, { recursive: true });
 
   let beats = 0;
+  const outputLines: string[] = [];
   const result = await runChildProcess({
     command: process.execPath,
     args: [scriptPath, "TIMEOUT_SPAWN_CHILD"],
@@ -432,13 +468,16 @@ test("runChildProcess clears heartbeat interval after timeout", async () => {
         beats += 1;
       },
     },
+    onOutputLine: (line) => {
+      outputLines.push(line);
+    },
   });
   const beatsAtFinish = beats;
   await new Promise((resolve) => setTimeout(resolve, 80));
 
   assert.equal(result.timedOut, true);
   assert.ok(["SIGTERM", "SIGKILL"].includes(result.stopSignal ?? ""));
-  assert.match(await fs.readFile(result.outputPath, "utf8"), /\[subagent007 timeout\]/);
+  assert.match(outputLines.join("\n"), /\[subagent007 timeout\]/);
   assert.equal(beatsAtFinish > 0, true);
   assert.equal(beats, beatsAtFinish);
   const childPid = Number(await fs.readFile(path.join(projectDir, "child.pid"), "utf8"));
