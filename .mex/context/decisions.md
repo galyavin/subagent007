@@ -133,7 +133,7 @@ last_updated: 2026-07-12
 **Decision:** Provider-owned snapshot temps, terminal in-memory task objects, child process groups, and raw failure telemetry are reclaimed automatically. Canonical outputs and Pi sessions are not deleted by provider TTL because callers such as Bendum durably retain their paths and session identities.
 **Reasoning:** Deterministic cleanup can safely enforce file, process, and byte mechanics it owns. It cannot infer that a caller has consumed a canonical artifact merely from elapsed time or a successful return.
 **Alternatives considered:** Blanket TTL deletion (rejected because it breaks Bendum rereads/resume), caller vigilance (rejected because routine manual cleanup is not a systemic fix), and unbounded observability (rejected because raw telemetry caused material disk growth).
-**Consequences:** Failure raw storage defaults to 64 MiB and keeps whole newest records; bridge control EOF terminates the owned group; terminal snapshots survive restart while redundant memory/events/mailboxes do not; future canonical release requires an explicit caller-owned acknowledgment contract.
+**Consequences:** Failure raw storage defaults to 64 MiB and keeps whole newest records; append and archive share one atomically published lock, summaries precede raw pruning, and a bounded unref'ed worker removes telemetry I/O from caller latency. Bridge control EOF terminates the owned group; terminal snapshots survive restart while redundant memory/events/mailboxes do not; future canonical release requires an explicit caller-owned acknowledgment contract.
 
 ### Public event views are sanitized projections
 **Date:** 2026-06-24

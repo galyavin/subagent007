@@ -790,6 +790,15 @@ async function readFailureRecords() {
     });
 }
 
+async function waitForFailureRecord(predicate, timeoutMs = 1_500) {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    const matching = (await readFailureRecords()).find(predicate);
+    if (matching || Date.now() >= deadline) return matching;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
 function responseText(response) {
   return Array.isArray(response.content)
     ? response.content
@@ -1237,6 +1246,16 @@ async function runCall(client, ledgerPath, evidenceClass, scenario, call) {
     }
   }
 
+  if (
+    observedSummary &&
+    (observedSummary.success === false ||
+      observedSummary.status === "failed" ||
+      observedSummary.status === "timed_out" ||
+      observedSummary.kind === "preflight_rejected" ||
+      observedSummary.kind === "operation_rejected")
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
   const failuresAfter = await readFailureRecords();
   const delta = failuresAfter.slice(failuresBefore.length);
   const forbiddenFailureLogCalibrationFields = forbiddenFieldPaths(delta, FORBIDDEN_FAILURE_LOG_CALIBRATION_FIELDS);
@@ -1443,8 +1462,7 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
           response?.status === "failed",
         )
       : started;
-    const failureRecords = await readFailureRecords();
-    const matchingFailure = failureRecords.find((record) =>
+    const matchingFailure = await waitForFailureRecord((record) =>
       record?.run_id === started.response?.run_id &&
         record?.reason_code === "packet_required_not_ready"
     );

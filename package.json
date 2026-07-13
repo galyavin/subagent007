@@ -23,8 +23,10 @@
     "model-health:probe": "node scripts/probe-model-health.mjs",
     "runtime:readiness": "node scripts/check-runtime-readiness.mjs",
     "docs:check": "node scripts/check-docs-runtime-facts.mjs",
+    "preobserved-campaign": "npm run build",
     "observed-campaign": "node scripts/run-observed-campaign.mjs",
     "observed-mcp-probe": "node scripts/run-observed-mcp-probe.mjs",
+    "prefailure-log:archive": "npm run build",
     "failure-log:archive": "node scripts/archive-failure-log.mjs"
   },
   "dependencies": {

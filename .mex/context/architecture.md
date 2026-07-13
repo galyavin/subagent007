@@ -37,7 +37,7 @@ Named sessions add `src/session.ts` manifest/ledger/lock handling around the sam
 - `runSubagent.ts` - child request-file contract, Pi child invocation, transcript/final-output handling, missing-final classification, timeout metadata, provider error parsing, recursive control payload injection, and skill audit metadata.
 - `recursiveControl.ts` / `recursiveDelegateTool.ts` - private local IPC and child-facing `delegate` tool for recursive Subagent007 calls; the child tool is a client, not an owner of durable task state.
 - `processRunner.ts` - detached child process execution, backpressured line delivery, timeout/cancel/disk-reserve termination, heartbeat notifications, and parent-exit process-group cleanup. The Pi bridge also treats control-channel EOF as parent loss and terminates its owned process group.
-- `failureStorage.ts` - append-only normal failure telemetry with an aggregate raw-byte budget, oldest-archive-first pruning, and whole-record active-ledger compaction.
+- `failureStorage.ts` / `failureStorageWorker.ts` - one locked append/archive owner with an aggregate raw-byte budget, oldest-archive-first pruning, whole-record active-ledger compaction, and a bounded unref'ed worker that keeps telemetry off caller response latency.
 - `diskReserve.ts` - preflight and active-run host free-space protection; it stops work rather than truncating a continuing transcript.
 - `ownedTemporaryArtifact.ts` - owner metadata and startup reconciliation for child-request/final-message temp directories.
 - `buildReleaseLease.ts` / `scripts/build-atomic.mjs` - versioned build publication through `dist/current` and live-release protection.

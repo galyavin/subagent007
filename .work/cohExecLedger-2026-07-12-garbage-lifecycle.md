@@ -52,7 +52,8 @@ Approved outcome: effective, simple garbage hygiene that does not degrade caller
 
 ## Verification record
 
-- Combined full suite: 224/224 passed after preserving terminal cancel idempotency and late recursive-child completion publication.
+- Combined full suite: 227/227 passed after tightening failure-storage ownership and adapting observed telemetry probes to bounded asynchronous persistence.
 - Focused observed full-current aliases: 2/2 passed.
 - Provider typecheck, build, docs check, mex drift, and diff check passed.
 - Bendum environment-policy tests: 2/2 passed.
+- Implementation-tightener: lifecycle and Bendum probes found no changes; failure-storage probe triggered successful SAF escalation. Tightening unified append/archive ownership, made lock publication atomic, moved telemetry to a bounded unref'ed worker, and added archive race, lock crash, and response-latency coverage.

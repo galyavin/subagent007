@@ -12,7 +12,7 @@ edges:
     condition: when the reasoning behind a tech choice is needed
   - target: context/conventions.md
     condition: when understanding how to use a technology in this codebase
-last_updated: 2026-07-11
+last_updated: 2026-07-13
 ---
 
 # Stack
@@ -33,7 +33,7 @@ last_updated: 2026-07-11
 ## What We Deliberately Do NOT Use
 - No web framework; the package is an MCP server, not an HTTP app.
 - No database/ORM/cache layer; local JSON/JSONL files are the persistence boundary.
-- No job queue; long work is durable/pollable, and local capacity exhaustion rejects instead of queuing.
+- No database-backed or remote job queue; only top-level durable `start_run` and `schedule_run` use the bounded local metadata queue. One-shot, named-session, and recursive launches still reject at capacity.
 - No separate lint tool; use `npm run typecheck`, `npm run docs:check`, and tests.
 - No concrete public model ids; public callers use model classes `A` through `E`.
 

@@ -10,9 +10,9 @@ import {
   failureClassForSessionResult,
   failureReasonCodeForError,
   failureReasonCodeForSessionResult,
-  logFailure,
 } from "../src/failureLog.js";
 import { ValidationError } from "../src/types.js";
+import { appendFailureRecord } from "../src/failureStorage.js";
 import { createFakePiChild } from "./helpers/fakePiChild.js";
 import { readJsonl, withEnv } from "./helpers/testUtils.js";
 
@@ -1158,14 +1158,31 @@ test("failure logging can be disabled", async () => {
   );
 });
 
-async function appendBudgetedFailure(sequence: number): Promise<void> {
-  await logFailure({
+test("busy failure telemetry never delays an MCP rejection response", async () => {
+  await withFakeClient(async (client, { failureLogPath }) => {
+    const lockPath = `${failureLogPath}.lock`;
+    await fs.mkdir(lockPath);
+    await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify({
+      schema_version: 2, owner_id: "live-test-owner", pid: process.pid,
+    }));
+    const startedAt = Date.now();
+    const response = await client.callTool({ name: "get_run", arguments: { run_id: "missing-run" } });
+    assert.notEqual(response.isError, true);
+    assert.equal((response.structuredContent as { reason_code?: string }).reason_code, "run_not_found");
+    assert.ok(Date.now() - startedAt < 500);
+    await fs.rm(lockPath, { recursive: true, force: true });
+  });
+});
+
+async function appendBudgetedFailure(failureLogPath: string, sequence: number): Promise<void> {
+  await appendFailureRecord(failureLogPath, JSON.stringify({
+    schema_version: 2,
     tool: "run_subagent",
     failure_class: "unknown_error",
     reason_code: "unknown_error",
     cwd: `/project/${sequence}`,
     provider_error_message: `${sequence}:${"x".repeat(900)}`,
-  });
+  }));
 }
 
 test("failure storage budget zero disables raw persistence", async () => {
@@ -1177,7 +1194,7 @@ test("failure storage budget zero disables raw persistence", async () => {
       SUBAGENT007_FAILURE_LOG_PATH: failureLogPath,
       SUBAGENT007_FAILURE_STORAGE_MAX_BYTES: "0",
     },
-    async () => appendBudgetedFailure(1),
+    async () => appendBudgetedFailure(failureLogPath, 1),
   );
   await assert.rejects(fs.stat(failureLogPath), /ENOENT/);
 });
@@ -1195,7 +1212,7 @@ test("failure storage keeps newest complete JSONL records within its byte budget
     },
     async () => {
       for (let sequence = 1; sequence <= 8; sequence += 1) {
-        await appendBudgetedFailure(sequence);
+        await appendBudgetedFailure(failureLogPath, sequence);
       }
     },
   );
@@ -1224,7 +1241,7 @@ test("failure storage prunes oldest raw archives before active records and retai
       SUBAGENT007_FAILURE_LOG_PATH: failureLogPath,
       SUBAGENT007_FAILURE_STORAGE_MAX_BYTES: "3000",
     },
-    async () => appendBudgetedFailure(9),
+    async () => appendBudgetedFailure(failureLogPath, 9),
   );
 
   await assert.rejects(fs.stat(oldestRaw), /ENOENT/);
@@ -1232,4 +1249,20 @@ test("failure storage prunes oldest raw archives before active records and retai
   assert.equal((await fs.readFile(oldestSummary, "utf8")).trim(), "{}");
   const active = await fs.readFile(failureLogPath, "utf8");
   assert.match(active, /"provider_error_message":"9:/);
+});
+
+test("failure storage reclaims dead atomic lock candidates and published owners", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-failure-lock-recovery-"));
+  const failureLogPath = path.join(tmp, "failures.jsonl");
+  const lockPath = `${failureLogPath}.lock`;
+  const deadPid = 2_000_000_000;
+  await fs.mkdir(`${lockPath}.candidate-${deadPid}-unfinished`);
+  await appendFailureRecord(failureLogPath, JSON.stringify({ schema_version: 2, sequence: 1 }));
+  await fs.mkdir(lockPath);
+  await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify({
+    schema_version: 2, owner_id: "dead-owner", pid: deadPid,
+  }));
+  await appendFailureRecord(failureLogPath, JSON.stringify({ schema_version: 2, sequence: 2 }));
+  const records = (await fs.readFile(failureLogPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(records.map((record) => record.sequence), [1, 2]);
 });

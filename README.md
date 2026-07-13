@@ -283,9 +283,11 @@ Child stdout/stderr is projected directly into a sanitized `.partial` transcript
 
 `SUBAGENT007_SCHEDULE_RUN_MAX_WAIT_MS` caps how long `schedule_run` may keep the MCP call open before returning a pollable active run view; the default is 30000. `SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS`, `SUBAGENT007_TIMEOUT_KILL_GRACE_MS`, and `SUBAGENT007_TIMEOUT_FORCE_GRACE_MS` reserve time inside caller-provided `timeout_ms` so the MCP server can terminate the child process and return metadata before the caller deadline. `SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS` can raise the accepted floor for timed tools. `SUBAGENT007_DEADLINE_RISK_TIMEOUT_FLOOR_MS` sets the preflight floor for deadline-risk run requests that provide a hard `timeout_ms`; the default is 600000. `SUBAGENT007_HEARTBEAT_INTERVAL_MS` controls active-run snapshot cadence and MCP progress notification cadence when the client provides a progress token.
 
-`SUBAGENT007_BUILD_SHA` or `GIT_COMMIT` is copied into failure-log records when present. `SUBAGENT007_RECORD_SOURCE` may be `production`, `test`, or `unknown`; invalid values default to `production`. `SUBAGENT007_CAMPAIGN_ID` is copied into failure-log records when it is a short token containing only letters, digits, `_`, `-`, `.`, or `:`. New failure records include `calibration_era:"model_class_v1"`; archive summaries classify older records without this field as `legacy_unclassified`. Archive the current ledger with `npm run failure-log:archive`.
+`SUBAGENT007_BUILD_SHA` or `GIT_COMMIT` is copied into failure-log records when present. `SUBAGENT007_RECORD_SOURCE` may be `production`, `test`, or `unknown`; invalid values default to `production`. `SUBAGENT007_CAMPAIGN_ID` accepts a short token containing only letters, digits, `_`, `-`, `.`, or `:`. New records include `calibration_era:"model_class_v1"`; summaries classify older records as `legacy_unclassified`.
 
-Raw failure telemetry is bounded across the active ledger and archived `.jsonl` files by `SUBAGENT007_FAILURE_STORAGE_MAX_BYTES`, default 64 MiB. When the budget is exceeded, oldest raw archives are removed first and the active ledger retains the newest complete JSON records; compact archive summaries are retained. `0` disables raw failure persistence. This telemetry cleanup is best-effort and never changes a tool result.
+Raw failure telemetry is bounded across the active ledger and archived `.jsonl` files by `SUBAGENT007_FAILURE_STORAGE_MAX_BYTES`, default 64 MiB. A bounded, unref'ed worker keeps logging and compaction off the MCP response path; saturation or storage failure drops telemetry rather than delaying or changing a tool result. Therefore, do not treat `failures.jsonl` as synchronous run-completion evidence: use the durable run view as authority and allow a short bounded wait when a test or observer needs the correlated telemetry record. Append and archive operations share one atomic owner lock. When over budget, oldest raw archives are removed first and the active ledger keeps the newest complete JSON records; compact summaries are written before raw pruning and retained. `0` disables raw failure persistence.
+
+Archive the on-disk ledger with `npm run failure-log:archive`. A successful archive prints JSON containing the summary path and `raw_archive_retained`; under a tight budget the summary can remain even when its raw archive is immediately pruned.
 
 ## Observed Trial Campaigns
 
@@ -328,7 +330,7 @@ Primary source boundaries:
 - `src/runTask.ts` owns durable task state, polling views, cancellation, promotion, and active-child lease release.
 - `src/runSubagent.ts` owns the Pi child request-file contract, output projection, timeout metadata, and provider error parsing.
 - `src/processRunner.ts` owns backpressured child output consumption and timeout/cancel/disk-reserve/parent-exit termination.
-- `src/failureStorage.ts` owns the aggregate raw failure-telemetry byte budget, archive pruning, locking, and whole-record active-ledger compaction.
+- `src/failureStorage.ts` owns locking, archival, the aggregate raw-byte budget, and whole-record compaction; `src/failureStorageWorker.ts` provides bounded asynchronous runtime writes.
 - `src/session.ts` owns named-session manifests, packet policy, and local session locks.
 - `src/skillBinding.ts` owns `skill_name`/legacy `skill` validation and prompt-level skill-invocation rejection.
 - `src/types.ts` is the public type/reason-code source; keep it synchronized with README and tests when public fields change.

@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
+import { appendFailureRecord, archiveFailureLog } from "../src/failureStorage.js";
+import { withEnv } from "./helpers/testUtils.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -150,4 +152,23 @@ test("archive missing failure log remains a no-op success", async () => {
   assert.equal(parsed.archived, false);
   assert.equal(parsed.reason, "failure log does not exist");
   assert.equal(parsed.log_path, fixture.logPath);
+});
+
+test("archive and append share one lock, retain the summary, and enforce the raw budget", async () => {
+  const fixture = await withArchiveFixture();
+  await fs.writeFile(fixture.logPath, `${JSON.stringify({ schema_version: 2, tool: "start_run" })}\n`, "utf8");
+  await withEnv({ SUBAGENT007_FAILURE_STORAGE_MAX_BYTES: "50" }, async () => {
+    const [archived] = await Promise.all([
+      archiveFailureLog(fixture.logPath),
+      appendFailureRecord(fixture.logPath, JSON.stringify({ schema_version: 2, tool: "run_subagent" })),
+    ]);
+    assert.equal(archived.archived, true);
+    assert.equal(typeof archived.summary_path, "string");
+    assert.equal((await fs.stat(archived.summary_path!)).isFile(), true);
+  });
+  const rawFiles = (await fs.readdir(fixture.archiveDir)).filter((name) => name.endsWith(".jsonl"));
+  const activeBytes = await fs.stat(fixture.logPath).then((stat) => stat.size, () => 0);
+  const archiveBytes = (await Promise.all(rawFiles.map((name) => fs.stat(path.join(fixture.archiveDir, name)))))
+    .reduce((total, stat) => total + stat.size, 0);
+  assert.ok(activeBytes + archiveBytes <= 50);
 });

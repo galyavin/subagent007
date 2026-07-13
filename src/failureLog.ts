@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
+import { Worker } from "node:worker_threads";
 import { defaultSubagentStatePath, timestampedRandomId } from "./output.js";
-import { appendFailureRecord } from "./failureStorage.js";
 import { SERVER_VERSION, serverBuildSha } from "./runtimeMetadata.js";
 import { ValidationError, type FailureReasonCode } from "./types.js";
 
@@ -21,6 +21,31 @@ export type FailureLogTool =
 type FailureRecordSource = "production" | "test" | "unknown";
 type FailureCwdClass = "missing" | "relative" | "temp" | "absolute";
 const CURRENT_CALIBRATION_ERA = "model_class_v1";
+const MAX_PENDING_FAILURE_WRITES = 256;
+let failureWorker: Worker | undefined;
+let pendingFailureWrites = 0;
+
+function enqueueFailureRecord(logPath: string, line: string): void {
+  if (pendingFailureWrites >= MAX_PENDING_FAILURE_WRITES) return;
+  if (!failureWorker) {
+    const worker = new Worker(new URL("./failureStorageWorker.js", import.meta.url));
+    failureWorker = worker;
+    worker.unref();
+    worker.on("message", () => { pendingFailureWrites = Math.max(0, pendingFailureWrites - 1); });
+    const reset = () => {
+      if (failureWorker === worker) failureWorker = undefined;
+      pendingFailureWrites = 0;
+    };
+    worker.on("error", reset);
+    worker.on("exit", reset);
+  }
+  pendingFailureWrites += 1;
+  try {
+    failureWorker.postMessage({ logPath, line });
+  } catch {
+    pendingFailureWrites -= 1;
+  }
+}
 
 export type FailureClass =
   | "validation_error"
@@ -188,7 +213,7 @@ export async function logFailure(
       ...record,
       reason_code: record.reason_code ?? defaultReasonCode(record.failure_class),
     };
-    await appendFailureRecord(logPath, JSON.stringify(fullRecord));
+    enqueueFailureRecord(logPath, JSON.stringify(fullRecord));
   } catch {
     // Failure logging is operational telemetry only; it must never affect tool results.
   }
