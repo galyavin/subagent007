@@ -90,6 +90,7 @@ const child = spawn(process.execPath, ["--test", "--test-concurrency=1", "--impo
     SUBAGENT007_PI_RAW_SESSIONS_DIR: process.env.SUBAGENT007_PI_RAW_SESSIONS_DIR ?? path.join(suiteStateRoot, "pi-raw-sessions"),
     SUBAGENT007_MODEL_HEALTH_PATH: process.env.SUBAGENT007_MODEL_HEALTH_PATH ?? path.join(suiteStateRoot, "model-health.json"),
     SUBAGENT007_ACTIVE_CHILDREN_DIR: process.env.SUBAGENT007_ACTIVE_CHILDREN_DIR ?? path.join(suiteStateRoot, "active-children"),
+    SUBAGENT007_QUEUED_RUNS_DIR: process.env.SUBAGENT007_QUEUED_RUNS_DIR ?? path.join(suiteStateRoot, "queued-runs"),
     SUBAGENT007_TEMP_DIR: process.env.SUBAGENT007_TEMP_DIR ?? path.join(suiteStateRoot, "tmp"),
   },
 });

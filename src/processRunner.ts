@@ -25,6 +25,7 @@ interface ProcessRunOptions {
   diskReserve?: DiskReserveGuard;
   onOutputLine?: (line: string) => void | Promise<void>;
   onControlReady?: (send: (message: string) => boolean) => void;
+  onChildSpawned?: () => void | Promise<void>;
 }
 
 interface ProcessRunResult {
@@ -53,12 +54,28 @@ function isDiskExhaustionError(error: unknown): boolean {
 
 export async function runChildProcess(options: ProcessRunOptions): Promise<ProcessRunResult> {
   const startedAt = Date.now();
+  if (options.abortSignal?.aborted) {
+    return {
+      exitCode: null,
+      stopSignal: null,
+      timedOut: false,
+      cancelled: true,
+      resourceExhausted: false,
+      stopReason: "cancelled",
+      durationMs: 0,
+    };
+  }
 
   return new Promise((resolve) => {
     const child = spawn(options.command, options.args, {
       cwd: options.cwd,
       detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],
+    });
+    child.once("spawn", () => {
+      void Promise.resolve(options.onChildSpawned?.()).catch(() => {
+        // Spawn reporting is observational; process supervision remains authoritative.
+      });
     });
 
     child.stdin.on("error", () => {

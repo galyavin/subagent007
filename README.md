@@ -263,15 +263,15 @@ Default state root:
 
 Environment overrides:
 
-- Paths: `SUBAGENT007_CONFIG_PATH`, `SUBAGENT007_RUNS_DIR`, `SUBAGENT007_RUN_TASKS_DIR`, `SUBAGENT007_PI_RAW_SESSIONS_DIR`, `SUBAGENT007_SESSIONS_DIR`, `SUBAGENT007_INPUT_REQUESTS_DIR`, `SUBAGENT007_FAILURE_LOG_PATH`, `SUBAGENT007_MODEL_HEALTH_PATH`, `SUBAGENT007_ACTIVE_CHILDREN_DIR`, `SUBAGENT007_TEMP_DIR`
+- Paths: `SUBAGENT007_CONFIG_PATH`, `SUBAGENT007_RUNS_DIR`, `SUBAGENT007_RUN_TASKS_DIR`, `SUBAGENT007_PI_RAW_SESSIONS_DIR`, `SUBAGENT007_SESSIONS_DIR`, `SUBAGENT007_INPUT_REQUESTS_DIR`, `SUBAGENT007_FAILURE_LOG_PATH`, `SUBAGENT007_MODEL_HEALTH_PATH`, `SUBAGENT007_ACTIVE_CHILDREN_DIR`, `SUBAGENT007_QUEUED_RUNS_DIR`, `SUBAGENT007_TEMP_DIR`
 - Timeouts/progress/resources: `SUBAGENT007_INPUT_REQUEST_TIMEOUT_MS`, `SUBAGENT007_RUN_SUBAGENT_TIMEOUT_MS`, `SUBAGENT007_SCHEDULE_RUN_MAX_WAIT_MS`, `SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS`, `SUBAGENT007_DEADLINE_RISK_TIMEOUT_FLOOR_MS`, `SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS`, `SUBAGENT007_TIMEOUT_KILL_GRACE_MS`, `SUBAGENT007_TIMEOUT_FORCE_GRACE_MS`, `SUBAGENT007_HEARTBEAT_INTERVAL_MS`, `SUBAGENT007_SESSION_LOCK_LEASE_MS`, `SUBAGENT007_MIN_FREE_DISK_BYTES`
-- Pi/runtime: `SUBAGENT007_PI_AGENT_DIR`, `PI_CODING_AGENT_DIR`, `SUBAGENT007_PI_SKILL_PATHS`, `SUBAGENT007_PI_CHILD_PATH`, `SUBAGENT007_MAX_ACTIVE_CHILDREN`, `SUBAGENT007_MAX_RECURSION_DEPTH`
-- Failure logging and campaigns: `SUBAGENT007_FAILURE_LOG=off`, `SUBAGENT007_BUILD_SHA`, `GIT_COMMIT`, `SUBAGENT007_RECORD_SOURCE`, `SUBAGENT007_CAMPAIGN_ID`, `SUBAGENT007_CAMPAIGN_LEDGER_PATH`, `SUBAGENT007_COVERAGE_MANIFEST_PATH`
+- Pi/runtime: `SUBAGENT007_PI_AGENT_DIR`, `PI_CODING_AGENT_DIR`, `SUBAGENT007_PI_SKILL_PATHS`, `SUBAGENT007_PI_CHILD_PATH`, `SUBAGENT007_MAX_ACTIVE_CHILDREN`, `SUBAGENT007_MAX_QUEUED_RUNS`, `SUBAGENT007_MAX_RECURSION_DEPTH`
+- Failure logging and campaigns: `SUBAGENT007_FAILURE_LOG=off`, `SUBAGENT007_FAILURE_STORAGE_MAX_BYTES`, `SUBAGENT007_BUILD_SHA`, `GIT_COMMIT`, `SUBAGENT007_RECORD_SOURCE`, `SUBAGENT007_CAMPAIGN_ID`, `SUBAGENT007_CAMPAIGN_LEDGER_PATH`, `SUBAGENT007_COVERAGE_MANIFEST_PATH`
 
 `SUBAGENT007_PI_AGENT_DIR` wins over Pi's native `PI_CODING_AGENT_DIR`; otherwise the Pi agent directory defaults to `~/.pi/agent`. The resolved agent directory is used for Pi auth, custom models, settings/resources, and session behavior.
 `SUBAGENT007_PI_CHILD_PATH` overrides the built child entrypoint and is intended for tests or controlled probes; do not set it for normal MCP use.
 
-`SUBAGENT007_MAX_ACTIVE_CHILDREN` is a local launch fuse with a default of `24`. Set it to another positive integer to change the ceiling or explicitly to `0` to disable it. Child launches acquire an active lease under `SUBAGENT007_ACTIVE_CHILDREN_DIR` and reject before starting a child with `reason_code:"local_capacity_exhausted"` once the ceiling is reached. This is a rejection guard only; it does not queue work.
+`SUBAGENT007_MAX_ACTIVE_CHILDREN` is the shared local execution ceiling and defaults to `24`. Top-level `start_run` and `schedule_run` requests above that ceiling enter a bounded owner-scoped queue and return `status:"working"`, `active_phase:"queued"`, `child_started:false`, and `queued_at`. Promotion adds `child_started_at` and `queue_wait_ms`; `timeout_ms` starts only after launch. `SUBAGENT007_MAX_QUEUED_RUNS` defaults to `96`; `0` disables queueing, and a full queue rejects before registration with `reason_code:"local_queue_exhausted"`. Queue tickets under `SUBAGENT007_QUEUED_RUNS_DIR` contain ownership metadata only, never prompts. One-shot, named-session, and recursive launches remain fail-fast with `local_capacity_exhausted` to preserve their contracts and avoid recursive deadlock. Setting `SUBAGENT007_MAX_ACTIVE_CHILDREN=0` disables both the execution ceiling and admission queue.
 
 `SUBAGENT007_MIN_FREE_DISK_BYTES` protects host free space and defaults to 5 GiB. A run below the reserve rejects before child launch with `reason_code:"disk_reserve_exhausted"` and `child_started:false`; an active run checks the reserve once per second and terminates cleanly with `error_class:"resource_exhausted"` and the same reason code after publishing all public transcript content captured through that point. Durable-run and named-session failure logs preserve that classification even when process termination also produces a signal or nonzero exit. Set the reserve to `0` only when host-level disk protection is provided elsewhere.
 
@@ -284,6 +284,8 @@ Child stdout/stderr is projected directly into a sanitized `.partial` transcript
 `SUBAGENT007_SCHEDULE_RUN_MAX_WAIT_MS` caps how long `schedule_run` may keep the MCP call open before returning a pollable active run view; the default is 30000. `SUBAGENT007_TIMEOUT_RESPONSE_HEADROOM_MS`, `SUBAGENT007_TIMEOUT_KILL_GRACE_MS`, and `SUBAGENT007_TIMEOUT_FORCE_GRACE_MS` reserve time inside caller-provided `timeout_ms` so the MCP server can terminate the child process and return metadata before the caller deadline. `SUBAGENT007_MIN_REQUESTED_TIMEOUT_MS` can raise the accepted floor for timed tools. `SUBAGENT007_DEADLINE_RISK_TIMEOUT_FLOOR_MS` sets the preflight floor for deadline-risk run requests that provide a hard `timeout_ms`; the default is 600000. `SUBAGENT007_HEARTBEAT_INTERVAL_MS` controls active-run snapshot cadence and MCP progress notification cadence when the client provides a progress token.
 
 `SUBAGENT007_BUILD_SHA` or `GIT_COMMIT` is copied into failure-log records when present. `SUBAGENT007_RECORD_SOURCE` may be `production`, `test`, or `unknown`; invalid values default to `production`. `SUBAGENT007_CAMPAIGN_ID` is copied into failure-log records when it is a short token containing only letters, digits, `_`, `-`, `.`, or `:`. New failure records include `calibration_era:"model_class_v1"`; archive summaries classify older records without this field as `legacy_unclassified`. Archive the current ledger with `npm run failure-log:archive`.
+
+Raw failure telemetry is bounded across the active ledger and archived `.jsonl` files by `SUBAGENT007_FAILURE_STORAGE_MAX_BYTES`, default 64 MiB. When the budget is exceeded, oldest raw archives are removed first and the active ledger retains the newest complete JSON records; compact archive summaries are retained. `0` disables raw failure persistence. This telemetry cleanup is best-effort and never changes a tool result.
 
 ## Observed Trial Campaigns
 
@@ -322,9 +324,11 @@ There is no lint script; use `npm run typecheck`, `npm run docs:check`, and `npm
 Primary source boundaries:
 
 - `src/server.ts` registers public MCP tools and preflight result shaping.
+- `src/activeChildLease.ts` owns the shared active-child ceiling, bounded top-level admission queue, ticket-to-lease promotion, and abandoned-owner reconciliation.
 - `src/runTask.ts` owns durable task state, polling views, cancellation, promotion, and active-child lease release.
 - `src/runSubagent.ts` owns the Pi child request-file contract, output projection, timeout metadata, and provider error parsing.
 - `src/processRunner.ts` owns backpressured child output consumption and timeout/cancel/disk-reserve/parent-exit termination.
+- `src/failureStorage.ts` owns the aggregate raw failure-telemetry byte budget, archive pruning, locking, and whole-record active-ledger compaction.
 - `src/session.ts` owns named-session manifests, packet policy, and local session locks.
 - `src/skillBinding.ts` owns `skill_name`/legacy `skill` validation and prompt-level skill-invocation rejection.
 - `src/types.ts` is the public type/reason-code source; keep it synchronized with README and tests when public fields change.

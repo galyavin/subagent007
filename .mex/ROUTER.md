@@ -28,10 +28,10 @@ Then read this file fully before doing anything else in this session.
 - Durable runs expose one version-2 acknowledged-input contract: every answer has a response ID, a receipt is created only after the child waiter accepts that response, exact live retries replay safely, and raw answer text remains only on the private live control path/Pi context.
 - MCP public tools expose one-shot, durable run, scheduler, named-session, mailbox, contract, readiness, and model-class surfaces.
 - Durable runs persist snapshots and public event ledgers, support cancellation and caller input, and fail closed on restart drift.
-- Terminal runs compact bounded public events and settled input views into the authoritative snapshot before removing redundant event-ledger and mailbox files; named-session attempt workspaces are removed after promotion or failure telemetry is durable.
-- Child output streams directly into complete sanitized public transcripts with backpressure; no normal raw process-output spool exists. A 5 GiB default disk reserve and finite default active-child ceiling stop work before host exhaustion, while owner-based startup reconciliation removes only provably abandoned runtime temp directories.
+- Terminal runs compact bounded public events and settled input views into the authoritative snapshot before removing redundant event-ledger/mailbox files and evicting terminal in-memory state; dead-owner snapshot temps recover successor-first. Named-session attempt workspaces are removed after promotion or failure telemetry is durable.
+- Child output streams directly into complete sanitized public transcripts with backpressure; no normal raw process-output spool exists. A 5 GiB default disk reserve, 24-child execution ceiling, and bounded metadata-only top-level admission queue protect the host while retaining burst demand; owner-based reconciliation removes only provably abandoned runtime artifacts.
 - Builds publish versioned releases through an atomic `dist/current` switch; stable entrypoints remain available and live server release leases prevent cleanup races.
-- Model classes, config migration, model-health probes, observed campaign/probe tooling, and failure-log archival are implemented.
+- Model classes, config migration, model-health probes, observed campaign/probe tooling, and bounded raw failure telemetry with retained compact archive summaries are implemented.
 - Internal model-class calibration uses the current Pi registry, and the bundled Pi coding-agent dependency is kept new enough to resolve every calibrated class model during child execution.
 - Observed campaign tool-listing asserts the exact 12-tool public MCP surface and `skill_name` vs legacy `skill` schema guidance instead of treating `listTools()` as liveness-only.
 - Observed campaign coverage is keyed by caller-visible `surfaces` and `result_classes`; retired descriptive `lifecycle_phases` metadata is not part of the coverage contract.
@@ -51,7 +51,7 @@ Then read this file fully before doing anything else in this session.
 - README runtime facts are checked against source with `npm run docs:check`; full source/test verification is `npm test`.
 
 **Not Built:**
-- There is no queue behind `SUBAGENT007_MAX_ACTIVE_CHILDREN`; capacity exhaustion is a front-door rejection guard.
+- Admission queueing is limited to top-level `start_run` and `schedule_run`; one-shot, named-session, and recursive launches remain fail-fast at capacity.
 - There is no database or remote job manager; state is local filesystem-backed.
 - Tool profiles are compatibility inputs only: legacy values are validated, then ignored, and no runtime/result/session/failure surface carries resolved profile state.
 - Recursive delegation currently provides one child-facing `delegate` tool and direct lineage metadata only; full descendant-tree management and cascade cancel are not built.

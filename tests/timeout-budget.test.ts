@@ -55,6 +55,36 @@ function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
   });
 }
 
+test("runChildProcess does not spawn when cancellation is already accepted", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  let spawned = false;
+  const result = await runChildProcess({
+    command: path.join(os.tmpdir(), "subagent007-command-that-must-not-run"),
+    args: [],
+    cwd: os.tmpdir(),
+    timeoutBudget: computeTimeoutBudget(undefined),
+    abortSignal: controller.signal,
+    onChildSpawned: () => { spawned = true; },
+  });
+  assert.equal(spawned, false);
+  assert.equal(result.cancelled, true);
+  assert.equal(result.stopReason, "cancelled");
+});
+
+test("runChildProcess reports spawn failure without claiming a started child", async () => {
+  let spawned = false;
+  const result = await runChildProcess({
+    command: path.join(os.tmpdir(), "subagent007-command-that-does-not-exist"),
+    args: [],
+    cwd: os.tmpdir(),
+    timeoutBudget: computeTimeoutBudget(undefined),
+    onChildSpawned: () => { spawned = true; },
+  });
+  assert.equal(spawned, false);
+  assert.equal(result.stopReason, "spawn_error");
+});
+
 function processIsAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -536,4 +566,42 @@ test("runChildProcess kills detached child group when the parent process exits",
   const childPid = Number(await fs.readFile(childPidPath, "utf8"));
   assert.equal(Number.isInteger(childPid), true);
   await waitForProcessExit(childPid);
+});
+
+test("child bridge kills its owned process group when the parent control pipe closes", async () => {
+  if (process.platform === "win32") {
+    return;
+  }
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-control-loss-"));
+  const bridgePath = path.join(tmp, "control-loss.mjs");
+  await fs.writeFile(
+    bridgePath,
+    [
+      "import { spawn } from 'node:child_process';",
+      "const { terminateOwnedProcessGroupOnControlLoss } = await import(process.argv[2]);",
+      "const descendant = spawn(process.execPath, ['-e', `process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`], { stdio: 'ignore' });",
+      "process.stdout.write(`${descendant.pid}\\n`);",
+      "process.stdin.resume();",
+      "process.stdin.once('end', terminateOwnedProcessGroupOnControlLoss);",
+    ].join("\n"),
+  );
+  const moduleUrl = new URL("../dist/controlChannel.js", import.meta.url).href;
+  const bridge = spawn(process.execPath, [bridgePath, moduleUrl], {
+    detached: true,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const descendantPid = await withDeadline(
+    new Promise<number>((resolve) => {
+      bridge.stdout.setEncoding("utf8");
+      bridge.stdout.once("data", (chunk) => resolve(Number(String(chunk).trim())));
+    }),
+    1000,
+  );
+  assert.equal(Number.isInteger(descendantPid), true);
+  bridge.stdin.end();
+  await withDeadline(
+    new Promise<void>((resolve) => bridge.once("close", () => resolve())),
+    2500,
+  );
+  await waitForProcessExit(descendantPid);
 });

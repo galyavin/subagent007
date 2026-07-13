@@ -12,6 +12,7 @@ import {
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { createInputRequest } from "./inputMailbox.js";
+import { terminateOwnedProcessGroupOnControlLoss } from "./controlChannel.js";
 import { resolvePiAgentDir } from "./piAgentDir.js";
 import { createRecursiveDelegateTool } from "./recursiveDelegateTool.js";
 import { createSkillScopedResourceLoader } from "./skillResources.js";
@@ -64,6 +65,12 @@ function createInputControl(runId: string): InputControl {
   const buffered = new Map<string, InputResponse>();
   const waiters = new Map<string, (response: InputResponse) => void>();
   const reader = createInterface({ input: process.stdin, crlfDelay: Infinity });
+  let disposed = false;
+  reader.on("close", () => {
+    if (!disposed) {
+      terminateOwnedProcessGroupOnControlLoss();
+    }
+  });
   reader.on("line", (line) => {
     try {
       const message = JSON.parse(line) as {
@@ -126,6 +133,7 @@ function createInputControl(runId: string): InputControl {
       });
     },
     dispose() {
+      disposed = true;
       reader.close();
       waiters.clear();
       buffered.clear();

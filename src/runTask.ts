@@ -73,8 +73,16 @@ import {
 import { defaultSubagentStatePath, recoverStreamingRunTranscript, runOutputReference } from "./output.js";
 import { assertModelClassUsableForOneShot } from "./modelHealth.js";
 import { safeIntegerFromEnv } from "./env.js";
-import { acquireActiveChildLease, hasLiveActiveChildLease, type ActiveChildLease } from "./activeChildLease.js";
+import {
+  acquireActiveChildLease,
+  admitActiveChild,
+  hasLiveActiveChildLease,
+  hasLiveQueuedRunTicket,
+  type ActiveChildAdmission,
+  type ActiveChildLease,
+} from "./activeChildLease.js";
 import { assertDiskReserveAvailable } from "./diskReserve.js";
+import { processIsDefinitelyGone } from "./processLiveness.js";
 
 type RunTaskStatus = DurableRunStatus;
 const TERMINAL_RUN_STATUS_SET = new Set<RunTaskStatus>(TERMINAL_RUN_STATUSES);
@@ -123,6 +131,10 @@ export interface RunTaskView extends Partial<RunSubagentResult>, Partial<RunSuba
   error_class?: string;
   reason_code?: FailureReasonCode;
   partial_output_path?: string;
+  child_started?: boolean;
+  queued_at?: string;
+  child_started_at?: string;
+  queue_wait_ms?: number;
 }
 
 export interface RunTaskLineage {
@@ -175,6 +187,10 @@ interface RunTaskState {
   inputMutationQueue: Promise<void>;
   terminalizing: boolean;
   partialOutputPath?: string;
+  childStarted: boolean;
+  queuedAt?: string;
+  childStartedAt?: string;
+  capacityReleased: boolean;
 }
 
 interface PendingInputDelivery {
@@ -250,8 +266,12 @@ async function writeTaskSnapshot(view: RunTaskView): Promise<void> {
   await fs.mkdir(runTasksDir, { recursive: true });
   const recordPath = taskRecordPath(snapshot.run_id);
   const tmpPath = `${recordPath}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
-  await fs.writeFile(tmpPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
-  await fs.rename(tmpPath, recordPath);
+  try {
+    await fs.writeFile(tmpPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+    await fs.rename(tmpPath, recordPath);
+  } finally {
+    await fs.rm(tmpPath, { force: true });
+  }
   if (terminal) {
     const cleanupResults = await Promise.allSettled([
       removeRunPublicEvents(runTasksDir, snapshot.run_id),
@@ -279,6 +299,57 @@ async function readTaskSnapshot(runId: string): Promise<RunTaskView | null> {
     }
     throw error;
   }
+}
+
+export async function reconcileRunTaskSnapshotTemps(): Promise<number> {
+  const runTasksDir = defaultRunTasksDir();
+  const entries = await fs.readdir(runTasksDir).catch(() => []);
+  const candidatesByRun = new Map<string, Array<{ path: string; mtimeMs: number }>>();
+  for (const entry of entries) {
+    const match = /^(.*)\.json\.tmp-(\d+)-[0-9a-f]+$/.exec(entry);
+    if (!match || !processIsDefinitelyGone(Number(match[2]))) {
+      continue;
+    }
+    const candidatePath = path.join(runTasksDir, entry);
+    const stat = await fs.stat(candidatePath).catch(() => null);
+    if (!stat?.isFile()) {
+      continue;
+    }
+    const candidates = candidatesByRun.get(match[1]) ?? [];
+    candidates.push({ path: candidatePath, mtimeMs: stat.mtimeMs });
+    candidatesByRun.set(match[1], candidates);
+  }
+
+  let reconciled = 0;
+  for (const [runId, candidates] of candidatesByRun) {
+    const recordPath = taskRecordPath(runId);
+    const canonicalExists = await fs.stat(recordPath).then(() => true, () => false);
+    if (!canonicalExists) {
+      for (const candidate of candidates.sort((left, right) => right.mtimeMs - left.mtimeMs)) {
+        const valid = await fs.readFile(candidate.path, "utf8").then((text) => {
+          const snapshot = JSON.parse(text) as { run_id?: unknown };
+          return snapshot.run_id === runId;
+        }, () => false).catch(() => false);
+        if (!valid) {
+          continue;
+        }
+        try {
+          await fs.link(candidate.path, recordPath);
+          reconciled += 1;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+            throw error;
+          }
+        }
+        break;
+      }
+    }
+    for (const candidate of candidates) {
+      await fs.rm(candidate.path, { force: true });
+      reconciled += 1;
+    }
+  }
+  return reconciled;
 }
 
 function taskNotFound(runId: string): ValidationError {
@@ -339,6 +410,8 @@ function createRunTaskState(
     pendingInputDeliveries: new Map(),
     inputMutationQueue: Promise.resolve(),
     terminalizing: false,
+    childStarted: false,
+    capacityReleased: false,
   };
   setTaskProgress(state, DEFAULT_HEARTBEAT_MESSAGE, 0);
   return state;
@@ -533,6 +606,20 @@ function promotionView(state: RunTaskState): Partial<RunSubagentPromotion> {
   return state.promotion ?? {};
 }
 
+function admissionView(state: RunTaskState): Pick<
+  RunTaskView,
+  "child_started" | "queued_at" | "child_started_at" | "queue_wait_ms"
+> {
+  return {
+    child_started: state.childStarted,
+    ...(state.queuedAt ? { queued_at: state.queuedAt } : {}),
+    ...(state.queuedAt && state.childStartedAt ? {
+      child_started_at: state.childStartedAt,
+      queue_wait_ms: Math.max(0, Date.parse(state.childStartedAt) - Date.parse(state.queuedAt)),
+    } : {}),
+  };
+}
+
 function lineageView(state: RunTaskState): Pick<
   RunTaskView,
   "parent_run_id" | "root_run_id" | "recursion_depth" | "child_run_ids"
@@ -568,6 +655,7 @@ function activeRunTaskView(state: RunTaskState, inputRequests: InputRequestView[
     started_at: state.startedAt,
     input_requests_dir: state.inputRequestsDir,
     input_requests: inputRequests,
+    ...admissionView(state),
     ...activeProgressView(state),
     ...(state.partialOutputPath ? { partial_output_path: state.partialOutputPath } : {}),
   };
@@ -753,18 +841,8 @@ async function appendRunStartedEvent(
 
 async function prepareChildRun(state: RunTaskState): Promise<void> {
   const occurredAt = new Date().toISOString();
-  setTaskPhase(state, "awaiting_child_event", occurredAt);
-  await appendChildLifecycleEvent(
-    state,
-    "child_spawned",
-    "[child_spawned] Pi child process starting",
-    "child process starting",
-    { occurredAt },
-  );
-  if (state.activePhase === "awaiting_child_event") {
-    setTaskPhase(state, "running_silent");
-    setTaskProgress(state, "child process running; waiting for first public output");
-  }
+  setTaskPhase(state, "starting", occurredAt);
+  setTaskProgress(state, "preparing child process");
   await writeTaskSnapshot(await getRunTask(state.runId));
 }
 
@@ -831,17 +909,70 @@ async function registerRunTaskStateWithChildLease(
   }
 }
 
-async function releaseChildLease(childLease: ActiveChildLease): Promise<void> {
+async function registerRunTaskStateWithAdmission(
+  state: RunTaskState,
+  request: RunSubagentRequest,
+  admission: ActiveChildAdmission,
+): Promise<void> {
   try {
-    await childLease.release();
-  } catch {
-    // Capacity accounting is a guardrail; release failure must not mask the run outcome.
+    if (admission.kind === "queued") {
+      state.queuedAt = admission.ticket.queuedAt;
+      setTaskPhase(state, "queued", admission.ticket.queuedAt);
+      setTaskProgress(state, "queued; waiting for local child capacity");
+    }
+    await registerRunTaskState(state, request);
+    await recordParentChildRun(state);
+  } catch (error) {
+    if (admission.kind === "active") {
+      await releaseChildLease(admission.lease);
+    } else {
+      await releaseQueueTicket(admission.ticket);
+    }
+    tasks.delete(state.runId);
+    throw error;
+  }
+}
+
+async function releaseChildLease(childLease: ActiveChildLease): Promise<boolean> {
+  for (const delayMs of [0, 10, 50, 250]) {
+    if (delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+    try {
+      await childLease.release();
+      return true;
+    } catch {
+      // Retry before conservatively retaining capacity ownership.
+    }
+  }
+  console.error("[subagent007 warning] active child capacity release could not be confirmed");
+  return false;
+}
+
+async function releaseQueueTicket(ticket: Extract<ActiveChildAdmission, { kind: "queued" }>["ticket"]): Promise<void> {
+  try {
+    await ticket.release();
+  } catch (error) {
+    console.error(`[subagent007 warning] queued run ticket release failed: ${String(error)}`);
   }
 }
 
 async function hasDurableTerminalSnapshot(runId: string): Promise<boolean> {
   const snapshot = await readTaskSnapshot(runId).catch(() => null);
   return snapshot !== null && isTerminalRunStatus(snapshot.status);
+}
+
+function maybeEvictTerminalTask(state: RunTaskState): void {
+  if (!state.terminalSnapshotStarted || !state.capacityReleased) {
+    return;
+  }
+  const hasUnfinishedChild = state.childRunIds.some((childRunId) => {
+    const child = tasks.get(childRunId);
+    return child !== undefined && (!child.terminalSnapshotStarted || !child.capacityReleased);
+  });
+  if (!hasUnfinishedChild && tasks.get(state.runId) === state) {
+    tasks.delete(state.runId);
+  }
 }
 
 async function finalizeRegisteredRunTask(
@@ -856,7 +987,14 @@ async function finalizeRegisteredRunTask(
   } finally {
     terminalDurable ||= await hasDurableTerminalSnapshot(state.runId);
     if (terminalDurable) {
-      await releaseChildLease(childLease);
+      state.capacityReleased = await releaseChildLease(childLease);
+      maybeEvictTerminalTask(state);
+      if (state.parentRunId) {
+        const parent = tasks.get(state.parentRunId);
+        if (parent) {
+          maybeEvictTerminalTask(parent);
+        }
+      }
     }
   }
 }
@@ -1036,7 +1174,7 @@ async function finalizeRunTask(state: RunTaskState, closeReason: string): Promis
     });
     state.terminalSnapshotStarted = true;
     await logTerminalRunTaskFailure(state);
-    await writeTaskSnapshot(await getRunTask(state.runId));
+    await writeTaskSnapshot(await getRunTask(state.runId, true));
     await appendParentRecursiveChildFinishedEvent(state);
   });
 }
@@ -1202,6 +1340,7 @@ async function appendTerminalEvent(state: RunTaskState): Promise<void> {
     return;
   }
   if (state.error) {
+    const cancelledBeforeLaunch = state.cancelRequested && !state.childStarted;
     const taxonomy = errorTaxonomyForError(state.error);
     const sessionId = sessionIdFromEvents(state.recentEvents);
     const failureEnvelope = syntheticTerminalFailureEnvelope({
@@ -1217,8 +1356,8 @@ async function appendTerminalEvent(state: RunTaskState): Promise<void> {
       text: state.cancelRequested ? "[cancellation_settled] run cancelled" : `[failed] ${state.error.message}`,
       occurred_at: occurredAt,
       metadata: {
-        ...syntheticTerminalFailureEventMetadata(failureEnvelope),
-        error: state.error.message,
+        ...(cancelledBeforeLaunch ? {} : syntheticTerminalFailureEventMetadata(failureEnvelope)),
+        ...(cancelledBeforeLaunch ? {} : { error: state.error.message }),
       },
     }, state.cancelRequested ? "run cancelled" : state.error.message);
     setTaskPhase(state, state.cancelRequested ? "cancelled" : "failed", occurredAt);
@@ -1292,6 +1431,7 @@ function taskChildRuntimeOptions(
   abortSignal: AbortSignal;
   onOutputLine: (line: string) => Promise<void>;
   onTranscriptStaged: (stagingPath: string) => Promise<void>;
+  onChildSpawned: () => Promise<void>;
 } {
   return {
     heartbeat: (beat, message) => handleTaskHeartbeat(state, beat, message, options.heartbeat),
@@ -1300,6 +1440,22 @@ function taskChildRuntimeOptions(
     onOutputLine: (line) => observeOutputLine(state, line),
     onTranscriptStaged: async (stagingPath) => {
       state.partialOutputPath = stagingPath;
+      await writeTaskSnapshot(await getRunTask(state.runId));
+    },
+    onChildSpawned: async () => {
+      const occurredAt = new Date().toISOString();
+      state.childStarted = true;
+      if (state.queuedAt) {
+        state.childStartedAt = occurredAt;
+      }
+      setTaskPhase(state, "running_silent", occurredAt);
+      await appendChildLifecycleEvent(
+        state,
+        "child_spawned",
+        "[child_spawned] Pi child process started",
+        "child process running; waiting for first public output",
+        { occurredAt },
+      );
       await writeTaskSnapshot(await getRunTask(state.runId));
     },
   };
@@ -1502,7 +1658,7 @@ function persistRestartDriftSnapshotOnce(
   return reconciliation;
 }
 
-export async function getRunTask(runId: string): Promise<RunTaskView> {
+export async function getRunTask(runId: string, allowUnreleasedTerminal = false): Promise<RunTaskView> {
   const state = tasks.get(runId);
   if (!state) {
     const snapshot = await readTaskSnapshot(runId);
@@ -1513,7 +1669,7 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
     const inputRequests = await listInputRequests({ mailboxRoot, runId });
     const eventProjection = await loadSnapshotEvents(snapshot);
     if (snapshot.status === "working" || snapshot.status === "input_required") {
-      if (await hasLiveActiveChildLease(runId)) {
+      if (await hasLiveActiveChildLease(runId) || await hasLiveQueuedRunTicket(runId)) {
         return {
           ...contractFields(),
           ...snapshot,
@@ -1537,7 +1693,10 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
     mailboxRoot: state.mailboxRoot,
     runId: state.runId,
   });
-  if ((state.result || state.error) && !state.terminalSnapshotStarted) {
+  if (
+    (state.result || state.error) &&
+    (!state.terminalSnapshotStarted || (!state.capacityReleased && !allowUnreleasedTerminal))
+  ) {
     return activeRunTaskView(state, inputRequests);
   }
   if (state.result) {
@@ -1554,10 +1713,12 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
       finished_at: state.finishedAt,
       input_requests_dir: state.inputRequestsDir,
       input_requests: inputRequests,
+      ...admissionView(state),
       ...terminalProgressView(state, state.result),
     };
   }
   if (state.error) {
+    const cancelledBeforeLaunch = state.cancelRequested && !state.childStarted;
     const taxonomy = errorTaxonomyForError(state.error);
     const sessionId = sessionIdFromEvents(state.recentEvents);
     const failureEnvelope = syntheticTerminalFailureEnvelope({
@@ -1580,15 +1741,18 @@ export async function getRunTask(runId: string): Promise<RunTaskView> {
       finished_at: state.finishedAt,
       input_requests_dir: state.inputRequestsDir,
       input_requests: inputRequests,
+      ...admissionView(state),
       ...failureEnvelope,
+      ...(cancelledBeforeLaunch ? { error_class: undefined, reason_code: undefined } : {}),
       ...activeProgressView(state),
-      error: state.error.message,
+      ...(cancelledBeforeLaunch ? {} : { error: state.error.message }),
     };
   }
   return activeRunTaskView(state, inputRequests);
 }
 
 export async function reconcilePersistedActiveRunTasks(): Promise<number> {
+  await reconcileRunTaskSnapshotTemps();
   const runTasksDir = defaultRunTasksDir();
   const entries = await fs.readdir(runTasksDir).catch(() => []);
   let reconciled = 0;
@@ -1601,13 +1765,31 @@ export async function reconcilePersistedActiveRunTasks(): Promise<number> {
     if (snapshot?.status !== "working" && snapshot?.status !== "input_required") {
       continue;
     }
-    if (await hasLiveActiveChildLease(runId)) {
+    if (await hasLiveActiveChildLease(runId) || await hasLiveQueuedRunTicket(runId)) {
       continue;
     }
     await getRunTask(runId);
     reconciled += 1;
   }
   return reconciled;
+}
+
+function executeRunTask(
+  state: RunTaskState,
+  request: RunSubagentRequest,
+  skillFilePath: string | undefined,
+  options: { runsDir?: string; heartbeat?: HeartbeatNotify; heartbeatIntervalMs?: number },
+): Promise<RunSubagentResult> {
+  return runSubagentCore(request, {
+    runId: state.runId,
+    mailboxRoot: state.mailboxRoot,
+    runsDir: options.runsDir,
+    allowTimeout: true,
+    skillFilePath,
+    ...taskRecursiveRuntimeOptions(state),
+    ...taskChildRuntimeOptions(state, options),
+    ...taskInputControlOptions(state),
+  });
 }
 
 export async function startRunTask(
@@ -1630,7 +1812,33 @@ export async function startRunTask(
 
   const state = createRunTaskState("run", undefined, options.lineage);
   state.failureLogTool = failureLogTool;
-  const childLease = await registerRunTaskStateWithChildLease(state, request);
+  const admission = await admitActiveChild(state.runId, options.lineage?.parentRunId === undefined);
+  await registerRunTaskStateWithAdmission(state, request, admission);
+
+  if (admission.kind === "queued") {
+    state.promise = containBackgroundRunFailure(state, (async () => {
+      let childLease: ActiveChildLease = { release: async () => {} };
+      try {
+        childLease = await admission.ticket.waitForLease(state.abortController.signal);
+        if (state.cancelRequested) {
+          throw new ValidationError("run cancelled before child launch", "local_capacity_exhausted");
+        }
+        await assertPiChildEntrypointAvailable();
+        await assertDiskReserveAvailable(options.runsDir);
+        await prepareChildRun(state);
+        state.result = await executeRunTask(state, request, skillFilePath, options);
+      } catch (error) {
+        state.error = error as Error;
+        await logBackgroundHandlerError(failureLogTool, request, error);
+      } finally {
+        await releaseQueueTicket(admission.ticket);
+        await finalizeRegisteredRunTask(state, childLease, durableTaskCloseReason(state));
+      }
+    })());
+    return getRunTask(state.runId);
+  }
+
+  const childLease = admission.lease;
   try {
     await prepareChildRun(state);
   } catch (error) {
@@ -1642,16 +1850,7 @@ export async function startRunTask(
 
   state.promise = containBackgroundRunFailure(state, (async () => {
     try {
-      state.result = await runSubagentCore(request, {
-        runId: state.runId,
-        mailboxRoot: state.mailboxRoot,
-        runsDir: options.runsDir,
-        allowTimeout: true,
-        skillFilePath,
-        ...taskRecursiveRuntimeOptions(state),
-        ...taskChildRuntimeOptions(state, options),
-        ...taskInputControlOptions(state),
-      });
+      state.result = await executeRunTask(state, request, skillFilePath, options);
     } catch (error) {
       state.error = error as Error;
       await logBackgroundHandlerError(failureLogTool, request, error);
@@ -1980,6 +2179,10 @@ export async function runSubagentOneShotTask(
 export async function cancelRunTask(runId: string): Promise<RunTaskView> {
   const state = tasks.get(runId);
   if (!state) {
+    const snapshot = await readTaskSnapshot(runId);
+    if (snapshot && isTerminalRunStatus(snapshot.status)) {
+      return getRunTask(runId);
+    }
     throw taskNotFound(runId);
   }
   return serializeInputMutation(state, async () => {

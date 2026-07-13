@@ -175,6 +175,9 @@ const statePaths = {
   sessionsDir: path.join(stateRoot, "sessions"),
   piRawSessionsDir: path.join(stateRoot, "pi-raw-sessions"),
   modelHealthPath: path.join(stateRoot, "model-health.json"),
+  activeChildrenDir: path.join(stateRoot, "active-children"),
+  queuedRunsDir: path.join(stateRoot, "queued-runs"),
+  tempDir: path.join(stateRoot, "tmp"),
 };
 
 const campaignEnv = {
@@ -189,6 +192,9 @@ const campaignEnv = {
   SUBAGENT007_SESSIONS_DIR: statePaths.sessionsDir,
   SUBAGENT007_PI_RAW_SESSIONS_DIR: statePaths.piRawSessionsDir,
   SUBAGENT007_MODEL_HEALTH_PATH: statePaths.modelHealthPath,
+  SUBAGENT007_ACTIVE_CHILDREN_DIR: statePaths.activeChildrenDir,
+  SUBAGENT007_QUEUED_RUNS_DIR: statePaths.queuedRunsDir,
+  SUBAGENT007_TEMP_DIR: statePaths.tempDir,
 };
 
 const [command, ...args] = parsed.command;

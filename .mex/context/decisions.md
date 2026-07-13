@@ -103,13 +103,13 @@ last_updated: 2026-07-12
 **Alternatives considered:** Keep `packet_required_invalid` for all unsatisfied packets (rejected as caller-hostile taxonomy collapse), or add a new packet object state machine (rejected as unnecessary for the observed ambiguity).
 **Consequences:** Failure logs, terminal metadata, README, and observed-campaign result matching must stay synchronized with all three packet reason codes.
 
-### Local capacity exhaustion rejects instead of queues
-**Date:** 2026-06-30
+### Local capacity uses bounded top-level admission queueing
+**Date:** 2026-07-12
 **Status:** Active
-**Decision:** `SUBAGENT007_MAX_ACTIVE_CHILDREN` is a finite local launch fuse, defaulting to 8, that rejects before child launch with `local_capacity_exhausted`; explicit `0` disables it and it does not queue.
-**Reasoning:** The real risk is uncontrolled concurrent child processes on one machine. Queueing would add ordering, durability, cancellation, and fairness semantics that are not needed for a local guard.
-**Alternatives considered:** An unbounded default (rejected because orphaned or overlapping child work already exhausted host resources), queueing (rejected as extra ordering and durability semantics), and a permanently fixed ceiling (rejected because host capacity varies).
-**Consequences:** Callers must retry after active work completes or raise the configured ceiling; tests must preserve `child_started:false` for this rejection.
+**Decision:** `SUBAGENT007_MAX_ACTIVE_CHILDREN` defaults to 24. Top-level `start_run` and `schedule_run` overflow into an owner-scoped metadata-only queue bounded by `SUBAGENT007_MAX_QUEUED_RUNS`, default 96. Queueing can be disabled with `0`. One-shot, named-session, and recursive launches remain fail-fast.
+**Reasoning:** Burst demand should retain a durable run identity without increasing concurrent child pressure. Keeping request payloads in owner memory avoids a new raw-prompt retention path, while excluding recursive work prevents all active parents from waiting on descendants that cannot acquire a slot.
+**Alternatives considered:** Strict global FIFO (rejected because another server process cannot execute an in-memory request and a stalled owner could block everyone), persisted request payloads (rejected as a new sensitive accumulation path), and queueing every tool (rejected because synchronous and recursive contracts need immediate capacity outcomes).
+**Consequences:** Queued views use `status:"working"` and `active_phase:"queued"`; one process-owned pump preserves FIFO per owner with approximate cross-process fairness. Cancellation removes a ticket before launch. Mutable safety preconditions are checked again at promotion, filesystem records publish atomically, unreadable ownership records fail closed, and restart drift never replays an unavailable prompt.
 
 ### Public model input is model_class, not concrete model ids
 **Date:** 2026-06-25
@@ -126,6 +126,14 @@ last_updated: 2026-07-12
 **Reasoning:** This server is local/private and needs inspectable, restart-tolerant state without operating a database or service.
 **Alternatives considered:** Database-backed state or remote worker queues (rejected as operationally heavier than this local MCP boundary needs).
 **Consequences:** Runtime readiness and tests must account for local build/source state; restart drift fails closed instead of trying to reattach to unknown old child processes.
+
+### Garbage collection follows observable ownership, not age
+**Date:** 2026-07-12
+**Status:** Active
+**Decision:** Provider-owned snapshot temps, terminal in-memory task objects, child process groups, and raw failure telemetry are reclaimed automatically. Canonical outputs and Pi sessions are not deleted by provider TTL because callers such as Bendum durably retain their paths and session identities.
+**Reasoning:** Deterministic cleanup can safely enforce file, process, and byte mechanics it owns. It cannot infer that a caller has consumed a canonical artifact merely from elapsed time or a successful return.
+**Alternatives considered:** Blanket TTL deletion (rejected because it breaks Bendum rereads/resume), caller vigilance (rejected because routine manual cleanup is not a systemic fix), and unbounded observability (rejected because raw telemetry caused material disk growth).
+**Consequences:** Failure raw storage defaults to 64 MiB and keeps whole newest records; bridge control EOF terminates the owned group; terminal snapshots survive restart while redundant memory/events/mailboxes do not; future canonical release requires an explicit caller-owned acknowledgment contract.
 
 ### Public event views are sanitized projections
 **Date:** 2026-06-24

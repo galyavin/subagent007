@@ -10,10 +10,11 @@ import {
   failureClassForSessionResult,
   failureReasonCodeForError,
   failureReasonCodeForSessionResult,
+  logFailure,
 } from "../src/failureLog.js";
 import { ValidationError } from "../src/types.js";
 import { createFakePiChild } from "./helpers/fakePiChild.js";
-import { readJsonl } from "./helpers/testUtils.js";
+import { readJsonl, withEnv } from "./helpers/testUtils.js";
 
 type FailureRecord = {
   schema_version: 2;
@@ -1155,4 +1156,80 @@ test("failure logging can be disabled", async () => {
     },
     { SUBAGENT007_FAILURE_LOG: "off" },
   );
+});
+
+async function appendBudgetedFailure(sequence: number): Promise<void> {
+  await logFailure({
+    tool: "run_subagent",
+    failure_class: "unknown_error",
+    reason_code: "unknown_error",
+    cwd: `/project/${sequence}`,
+    provider_error_message: `${sequence}:${"x".repeat(900)}`,
+  });
+}
+
+test("failure storage budget zero disables raw persistence", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-failure-budget-zero-"));
+  const failureLogPath = path.join(tmp, "failures.jsonl");
+  await withEnv(
+    {
+      SUBAGENT007_FAILURE_LOG: undefined,
+      SUBAGENT007_FAILURE_LOG_PATH: failureLogPath,
+      SUBAGENT007_FAILURE_STORAGE_MAX_BYTES: "0",
+    },
+    async () => appendBudgetedFailure(1),
+  );
+  await assert.rejects(fs.stat(failureLogPath), /ENOENT/);
+});
+
+test("failure storage keeps newest complete JSONL records within its byte budget", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-failure-budget-"));
+  const failureLogPath = path.join(tmp, "failures.jsonl");
+  const budget = 4_096;
+  await fs.writeFile(failureLogPath, "{interrupted legacy record\n", "utf8");
+  await withEnv(
+    {
+      SUBAGENT007_FAILURE_LOG: undefined,
+      SUBAGENT007_FAILURE_LOG_PATH: failureLogPath,
+      SUBAGENT007_FAILURE_STORAGE_MAX_BYTES: String(budget),
+    },
+    async () => {
+      for (let sequence = 1; sequence <= 8; sequence += 1) {
+        await appendBudgetedFailure(sequence);
+      }
+    },
+  );
+  const bytes = await fs.readFile(failureLogPath);
+  assert.ok(bytes.byteLength <= budget);
+  const records = bytes.toString("utf8").trim().split("\n").map((line) => JSON.parse(line) as FailureRecord);
+  assert.ok(records.length > 0);
+  assert.match(records.at(-1)?.provider_error_message ?? "", /^8:/);
+});
+
+test("failure storage prunes oldest raw archives before active records and retains summaries", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-failure-archives-"));
+  const failureLogPath = path.join(tmp, "failures.jsonl");
+  const archiveDir = path.join(tmp, "archives");
+  const oldestRaw = path.join(archiveDir, "failures-20260101T000000000Z.jsonl");
+  const newestRaw = path.join(archiveDir, "failures-20260102T000000000Z.jsonl");
+  const oldestSummary = path.join(archiveDir, "failures-20260101T000000000Z.summary.json");
+  await fs.mkdir(archiveDir, { recursive: true });
+  await fs.writeFile(oldestRaw, "a".repeat(2_000));
+  await fs.writeFile(newestRaw, "b".repeat(2_000));
+  await fs.writeFile(oldestSummary, "{}\n");
+
+  await withEnv(
+    {
+      SUBAGENT007_FAILURE_LOG: undefined,
+      SUBAGENT007_FAILURE_LOG_PATH: failureLogPath,
+      SUBAGENT007_FAILURE_STORAGE_MAX_BYTES: "3000",
+    },
+    async () => appendBudgetedFailure(9),
+  );
+
+  await assert.rejects(fs.stat(oldestRaw), /ENOENT/);
+  await assert.rejects(fs.stat(newestRaw), /ENOENT/);
+  assert.equal((await fs.readFile(oldestSummary, "utf8")).trim(), "{}");
+  const active = await fs.readFile(failureLogPath, "utf8");
+  assert.match(active, /"provider_error_message":"9:/);
 });

@@ -1860,6 +1860,7 @@ try {
       await client.close();
       const capacityClient = await connectClient({
         SUBAGENT007_MAX_ACTIVE_CHILDREN: "1",
+        SUBAGENT007_MAX_QUEUED_RUNS: "0",
         SUBAGENT007_ACTIVE_CHILDREN_DIR: path.join(path.dirname(ledgerPath), "active-children"),
       });
       try {

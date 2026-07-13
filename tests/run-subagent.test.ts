@@ -73,6 +73,9 @@ type RunSubagentMetadata = {
   error_class?: string;
   reason_code?: string;
   child_started?: boolean;
+  queued_at?: string;
+  child_started_at?: string;
+  queue_wait_ms?: number;
   kind?: string;
   retry_guidance?: string;
   input_response_id?: string;
@@ -468,7 +471,76 @@ test("start_run rejects before child launch when the configured local child fuse
     {
       env: {
         SUBAGENT007_MAX_ACTIVE_CHILDREN: "1",
+        SUBAGENT007_MAX_QUEUED_RUNS: "0",
         SUBAGENT007_ACTIVE_CHILDREN_DIR: activeChildrenDir,
+      },
+    },
+  );
+});
+
+test("top-level start_run and schedule_run share bounded queue promotion", async () => {
+  const stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-queued-runs-"));
+  await connectFakeClient(
+    async (client, { projectDir }) => {
+      const firstResponse = await client.callTool({
+        name: "start_run",
+        arguments: { cwd: projectDir, prompt: "REQUEST_INPUT_WAIT", output_mode: "final", timeout_ms: 10000 },
+      });
+      const first = firstResponse.structuredContent as RunSubagentMetadata;
+      await waitForInputRequired(client, first.run_id);
+
+      const cancelledQueuedResponse = await client.callTool({
+        name: "start_run",
+        arguments: { cwd: projectDir, prompt: "FAST", output_mode: "final", timeout_ms: 10000 },
+      });
+      const cancelledQueued = cancelledQueuedResponse.structuredContent as RunSubagentMetadata;
+      assert.equal(cancelledQueued.active_phase, "queued");
+      await client.callTool({ name: "cancel_run", arguments: { run_id: cancelledQueued.run_id } });
+      const cancelledBeforeLaunch = await waitForTerminalRun(client, cancelledQueued.run_id);
+      assert.equal(cancelledBeforeLaunch.status, "cancelled");
+      assert.equal(cancelledBeforeLaunch.child_started, false);
+      assert.equal(cancelledBeforeLaunch.reason_code, undefined);
+
+      const queuedResponse = await client.callTool({
+        name: "schedule_run",
+        arguments: { cwd: projectDir, prompt: "FAST", output_mode: "final", timeout_ms: 10000, wait_ms: 0 },
+      });
+      const queued = queuedResponse.structuredContent as RunSubagentMetadata;
+      assert.equal(queued.status, "working");
+      assert.equal(queued.active_phase, "queued");
+      assert.equal(queued.child_started, false);
+      assert.equal(typeof queued.queued_at, "string");
+      const ticketText = await fs.readFile(
+        path.join(stateRoot, "queued", `${queued.run_id}.json`),
+        "utf8",
+      );
+      assert.doesNotMatch(ticketText, /FAST|prompt|cwd/);
+
+      const overflowResponse = await client.callTool({
+        name: "start_run",
+        arguments: { cwd: projectDir, prompt: "FAST", output_mode: "final", timeout_ms: 10000 },
+      });
+      const overflow = overflowResponse.structuredContent as RunSubagentMetadata & { kind?: string; retry_guidance?: string };
+      assert.equal(overflow.status, "rejected");
+      assert.equal(overflow.kind, "preflight_rejected");
+      assert.equal(overflow.child_started, false);
+      assert.equal(overflow.reason_code, "local_queue_exhausted");
+      assert.match(overflow.retry_guidance ?? "", /queued work advances/);
+
+      await client.callTool({ name: "cancel_run", arguments: { run_id: first.run_id } });
+      await waitForTerminalRun(client, first.run_id);
+      const completed = await waitForTerminalRun(client, queued.run_id);
+      assert.equal(completed.status, "completed");
+      assert.equal(completed.child_started, true);
+      assert.equal(typeof completed.child_started_at, "string");
+      assert.equal((completed.queue_wait_ms ?? -1) >= 0, true);
+    },
+    {
+      env: {
+        SUBAGENT007_MAX_ACTIVE_CHILDREN: "1",
+        SUBAGENT007_MAX_QUEUED_RUNS: "1",
+        SUBAGENT007_ACTIVE_CHILDREN_DIR: path.join(stateRoot, "active"),
+        SUBAGENT007_QUEUED_RUNS_DIR: path.join(stateRoot, "queued"),
       },
     },
   );
@@ -826,6 +898,7 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.equal(contract.capabilities?.includes("terminal_state_compaction"), true);
     assert.equal(contract.capabilities?.includes("complete_file_backed_transcripts"), true);
     assert.equal(contract.capabilities?.includes("disk_reserve_fail_closed"), true);
+    assert.equal(contract.capabilities?.includes("bounded_local_admission_queue"), true);
     assert.equal(
       contract.output_reference?.transcript_size_policy,
       "unbounded_file",
@@ -1437,6 +1510,12 @@ test("run_subagent terminal snapshot omits thinking payloads and removes the raw
       assert.doesNotMatch(recentEventsText, /SECRET_PROMPT_SHOULD_NOT_LEAK|RAW_THINKING_TRANSCRIPT/);
       assert.doesNotMatch(recentEventsText, /SECRET_THINKING_SHOULD_NOT_LEAK/);
       assert.doesNotMatch(lastPublicOutputExcerpt, /SECRET_PROMPT_SHOULD_NOT_LEAK|RAW_THINKING_TRANSCRIPT/);
+      await fs.rm(path.join(runTasksDir, `${metadata.run_id}.json`));
+      const afterDurableRemoval = await client.callTool({
+        name: "get_run",
+        arguments: { run_id: metadata.run_id },
+      });
+      assert.equal((afterDurableRemoval.structuredContent as { reason_code?: string }).reason_code, "run_not_found");
     },
     {
       env: {
@@ -1856,8 +1935,8 @@ test("MCP schedule_run starts broad work durably without run_subagent preflight 
     assert.notEqual(response.isError, true);
     const metadata = response.structuredContent as RunSubagentMetadata;
     assert.equal(metadata.status, "working");
-    assert.equal(metadata.active_phase, "running_silent");
-    assert.match(metadata.last_progress_message ?? "", /waiting for first public output/);
+    assert.equal(["starting", "running_silent"].includes(metadata.active_phase ?? ""), true);
+    assert.match(metadata.last_progress_message ?? "", /preparing child process|waiting for first public output/);
     await waitForFileText(fakeLogPath, /Investigate HORCs and SAFs/);
     const terminal = await waitForTerminalRun(client, metadata.run_id);
     assert.equal(terminal.status, "completed");
@@ -1992,7 +2071,8 @@ test("MCP start_run/get_run completes asynchronously with the same child contrac
     assert.notEqual(startedResponse.isError, true);
     const started = startedResponse.structuredContent as RunSubagentMetadata;
     assert.equal(["working", "completed"].includes(started.status), true);
-    assert.equal(["running_silent", "completed"].includes(started.active_phase ?? ""), true);
+    assert.equal(["starting", "running_silent", "completed"].includes(started.active_phase ?? ""), true);
+    assert.equal(started.queue_wait_ms, undefined);
     assert.equal(typeof started.last_phase_at, "string");
     const activeChildrenDir = process.env.SUBAGENT007_ACTIVE_CHILDREN_DIR;
     assert.equal(typeof activeChildrenDir, "string");
@@ -2508,8 +2588,8 @@ test("MCP start_session_run exposes running_silent before first child output", a
       assert.equal(started.task_kind, "session");
       assert.equal(started.session_key, "mcp-session:silent");
       assert.equal(started.status, "working");
-      assert.equal(started.active_phase, "running_silent");
-      assert.match(started.last_progress_message ?? "", /waiting for first public output/);
+      assert.equal(["starting", "running_silent"].includes(started.active_phase ?? ""), true);
+      assert.match(started.last_progress_message ?? "", /preparing child process|waiting for first public output/);
       const pending = await waitForInputRequired(client, started.run_id);
       const request = pending.input_requests.find((entry) => entry.status === "pending");
       assert.ok(request);

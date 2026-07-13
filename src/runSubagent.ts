@@ -429,6 +429,7 @@ export async function runSubagentCore(
     onChildControlReady?: (send: (message: string) => boolean) => void;
     onInputResponseAccepted?: (response: ChildInputResponseAccepted) => void;
     onTranscriptStaged?: (stagingPath: string) => void | Promise<void>;
+    onChildSpawned?: () => void | Promise<void>;
   } = {},
 ): Promise<RunSubagentResult> {
   if (!options.allowTimeout && request.timeout_ms !== undefined) {
@@ -510,6 +511,7 @@ export async function runSubagentCore(
       abortSignal: options.abortSignal,
       diskReserve,
       onControlReady: options.onChildControlReady,
+      onChildSpawned: options.onChildSpawned,
       onOutputLine: async (line) => {
         await transcript?.appendProcessLine(line);
         parsedSessionId ??= extractSubagentSessionId(line);

@@ -20,6 +20,7 @@ export const DURABLE_RUN_CAPABILITIES = [
   "complete_file_backed_transcripts",
   "bounded_public_output_excerpt",
   "disk_reserve_fail_closed",
+  "bounded_local_admission_queue",
   "run_input_mailbox",
   "acknowledged_run_input",
   "live_response_replay",

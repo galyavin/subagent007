@@ -3,6 +3,7 @@ import type { RunStopReason } from "./types.js";
 
 export type RunTaskActivePhase =
   | "starting"
+  | "queued"
   | "awaiting_child_event"
   | "running_silent"
   | "running"

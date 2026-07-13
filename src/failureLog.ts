@@ -1,7 +1,7 @@
-import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { defaultSubagentStatePath, timestampedRandomId } from "./output.js";
+import { appendFailureRecord } from "./failureStorage.js";
 import { SERVER_VERSION, serverBuildSha } from "./runtimeMetadata.js";
 import { ValidationError, type FailureReasonCode } from "./types.js";
 
@@ -173,7 +173,6 @@ export async function logFailure(
   }
   try {
     const logPath = defaultFailureLogPath();
-    await fs.mkdir(path.dirname(logPath), { recursive: true });
     const buildSha = serverBuildSha();
     const campaignId = campaignIdFromEnv();
     const fullRecord: FailureLogRecord = {
@@ -189,7 +188,7 @@ export async function logFailure(
       ...record,
       reason_code: record.reason_code ?? defaultReasonCode(record.failure_class),
     };
-    await fs.appendFile(logPath, `${JSON.stringify(fullRecord)}\n`, "utf8");
+    await appendFailureRecord(logPath, JSON.stringify(fullRecord));
   } catch {
     // Failure logging is operational telemetry only; it must never affect tool results.
   }

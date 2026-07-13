@@ -53,6 +53,7 @@ export type FailureReasonCode =
   | "invalid_timeout_ms"
   | "invalid_wait_ms"
   | "local_capacity_exhausted"
+  | "local_queue_exhausted"
   | "timeout_underbudget_for_deadline_risk"
   | "missing_session_id"
   | "missing_final_output"

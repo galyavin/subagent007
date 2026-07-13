@@ -149,6 +149,8 @@ async function preflightRejectedResult(
       ? TIMEOUT_UNDERBUDGET_GUIDANCE
     : reasonCode === "local_capacity_exhausted"
       ? "Retry after an active child run completes or raise SUBAGENT007_MAX_ACTIVE_CHILDREN."
+    : reasonCode === "local_queue_exhausted"
+      ? "Retry after queued work advances or raise SUBAGENT007_MAX_QUEUED_RUNS."
     : reasonCode === "disk_reserve_exhausted"
       ? "Free local disk space or lower SUBAGENT007_MIN_FREE_DISK_BYTES only if the host reserve is intentionally smaller."
     : undefined;
@@ -481,7 +483,7 @@ server.registerTool(
   {
     title: "Schedule Run",
     description:
-      "Create a durable Pi-backed run task first, then return a terminal result only if it completes within wait_ms. Use wait_ms for the initial response wait; timeout_ms is a hard child kill cap.",
+      "Create a durable Pi-backed run task, queue top-level work when local child capacity is full, then return a terminal result only if it completes within wait_ms. Use wait_ms for the initial response wait; timeout_ms starts at child launch and is a hard child kill cap.",
     inputSchema: scheduleRunInputSchema,
   },
   withChildEntrypointPreflight("schedule_run", async (request, extra) =>
@@ -494,7 +496,7 @@ server.registerTool(
   {
     title: "Start Run",
     description:
-      "Start one Pi-backed child run as a run-scoped task and return immediately with status and input mailbox metadata. Omit timeout_ms for long durable work unless the child must be stopped by a hard deadline.",
+      "Create one durable Pi-backed run and return immediately; top-level work may report active_phase queued until local child capacity is available. Omit timeout_ms for long work unless the child must be stopped by a hard post-launch deadline.",
     inputSchema: startRunInputSchema,
   },
   withChildEntrypointPreflight("start_run", async (request, extra) =>
