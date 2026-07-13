@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
@@ -53,6 +54,8 @@ const RETIRED_BUNDLED_ALIAS_MESSAGE =
   "all-bundled is retired; use --profile protocol-core for the historical bundled protocol-core scenario set";
 const RECURSIVE_DELEGATE_SCENARIO_PROMPTS = {
   "recursive-delegate-success": "RECURSIVE_DELEGATE_FAST",
+  "recursive-delegate-two-hop": "RECURSIVE_DELEGATE_TWO_HOP",
+  "recursive-delegate-depth-boundary": "RECURSIVE_DELEGATE_TWO_HOP",
   "recursive-delegate-parent-terminal-child-finish": "RECURSIVE_DELEGATE_WAIT0_CHILD_FINISH",
   "recursive-delegate-depth-limit": "RECURSIVE_DELEGATE_DEPTH_LIMIT",
   "recursive-delegate-forged-lineage": "RECURSIVE_DELEGATE_FORGED_PARENT",
@@ -284,7 +287,8 @@ function responseMatchesResultShape(response, resultClass) {
     return response.is_error === false &&
       response.tool_surface_complete === true &&
       response.tool_surface_exact === true &&
-      response.skill_alias_guidance_clear === true;
+      response.skill_alias_guidance_clear === true &&
+      response.operational_guidance_clear === true;
   }
   if (resultClass === "success") {
     return response.is_error === false && response.success !== false;
@@ -338,6 +342,15 @@ function responseMatchesResultShape(response, resultClass) {
   if (resultClass === "input_answered") {
     return response.success === true && response.input_answered === true;
   }
+  if (resultClass === "input_exact_retry") {
+    return response.success === true && response.input_exact_retry === true;
+  }
+  if (resultClass === "session_resume") {
+    return response.success === true && response.session_resume === true && response.child_started === true;
+  }
+  if (resultClass === "queue_lifecycle") {
+    return response.queue_lifecycle === true;
+  }
   if (resultClass === "cancelled") {
     return response.status === "cancelled" && response.cancellation_settled === true;
   }
@@ -356,6 +369,7 @@ function responseMatchesResultShape(response, resultClass) {
   }
   if (resultClass === "session_async_polling") {
     return completedAfterPolling &&
+      response.child_started === true &&
       response.session_established === true &&
       response.packet_parse_status === "valid" &&
       response.packet_closure_valid === true;
@@ -439,6 +453,31 @@ function responseMatchesResultShape(response, resultClass) {
       response.root_child_contains_delegated === true &&
       recursiveChildEventMatchesLineage(response, "started", response.delegated_run_id) &&
       recursiveChildFinishedEventMatches(response, response.delegated_run_id, "completed", true);
+  }
+  if (resultClass === "recursive_delegate_two_hop") {
+    return response.success === true &&
+      response.delegated_view_status === "completed" &&
+      response.delegated_view_parent_run_id === response.run_id &&
+      response.delegated_view_root_run_id === response.run_id &&
+      response.delegated_view_recursion_depth === 1 &&
+      response.root_child_contains_delegated === true &&
+      response.nested_child_status === "completed" &&
+      typeof response.nested_delegated_run_id === "string" &&
+      Array.isArray(response.delegated_view_child_run_ids) &&
+      response.delegated_view_child_run_ids.includes(response.nested_delegated_run_id) &&
+      response.nested_child_parent_run_id === response.delegated_run_id &&
+      response.nested_child_root_run_id === response.run_id &&
+      response.nested_child_recursion_depth === 2;
+  }
+  if (resultClass === "recursive_delegate_depth_boundary") {
+    return response.success === true &&
+      response.delegated_view_status === "completed" &&
+      response.delegated_view_parent_run_id === response.run_id &&
+      response.delegated_view_root_run_id === response.run_id &&
+      response.nested_delegate_reason_code === "recursive_depth_exceeded" &&
+      response.delegated_view_recursion_depth === 1 &&
+      response.nested_delegated_run_id === undefined &&
+      response.nested_child_run_count === 0;
   }
   if (resultClass === "recursive_delegate_depth_rejected") {
     return response.success === true &&
@@ -644,6 +683,13 @@ async function createDeterministicFakeChild() {
       "  writeInputRequest();",
       "} else if (request.prompt.includes('RECURSIVE_DELEGATE_WAIT0_CHILD_FINISH')) {",
       "  callRecursiveDelegate({ prompt: 'HEARTBEAT_SLEEP', cwd: request.cwd, wait_ms: 0 }).then((result) => {",
+      "    writeFinal(JSON.stringify({ delegated: result }));",
+      "  }).catch((error) => {",
+      "    process.stderr.write('FAKE RECURSIVE DELEGATE FAILURE: ' + (error && error.stack ? error.stack : String(error)) + '\\n');",
+      "    process.exitCode = 1;",
+      "  });",
+      "} else if (request.prompt.includes('RECURSIVE_DELEGATE_TWO_HOP')) {",
+      "  callRecursiveDelegate({ prompt: 'RECURSIVE_DELEGATE_FAST', cwd: request.cwd, wait_ms: 1000 }).then((result) => {",
       "    writeFinal(JSON.stringify({ delegated: result }));",
       "  }).catch((error) => {",
       "    process.stderr.write('FAKE RECURSIVE DELEGATE FAILURE: ' + (error && error.stack ? error.stack : String(error)) + '\\n');",
@@ -860,6 +906,15 @@ function toolListingSummary(response) {
       !entry.descriptions_distinct
     )
     .map((entry) => entry.tool);
+  const answerRunInput = tools.find((tool) => tool?.name === "answer_run_input");
+  const startSessionRun = tools.find((tool) => tool?.name === "start_session_run");
+  const runSubagentSession = tools.find((tool) => tool?.name === "run_subagent_session");
+  const includesAll = (text, patterns) => patterns.every((pattern) => pattern.test(text));
+  const operationalGuidance = {
+    input_receipt: includesAll(answerRunInput?.description ?? "", [/stable response_id/i, /receipt/i, /exact live retry/i, /without redelivery/i]),
+    session_default_and_scope: includesAll(startSessionRun?.description ?? "", [/resume_or_new/i, /scoped to cwd/i, /skill binding/i]),
+    session_wrapper: includesAll(runSubagentSession?.description ?? "", [/synchronous compatibility wrapper/i, /prefer start_session_run/i]),
+  };
   return {
     tool_count: toolNames.length,
     tool_names: toolNames,
@@ -870,6 +925,10 @@ function toolListingSummary(response) {
     tool_surface_exact: missingTools.length === 0 && unexpectedTools.length === 0,
     skill_alias_guidance_clear: unclearSkillTools.length === 0,
     unclear_skill_alias_tools: unclearSkillTools,
+    operational_guidance_clear: Object.values(operationalGuidance).every(Boolean),
+    unclear_operational_guidance: Object.entries(operationalGuidance)
+      .filter(([, clear]) => !clear)
+      .map(([name]) => name),
   };
 }
 
@@ -931,6 +990,7 @@ function responseSummary(response) {
       ? latestRecursiveChildFinished.success
       : undefined,
     child_started: typeof structured.child_started === "boolean" ? structured.child_started : undefined,
+    active_phase: typeof structured.active_phase === "string" ? structured.active_phase : undefined,
     exit_code: typeof structured.exit_code === "number" || structured.exit_code === null
       ? structured.exit_code
       : undefined,
@@ -956,12 +1016,16 @@ function responseSummary(response) {
       structured.recent_events.some((event) => event?.event === "cancellation_settled"),
     timeout_recovery_hint: typeof structured.timeout_recovery_hint === "string" &&
       structured.timeout_recovery_hint.length > 0,
+    input_response_receipt: structured.input_response_receipt,
     input_request_count: Array.isArray(structured.input_requests) ? structured.input_requests.length : undefined,
     pending_input_count: Array.isArray(structured.input_requests)
       ? structured.input_requests.filter((request) => request?.status === "pending").length
       : undefined,
     session_established: typeof structured.session_established === "boolean"
       ? structured.session_established
+      : undefined,
+    created_or_resumed: typeof structured.created_or_resumed === "string"
+      ? structured.created_or_resumed
       : undefined,
     attempt_session_established: typeof structured.attempt_session_established === "boolean"
       ? structured.attempt_session_established
@@ -1419,6 +1483,72 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
     };
   }
 
+  if (scenario === "queue-lifecycle") {
+    const active = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "start_run",
+      args: { cwd, prompt: "CANCEL_WAIT", timeout_ms: 6000 },
+    });
+    const queued = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "start_run",
+      args: { cwd, prompt: "FAST", timeout_ms: 6000 },
+    });
+    const overflow = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "start_run",
+      args: { cwd, prompt: "FAST", timeout_ms: 6000 },
+    });
+    const activeCancelled = active.response?.run_id
+      ? await runCall(client, ledgerPath, evidenceClass, scenario, { tool: "cancel_run", args: { run_id: active.response.run_id } })
+      : active;
+    const activeTerminal = active.response?.run_id
+      ? await waitForRun(client, ledgerPath, evidenceClass, scenario, active.response.run_id, (response) => response?.status === "cancelled")
+      : activeCancelled;
+    const promoted = queued.response?.run_id
+      ? await waitForRun(client, ledgerPath, evidenceClass, scenario, queued.response.run_id, (response) => response?.status === "completed")
+      : queued;
+    const cancellationActive = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "start_run",
+      args: { cwd, prompt: "CANCEL_WAIT", timeout_ms: 6000 },
+    });
+    const queuedForCancellation = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "start_run",
+      args: { cwd, prompt: "FAST", timeout_ms: 6000 },
+    });
+    const queuedCancelled = queuedForCancellation.response?.run_id
+      ? await runCall(client, ledgerPath, evidenceClass, scenario, { tool: "cancel_run", args: { run_id: queuedForCancellation.response.run_id } })
+      : queuedForCancellation;
+    const queuedTerminal = queuedForCancellation.response?.run_id
+      ? await waitForRun(client, ledgerPath, evidenceClass, scenario, queuedForCancellation.response.run_id, (response) => response?.status === "cancelled")
+      : queuedCancelled;
+    const cancellationActiveCancelled = cancellationActive.response?.run_id
+      ? await runCall(client, ledgerPath, evidenceClass, scenario, { tool: "cancel_run", args: { run_id: cancellationActive.response.run_id } })
+      : cancellationActive;
+    const cancellationActiveTerminal = cancellationActive.response?.run_id
+      ? await waitForRun(client, ledgerPath, evidenceClass, scenario, cancellationActive.response.run_id, (response) => response?.status === "cancelled")
+      : cancellationActiveCancelled;
+    return {
+      ...promoted,
+      tool: "start_run",
+      response: {
+        ...(promoted.response ?? {}),
+        queue_lifecycle:
+          queued.response?.status === "working" &&
+          queued.response?.active_phase === "queued" &&
+          queued.response?.child_started === false &&
+          overflow.response?.reason_code === "local_queue_exhausted" &&
+          activeTerminal.response?.status === "cancelled" &&
+          promoted.response?.status === "completed" &&
+          queuedForCancellation.response?.active_phase === "queued" &&
+          queuedTerminal.response?.status === "cancelled" &&
+          cancellationActiveTerminal.response?.status === "cancelled",
+      },
+      failure_log_delta_count: active.failure_log_delta_count + queued.failure_log_delta_count + overflow.failure_log_delta_count +
+        activeCancelled.failure_log_delta_count + (activeTerminal.failure_log_delta_count ?? 0) + (promoted.failure_log_delta_count ?? 0) +
+        cancellationActive.failure_log_delta_count + queuedForCancellation.failure_log_delta_count + queuedCancelled.failure_log_delta_count +
+        (queuedTerminal.failure_log_delta_count ?? 0) + cancellationActiveCancelled.failure_log_delta_count +
+        (cancellationActiveTerminal.failure_log_delta_count ?? 0),
+    };
+  }
+
   if (scenario === "start-session-run-async-polling") {
     const started = await runCall(client, ledgerPath, evidenceClass, scenario, {
       tool: "start_session_run",
@@ -1443,6 +1573,36 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
         polled: true,
       },
       failure_log_delta_count: started.failure_log_delta_count + (terminal.failure_log_delta_count ?? 0),
+    };
+  }
+
+  if (scenario === "session-resume") {
+    const sessionKey = `campaign-probe-resume:${Date.now()}:${randomUUID().slice(0, 8)}`;
+    const created = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "start_session_run",
+      args: { cwd, prompt: "FAST", session_key: sessionKey, resume_mode: "new", packet_policy: "none" },
+    });
+    const createdTerminal = created.response?.run_id
+      ? await waitForRun(client, ledgerPath, evidenceClass, scenario, created.response.run_id, (response) => response?.status === "completed")
+      : created;
+    const resumed = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "start_session_run",
+      args: { cwd, prompt: "FAST", session_key: sessionKey, resume_mode: "require_existing", packet_policy: "none" },
+    });
+    const terminal = resumed.response?.run_id
+      ? await waitForRun(client, ledgerPath, evidenceClass, scenario, resumed.response.run_id, (response) => response?.status === "completed")
+      : resumed;
+    return {
+      ...terminal,
+      tool: "start_session_run",
+      response: {
+        ...(terminal.response ?? {}),
+        session_resume: createdTerminal.response?.session_established === true &&
+          terminal.response?.session_established === true &&
+          terminal.response?.created_or_resumed === "resumed",
+      },
+      failure_log_delta_count: created.failure_log_delta_count + (createdTerminal.failure_log_delta_count ?? 0) +
+        resumed.failure_log_delta_count + (terminal.failure_log_delta_count ?? 0),
     };
   }
 
@@ -1564,6 +1724,38 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
     };
   }
 
+  if (scenario === "caller-input-exact-retry") {
+    const started = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "start_run",
+      args: { cwd, prompt: "REQUEST_INPUT_WAIT" },
+    });
+    if (!started.response?.run_id) return started;
+    const pending = await waitForRun(client, ledgerPath, evidenceClass, scenario, started.response.run_id, (response) =>
+      (response?.pending_input_count ?? 0) > 0,
+    );
+    const getResponse = await client.callTool({ name: "get_run", arguments: { run_id: started.response.run_id } });
+    const structured = getResponse.structuredContent && typeof getResponse.structuredContent === "object" ? getResponse.structuredContent : {};
+    const requestId = Array.isArray(structured.input_requests)
+      ? structured.input_requests.find((request) => request?.status === "pending")?.request_id
+      : undefined;
+    if (!requestId) return pending;
+    const args = { run_id: started.response.run_id, request_id: requestId, answer: "SECRET_CAMPAIGN_INPUT_ANSWER", response_id: "campaign-retry-response-001" };
+    const accepted = await runCall(client, ledgerPath, evidenceClass, scenario, { tool: "answer_run_input", args });
+    const retried = await runCall(client, ledgerPath, evidenceClass, scenario, { tool: "answer_run_input", args });
+    const terminal = await waitForRun(client, ledgerPath, evidenceClass, scenario, started.response.run_id, (response) => response?.status === "completed");
+    return {
+      ...terminal,
+      tool: "answer_run_input",
+      response: {
+        ...(terminal.response ?? retried.response ?? {}),
+        input_exact_retry: isDeepStrictEqual(accepted.response?.input_response_receipt, retried.response?.input_response_receipt) &&
+          accepted.response?.input_response_receipt !== undefined,
+      },
+      failure_log_delta_count: started.failure_log_delta_count + (pending.failure_log_delta_count ?? 0) +
+        accepted.failure_log_delta_count + retried.failure_log_delta_count + (terminal.failure_log_delta_count ?? 0),
+    };
+  }
+
   if (scenario === "caller-input-wrong-request") {
     const started = await runCall(client, ledgerPath, evidenceClass, scenario, {
       tool: "start_run",
@@ -1627,6 +1819,8 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
       : started;
     let delegatedView;
     let parentAfterDelegated;
+    let nestedDelegate = {};
+    let nestedView;
     if (terminal.response?.delegated_run_id) {
       delegatedView = await waitForRun(client, ledgerPath, evidenceClass, scenario, terminal.response.delegated_run_id, (response) =>
         ["completed", "failed", "cancelled", "timed_out"].includes(response?.status),
@@ -1635,6 +1829,17 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
         tool: "get_run",
         args: { run_id: terminal.response.run_id },
       });
+      if (
+        (scenario === "recursive-delegate-two-hop" || scenario === "recursive-delegate-depth-boundary") &&
+        delegatedView?.response
+      ) {
+        nestedDelegate = await recursiveDelegateOutputSummary(delegatedView.response);
+        if (typeof nestedDelegate.delegated_run_id === "string") {
+          nestedView = await waitForRun(client, ledgerPath, evidenceClass, scenario, nestedDelegate.delegated_run_id, (response) =>
+            ["completed", "failed", "cancelled", "timed_out"].includes(response?.status),
+          );
+        }
+      }
     }
     const parentView = parentAfterDelegated ?? terminal;
     return {
@@ -1647,11 +1852,20 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
         delegated_view_parent_run_id: delegatedView?.response?.parent_run_id,
         delegated_view_root_run_id: delegatedView?.response?.root_run_id,
         delegated_view_recursion_depth: delegatedView?.response?.recursion_depth,
+        delegated_view_child_run_ids: delegatedView?.response?.child_run_ids,
+        nested_child_status: nestedView?.response?.status,
+        nested_child_parent_run_id: nestedView?.response?.parent_run_id,
+        nested_child_root_run_id: nestedView?.response?.root_run_id,
+        nested_child_recursion_depth: nestedView?.response?.recursion_depth,
+        nested_delegated_run_id: nestedDelegate.delegated_run_id,
+        nested_delegate_reason_code: nestedDelegate.delegated_reason_code,
+        nested_child_run_count: nestedDelegate.root_child_run_count,
       },
       failure_log_delta_count:
         started.failure_log_delta_count +
         (terminal.failure_log_delta_count ?? 0) +
         (delegatedView?.failure_log_delta_count ?? 0) +
+        (nestedView?.failure_log_delta_count ?? 0) +
         (parentAfterDelegated?.failure_log_delta_count ?? 0),
     };
   }
@@ -1855,9 +2069,11 @@ try {
       results.push(restartDrift.result);
       continue;
     }
-    if (scenario === "recursive-delegate-depth-limit") {
+    if (scenario === "recursive-delegate-depth-limit" || scenario === "recursive-delegate-depth-boundary") {
       await client.close();
-      const limitedClient = await connectClient({ SUBAGENT007_MAX_RECURSION_DEPTH: "0" });
+      const limitedClient = await connectClient({
+        SUBAGENT007_MAX_RECURSION_DEPTH: scenario === "recursive-delegate-depth-limit" ? "0" : "1",
+      });
       try {
         results.push(
           await runScenario(
@@ -1874,11 +2090,11 @@ try {
       client = await connectClient();
       continue;
     }
-    if (scenario === "local-capacity-exhaustion") {
+    if (scenario === "local-capacity-exhaustion" || scenario === "queue-lifecycle") {
       await client.close();
       const capacityClient = await connectClient({
         SUBAGENT007_MAX_ACTIVE_CHILDREN: "1",
-        SUBAGENT007_MAX_QUEUED_RUNS: "0",
+        SUBAGENT007_MAX_QUEUED_RUNS: scenario === "local-capacity-exhaustion" ? "0" : "1",
         SUBAGENT007_ACTIVE_CHILDREN_DIR: path.join(path.dirname(ledgerPath), "active-children"),
       });
       try {

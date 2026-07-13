@@ -14,7 +14,7 @@ edges:
     condition: when setting up the dev environment or running the project for the first time
   - target: patterns/INDEX.md
     condition: when starting a task — check the pattern index for a matching pattern file
-last_updated: 2026-07-12
+last_updated: 2026-07-13
 ---
 
 # Session Bootstrap
@@ -35,9 +35,10 @@ Then read this file fully before doing anything else in this session.
 - Internal model-class calibration uses the current Pi registry, and the bundled Pi coding-agent dependency is kept new enough to resolve every calibrated class model during child execution.
 - Observed campaign tool-listing asserts the exact 12-tool public MCP surface and `skill_name` vs legacy `skill` schema guidance instead of treating `listTools()` as liveness-only.
 - Observed campaign coverage is keyed by caller-visible `surfaces` and `result_classes`; retired descriptive `lifecycle_phases` metadata is not part of the coverage contract.
-- Observed `full-current` coverage includes recursive delegate success lineage, depth-limit rejection, forged-lineage rejection, and private recursive-control leakage checks.
-- Observed `full-current` coverage also includes missing-final-output classification, named-session `require_existing` missing-session preflight for both session tools, `start_session_run` packet-failure telemetry correlation, and local active-child capacity exhaustion/release.
+- Observed `full-current` coverage includes single- and two-hop recursive delegate lineage, depth-limit rejection both before launch and after one valid hop, forged-lineage rejection, and private recursive-control leakage checks.
+- Observed `full-current` coverage also includes missing-final-output classification, named-session resume and `require_existing` missing-session preflight, `start_session_run` packet-failure telemetry correlation, local queue/cancellation/overflow/promotion/release, exact input retry receipts, and local active-child capacity exhaustion/release.
 - Public run views and transcript provenance render a redacted caller-prompt marker instead of raw caller prompt text; observed campaign redaction checks include prompt sentinels in public artifacts/state.
+- Public MCP result projection omits backend Pi session IDs and internal input-mailbox paths; callers use `run_id`/`request_id` for input operations. Named-session child launch forwards the standard spawn callback, so `child_started` agrees with lifecycle events.
 - Public `get_run` and `cancel_run` descriptions make cancellation eligibility explicit: `working`/`running_silent`, elapsed silence, live heartbeats, and recursive child activity are not staleness or cancellation authority; only explicit user intent or a real caller-owned stop condition is.
 - Public MCP result/list/session surfaces, failure logs, and README expose model classes and health/migration guidance without concrete model IDs or thinking-level calibration values; observed campaign result matching asserts absence of forbidden calibration fields and thinking-level field-name variants.
 - Session terminal failure telemetry preserves the caller-facing durable context: packet failures from `start_session_run` and `run_subagent_session` log the correct public tool, durable `run_id`, and `task_kind:"session"`.

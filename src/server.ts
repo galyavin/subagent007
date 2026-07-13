@@ -229,7 +229,28 @@ function withChildEntrypointPreflight<TRequest, TResult extends object>(
 function jsonObjectToolResult<TResult extends object>(
   result: TResult,
 ): ReturnType<typeof jsonToolResult<Record<string, unknown>>> {
-  return jsonToolResult(result, { ...result } as Record<string, unknown>);
+  const publicResult = publicResultProjection(result);
+  return jsonToolResult(publicResult, publicResult);
+}
+
+function publicResultProjection(value: unknown): Record<string, unknown> {
+  return sanitizePublicResultValue(value) as Record<string, unknown>;
+}
+
+function sanitizePublicResultValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sanitizePublicResultValue);
+  }
+  if (typeof value !== "object" || value === null) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([key, child]) =>
+      key === "input_requests_dir" || key === "pi_session_id"
+        ? []
+        : [[key, sanitizePublicResultValue(child)]],
+    ),
+  );
 }
 
 function jsonToolResult<TStructured extends Record<string, unknown>>(
@@ -417,7 +438,7 @@ async function listModelClassesResult(): Promise<ReturnType<typeof jsonToolResul
     default_one_shot_health_basis: defaultOneShotHealth.health_basis,
     model_health_probe_command: modelHealthProbeCommand(defaultModelClass),
   };
-  return jsonToolResult(result, result);
+  return jsonObjectToolResult(result);
 }
 
 function registerModelClassListTool(
@@ -525,7 +546,7 @@ server.registerTool(
   {
     title: "Answer Run Input",
     description:
-      "Answer one pending input request that belongs to a specific active run, then return the updated run view.",
+      "Answer one pending input request that belongs to a specific active run. Use a stable response_id: a receipt means the child accepted that exact response, an exact live retry replays that receipt without redelivery, and a changed answer with the same ID rejects.",
     inputSchema: {
       run_id: z.string().min(1),
       request_id: z.string().min(1),
@@ -583,7 +604,7 @@ server.registerTool(
   {
     title: "Start Session Run",
     description:
-      "Start or resume a named persistent Pi-backed subagent session as a durable, pollable task.",
+      "Start or resume a named persistent Pi-backed subagent session as a durable, pollable task. resume_mode defaults to resume_or_new; session_key is scoped to cwd and locks its skill binding. Use this tool for async polling.",
     inputSchema: runSessionInputSchema,
   },
   withChildEntrypointPreflight("start_session_run", async (request, extra) =>
@@ -596,7 +617,7 @@ server.registerTool(
   {
     title: "Run Subagent Session",
     description:
-      "Run or resume a named persistent Pi-backed subagent session in an absolute cwd, write output and append an auditable session ledger.",
+      "Synchronous compatibility wrapper for a named persistent Pi-backed session in an absolute cwd. resume_mode defaults to resume_or_new; session_key is scoped to cwd and locks its skill binding. Prefer start_session_run for async polling.",
     inputSchema: runSessionInputSchema,
   },
   withChildEntrypointPreflight("run_subagent_session", async (request, extra) =>

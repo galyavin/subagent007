@@ -11,7 +11,7 @@ edges:
     condition: before interpreting tool lifecycle or failure projection findings
   - target: context/conventions.md
     condition: before changing public result fields, reason codes, tests, or README
-last_updated: 2026-07-09
+last_updated: 2026-07-13
 ---
 
 # Observed Campaign SAF
@@ -25,13 +25,15 @@ Load architecture, conventions, setup, decisions, and this pattern. Use isolated
 3. Run `--profile live-current` when Pi/auth are available to prove installed Pi integration, but do not treat live smoke as full edge coverage.
 4. Inspect `campaign-ledger.jsonl`, `failures.jsonl`, run-task snapshots/events, and selected output artifacts directly. Record friction from the caller's point of view, including ambiguous result kinds, reason-code collapse, required text parsing, noisy fields, and secret leakage.
 5. Compress findings with `saf-ninja`, then stress-test the selected SAF with `red-blue-review` before editing.
-6. After implementation, rerun focused oracles first, then the full observed campaign or `tests/observed-campaign.test.ts`, `npm run docs:check`, `npm run runtime:readiness -- --source-state-policy allow_dirty --expected-contract-name subagent007.durable_run --expected-contract-version 1`, and `npm test`.
+6. After implementation, rerun focused oracles first, then the full observed campaign or `tests/observed-campaign.test.ts`, `npm run docs:check`, `npm run runtime:readiness -- --source-state-policy allow_dirty --expected-contract-name subagent007.durable_run --expected-contract-version 2`, and `npm test`.
 7. Run a fresh-eye repair-delta scan. If it finds material oracle gaps, repair them and rerun the relevant oracles.
 
 ## Gotchas
 - `SUBAGENT007_PI_CHILD_PATH` is acceptable for deterministic probes only; do not set it for normal MCP use.
 - Do not let the observed probe infer repaired reason codes from MCP text. A campaign should fail if a semantic rejection loses structured `kind` and `reason_code`.
 - Public `preflight_rejected` means no child launch and must keep `child_started:false`; operation-only rejections use `operation_rejected`.
+- A queue-lifecycle scenario must release the active slot while preserving an already queued run, then observe that run complete; starting a new run after release proves only new admission, not queue promotion.
+- Two-hop recursive evidence must prove each direct parent-to-child link as well as the grandchild lineage; a depth-boundary scenario must also prove that rejection created no third descendant.
 - Packet-required failures must distinguish `packet_required_missing`, `packet_required_invalid`, and `packet_required_not_ready`.
 - Prompt/input/thinking redaction must be checked across public artifacts and run views, not only the campaign ledger; a campaign can otherwise pass while `recent_events`, `last_public_output_excerpt`, or transcript artifacts leak caller prompt text.
 - Tool discovery coverage must inspect the exact listed public surface and schema guidance; a non-error `listTools()` response is not enough to prove caller-visible tools are present, clear, and free of uncontracted noise.

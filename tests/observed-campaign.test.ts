@@ -312,6 +312,7 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
           tool_surface_complete?: boolean;
           tool_surface_exact?: boolean;
           skill_alias_guidance_clear?: boolean;
+          operational_guidance_clear?: boolean;
           missing_tools?: string[];
           unexpected_tools?: string[];
           unclear_skill_alias_tools?: string[];
@@ -438,6 +439,7 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
   assert.deepEqual(toolListingScenario?.observed_result?.missing_tools, []);
   assert.deepEqual(toolListingScenario?.observed_result?.unexpected_tools, []);
   assert.equal(toolListingScenario?.observed_result?.skill_alias_guidance_clear, true);
+  assert.equal(toolListingScenario?.observed_result?.operational_guidance_clear, true);
   assert.deepEqual(toolListingScenario?.observed_result?.unclear_skill_alias_tools, []);
   const redactionScenario = summary.coverage_summary.scenarios.find((scenario) =>
     scenario.scenario === "transcript-redaction"

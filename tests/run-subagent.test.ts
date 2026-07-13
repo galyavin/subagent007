@@ -40,7 +40,7 @@ type RunSubagentMetadata = {
   timeout_recovery_hint?: string;
   session_id: string | null;
   session_established: boolean;
-  input_requests_dir: string;
+  input_requests_dir?: string;
   input_requests: Array<{ request_id: string; status: string }>;
   written_output_mode: "final" | "transcript";
   elapsed_ms?: number;
@@ -122,6 +122,7 @@ async function connectFakeClient<T>(
     configPath: string;
     fakeLogPath: string;
     modelHealthPath: string;
+    inputRequestsDir: string;
   }) => Promise<T>,
   options: { config?: Record<string, unknown>; env?: NodeJS.ProcessEnv } = {},
 ): Promise<T> {
@@ -158,7 +159,15 @@ async function connectFakeClient<T>(
 
   try {
     await client.connect(transport);
-    return await run(client, { projectDir, configPath, fakeLogPath: fake.logPath, modelHealthPath });
+    return await run(client, {
+      projectDir,
+      configPath,
+      fakeLogPath: fake.logPath,
+      modelHealthPath,
+      inputRequestsDir: options.env?.SUBAGENT007_INPUT_REQUESTS_DIR ??
+        process.env.SUBAGENT007_INPUT_REQUESTS_DIR ??
+        path.join(stateDir, "input-requests"),
+    });
   } finally {
     await client.close();
   }
@@ -2250,7 +2259,7 @@ test("MCP start_run rejects unknown skill_name before child spawn", async () => 
 
 test("MCP start_run/get_run exposes active liveness and pending-input progress", async () => {
   await connectFakeClient(
-    async (client, { projectDir }) => {
+    async (client, { projectDir, inputRequestsDir }) => {
       const startedResponse = await client.callTool({
         name: "start_run",
         arguments: {
@@ -2296,7 +2305,7 @@ test("MCP start_run/get_run exposes active liveness and pending-input progress",
       assert.equal(typeof heartbeat.no_public_output_elapsed_ms, "number");
       assert.equal(heartbeat.first_public_output_at, undefined);
 
-      const mailboxRoot = path.dirname(started.input_requests_dir);
+      const mailboxRoot = inputRequestsDir;
       const request = await createInputRequest({
         mailboxRoot,
         runId: started.run_id,
@@ -2644,19 +2653,21 @@ test("MCP start_session_run returns a durable pollable named-session task", asyn
     assert.equal(terminal.task_kind, "session");
     assert.equal(terminal.status, "completed");
     assert.equal(terminal.success, true);
+    assert.equal(terminal.child_started, true);
     assert.equal(terminal.session_key, "mcp-session:T001");
     assert.equal(terminal.packet_parse_status, "valid");
     assert.equal(terminal.run_record?.success, true);
     assert.ok(terminal.recent_events?.some((event) => event.event === "packet_accepted"));
     assert.ok(terminal.recent_events?.some((event) => event.text === "[server_contract] packet_policy=required contract_packet_v1 instruction applied"));
     assert.doesNotMatch(JSON.stringify(terminal.recent_events), /<subagent007_contract_packet>/);
+    assert.doesNotMatch(JSON.stringify(terminal), /input_requests_dir|pi_session_id/);
   });
 });
 
 test("answer_run_input records no answer text in raw public event file", async () => {
   const runTasksDir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-input-events-"));
   await connectFakeClient(
-    async (client, { projectDir, fakeLogPath }) => {
+    async (client, { projectDir, fakeLogPath, inputRequestsDir }) => {
       const startedResponse = await client.callTool({
         name: "start_run",
         arguments: {
@@ -2666,7 +2677,7 @@ test("answer_run_input records no answer text in raw public event file", async (
       });
       assert.notEqual(startedResponse.isError, true);
       const started = startedResponse.structuredContent as RunSubagentMetadata;
-      const mailboxRoot = path.dirname(started.input_requests_dir);
+      const mailboxRoot = inputRequestsDir;
       const pending = await waitForInputRequired(client, started.run_id);
       const request = pending.input_requests.find((entry) => entry.status === "pending");
       assert.ok(request);
@@ -2966,7 +2977,7 @@ test("get_run persists stale active restart drift as terminal failed snapshot", 
 
 test("cancel_run closes pending input requests and rejects late answers", async () => {
   await connectFakeClient(
-    async (client, { projectDir }) => {
+    async (client, { projectDir, inputRequestsDir }) => {
       const startedResponse = await client.callTool({
         name: "start_run",
         arguments: {
@@ -2977,7 +2988,7 @@ test("cancel_run closes pending input requests and rejects late answers", async 
       });
       assert.notEqual(startedResponse.isError, true);
       const started = startedResponse.structuredContent as RunSubagentMetadata;
-      const mailboxRoot = path.dirname(started.input_requests_dir);
+      const mailboxRoot = inputRequestsDir;
       const request = await createInputRequest({
         mailboxRoot,
         runId: started.run_id,

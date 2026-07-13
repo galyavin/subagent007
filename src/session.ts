@@ -562,6 +562,7 @@ export async function runSubagentSession(
     rootRunId?: string;
     recursionDepth?: number;
     onOutputLine?: (line: string) => void | Promise<void>;
+    onChildSpawned?: () => void | Promise<void>;
     onChildControlReady?: (send: (message: string) => boolean) => void;
     onInputResponseAccepted?: (response: ChildInputResponseAccepted) => void;
     failureLogTool?: Extract<FailureLogTool, "start_session_run" | "run_subagent_session">;
@@ -631,6 +632,7 @@ export async function runSubagentSession(
       heartbeatIntervalMs: options.heartbeatIntervalMs,
       abortSignal: options.abortSignal,
       onOutputLine: options.onOutputLine,
+      onChildSpawned: options.onChildSpawned,
       onChildControlReady: options.onChildControlReady,
       onInputResponseAccepted: options.onInputResponseAccepted,
       promptProvenance,

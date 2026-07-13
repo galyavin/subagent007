@@ -11,7 +11,7 @@ triggers:
 edges:
   - target: context/architecture.md
     condition: when a convention depends on understanding the system structure
-last_updated: 2026-07-12
+last_updated: 2026-07-13
 ---
 
 # Conventions
@@ -38,6 +38,7 @@ last_updated: 2026-07-12
 - Tool descriptions are part of the agent-facing lifecycle contract. Keep `get_run` and `cancel_run` explicit that `working`/`running_silent`, elapsed silence, live heartbeats, and recursive child activity do not authorize cancellation.
 - Named-session manifest eligibility failures that are knowable before child launch must reject before durable task registration with `kind:"preflight_rejected"` and `child_started:false`; keep the locked session execution checks as race protection.
 - Public event views and transcripts must stay sanitized; never expose raw thinking, private tool payloads, caller prompt text, full composed prompts, or answer values. Use the shared public prompt projection marker instead of writing `request.prompt` into public events or transcript provenance.
+- Public MCP result projection must also omit backend Pi session identifiers and internal mailbox filesystem paths; callers act through durable IDs and documented output references.
 - Recursive parent public events are part of the caller contract: descendant registration/finalization should project through sanitized `recursive_child_started` and `recursive_child_finished` events whose child ids match the direct `child_run_ids`/delegated run id and whose metadata contains only lineage/status/success fields.
 - Public model calibration must stay class-level on caller surfaces: expose `model_class`/`resolved_model_class` and health/migration actions, not concrete model IDs or thinking-level calibration values in MCP results, failure logs, session ledgers, observed campaign summaries, or README.
 - Required named-session packet failures use distinct reason codes: missing packet -> `packet_required_missing`, malformed packet -> `packet_required_invalid`, parse-valid not-ready packet -> `packet_required_not_ready`.
@@ -49,6 +50,7 @@ last_updated: 2026-07-12
 - Legacy `tool_profile` is boundary-only compatibility: validate accepted values, but do not add `toolProfile`, `resolved_tool_profile`, or failure-log profile fields downstream.
 - `ValidationError.reasonCode` is the semantic authority for failure reason mapping. Do not infer public reason codes from English message text.
 - Observed campaign result classes must prove the caller-visible contract they name. For `tool-listing`, assert the exact public tool surface and schema guidance; do not count a generic non-error `listTools()` response as full discovery coverage.
+- Full-current observed coverage must exercise two-hop recursion, a depth boundary after a valid hop, session resume, queued work lifecycle, and exact live input retry when those public capabilities exist.
 - Observed campaign coverage uses `surfaces` and `result_classes`; do not reintroduce descriptive `lifecycle_phases` as a required coverage axis.
 
 ## Verify Checklist

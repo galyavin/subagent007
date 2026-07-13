@@ -15,11 +15,14 @@
     "start_run-async-polling",
     "start_run-missing-final-output",
     "start_run-local-capacity-exhaustion",
+    "start_run-queue-lifecycle",
     "start_session_run-async-polling",
+    "start_session_run-resume",
     "start_session_run-packet-failure",
     "start_session_run-require-existing-missing",
     "get_run-run-not-found",
     "answer_run_input-caller-input",
+    "answer_run_input-exact-retry",
     "answer_run_input-wrong-request-rejection",
     "cancel_run-cancellation-settlement",
     "cancel_run-terminal-idempotency",
@@ -31,6 +34,8 @@
     "run_subagent_session-require-existing-missing",
     "installed-pi-integration",
     "recursive-delegate-success-lineage",
+    "recursive-delegate-two-hop-lineage",
+    "recursive-delegate-depth-boundary",
     "recursive-delegate-parent-terminal-child-finish-event",
     "recursive-delegate-depth-limit",
     "recursive-delegate-forged-lineage"
@@ -51,11 +56,14 @@
     "start_run-async-polling": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
     "start_run-missing-final-output": { "evidence_classes": ["protocol-deterministic"] },
     "start_run-local-capacity-exhaustion": { "evidence_classes": ["protocol-deterministic"] },
+    "start_run-queue-lifecycle": { "evidence_classes": ["protocol-deterministic"] },
     "start_session_run-async-polling": { "evidence_classes": ["protocol-deterministic"] },
+    "start_session_run-resume": { "evidence_classes": ["protocol-deterministic"] },
     "start_session_run-packet-failure": { "evidence_classes": ["protocol-deterministic"] },
     "start_session_run-require-existing-missing": { "evidence_classes": ["protocol-deterministic"] },
     "get_run-run-not-found": { "evidence_classes": ["protocol-deterministic"] },
     "answer_run_input-caller-input": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
+    "answer_run_input-exact-retry": { "evidence_classes": ["protocol-deterministic"] },
     "answer_run_input-wrong-request-rejection": { "evidence_classes": ["protocol-deterministic"] },
     "cancel_run-cancellation-settlement": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
     "cancel_run-terminal-idempotency": { "evidence_classes": ["protocol-deterministic"] },
@@ -67,6 +75,8 @@
     "run_subagent_session-require-existing-missing": { "evidence_classes": ["protocol-deterministic"] },
     "installed-pi-integration": { "evidence_classes": ["live-model-smoke"] },
     "recursive-delegate-success-lineage": { "evidence_classes": ["protocol-deterministic"] },
+    "recursive-delegate-two-hop-lineage": { "evidence_classes": ["protocol-deterministic"] },
+    "recursive-delegate-depth-boundary": { "evidence_classes": ["protocol-deterministic"] },
     "recursive-delegate-parent-terminal-child-finish-event": { "evidence_classes": ["protocol-deterministic"] },
     "recursive-delegate-depth-limit": { "evidence_classes": ["protocol-deterministic"] },
     "recursive-delegate-forged-lineage": { "evidence_classes": ["protocol-deterministic"] }
@@ -152,10 +162,20 @@
       "result_classes": ["local_capacity_exhaustion_release"],
       "surfaces": ["start_run-local-capacity-exhaustion"]
     },
+    "queue-lifecycle": {
+      "tool": "start_run",
+      "result_classes": ["queue_lifecycle"],
+      "surfaces": ["start_run-queue-lifecycle"]
+    },
     "start-session-run-async-polling": {
       "tool": "start_session_run",
       "result_classes": ["session_async_polling"],
       "surfaces": ["start_session_run-async-polling", "run_subagent_session-valid-packet-closure"]
+    },
+    "session-resume": {
+      "tool": "start_session_run",
+      "result_classes": ["session_resume"],
+      "surfaces": ["start_session_run-resume"]
     },
     "start-session-packet-failure": {
       "tool": "start_session_run",
@@ -181,6 +201,11 @@
       "tool": "answer_run_input",
       "result_classes": ["input_answered"],
       "surfaces": ["answer_run_input-caller-input"]
+    },
+    "caller-input-exact-retry": {
+      "tool": "answer_run_input",
+      "result_classes": ["input_exact_retry"],
+      "surfaces": ["answer_run_input-exact-retry"]
     },
     "caller-input-wrong-request": {
       "tool": "answer_run_input",
@@ -226,6 +251,16 @@
       "tool": "schedule_run",
       "result_classes": ["recursive_delegate_success_lineage"],
       "surfaces": ["recursive-delegate-success-lineage"]
+    },
+    "recursive-delegate-two-hop": {
+      "tool": "schedule_run",
+      "result_classes": ["recursive_delegate_two_hop"],
+      "surfaces": ["recursive-delegate-two-hop-lineage"]
+    },
+    "recursive-delegate-depth-boundary": {
+      "tool": "schedule_run",
+      "result_classes": ["recursive_delegate_depth_boundary"],
+      "surfaces": ["recursive-delegate-depth-boundary"]
     },
     "recursive-delegate-depth-limit": {
       "tool": "schedule_run",
@@ -276,11 +311,14 @@
         "start-run-async-polling",
         "missing-final-output",
         "local-capacity-exhaustion",
+        "queue-lifecycle",
         "start-session-run-async-polling",
+        "session-resume",
         "start-session-packet-failure",
         "start-session-require-existing-missing",
         "get-run-missing",
         "caller-input",
+        "caller-input-exact-retry",
         "caller-input-wrong-request",
         "cancellation",
         "cancel-terminal-run",
@@ -291,6 +329,8 @@
         "run-subagent-session-require-existing-missing",
         "transcript-redaction",
         "recursive-delegate-success",
+        "recursive-delegate-two-hop",
+        "recursive-delegate-depth-boundary",
         "recursive-delegate-parent-terminal-child-finish",
         "recursive-delegate-depth-limit",
         "recursive-delegate-forged-lineage"
@@ -311,11 +351,14 @@
         "start_run-async-polling",
         "start_run-missing-final-output",
         "start_run-local-capacity-exhaustion",
+        "start_run-queue-lifecycle",
         "start_session_run-async-polling",
+        "start_session_run-resume",
         "start_session_run-packet-failure",
         "start_session_run-require-existing-missing",
         "get_run-run-not-found",
         "answer_run_input-caller-input",
+        "answer_run_input-exact-retry",
         "answer_run_input-wrong-request-rejection",
         "cancel_run-cancellation-settlement",
         "cancel_run-terminal-idempotency",
@@ -326,6 +369,8 @@
         "run_subagent_session-invalid-packet-closure",
         "run_subagent_session-require-existing-missing",
         "recursive-delegate-success-lineage",
+        "recursive-delegate-two-hop-lineage",
+        "recursive-delegate-depth-boundary",
         "recursive-delegate-parent-terminal-child-finish-event",
         "recursive-delegate-depth-limit",
         "recursive-delegate-forged-lineage"
