@@ -13,6 +13,8 @@ import {
   runSubagentCore as runSubagent,
   RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT,
 } from "../src/runSubagent.js";
+import { getRunTask, reconcilePersistedActiveRunTasks } from "../src/runTask.js";
+import { ValidationError } from "../src/types.js";
 import { createFakePiChild } from "./helpers/fakePiChild.js";
 import { readJsonl, sha256File, withEnv } from "./helpers/testUtils.js";
 
@@ -2847,6 +2849,50 @@ test("get_run can read a completed run snapshot after MCP server restart", async
   } finally {
     await client.close();
   }
+});
+
+test("unreadable legacy leases reject active-run inspection without restart terminalization", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-unknown-lease-"));
+  const runTasksDir = path.join(tmp, "run-tasks");
+  const inputRequestsDir = path.join(tmp, "input-requests");
+  const activeChildrenDir = path.join(tmp, "active-children");
+  const runId = "unknown-lease-run";
+  await fs.mkdir(runTasksDir, { recursive: true });
+  await fs.mkdir(path.join(inputRequestsDir, runId), { recursive: true });
+  await fs.mkdir(activeChildrenDir, { recursive: true });
+  await fs.writeFile(path.join(activeChildrenDir, "legacy-owner.json"), "{");
+  await fs.writeFile(
+    path.join(runTasksDir, `${runId}.json`),
+    `${JSON.stringify({
+      run_id: runId,
+      task_id: runId,
+      task_kind: "run",
+      status: "working",
+      started_at: "2026-06-19T00:00:00.000Z",
+      input_requests_dir: path.join(inputRequestsDir, runId),
+      input_requests: [],
+      active_phase: "running_silent",
+      last_phase_at: "2026-06-19T00:00:01.000Z",
+    }, null, 2)}\n`,
+  );
+  await withEnv(
+    {
+      SUBAGENT007_RUN_TASKS_DIR: runTasksDir,
+      SUBAGENT007_INPUT_REQUESTS_DIR: inputRequestsDir,
+      SUBAGENT007_ACTIVE_CHILDREN_DIR: activeChildrenDir,
+    },
+    async () => {
+      await assert.rejects(
+        getRunTask(runId),
+        (error: unknown) => error instanceof ValidationError && error.reasonCode === "run_liveness_unknown",
+      );
+      assert.equal(await reconcilePersistedActiveRunTasks(), 0);
+    },
+  );
+  const persisted = JSON.parse(await fs.readFile(path.join(runTasksDir, `${runId}.json`), "utf8")) as {
+    status: string;
+  };
+  assert.equal(persisted.status, "working");
 });
 
 test("get_run persists stale active restart drift as terminal failed snapshot", async () => {

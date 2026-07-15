@@ -12,7 +12,7 @@ edges:
     condition: when specific technology details are needed
   - target: context/decisions.md
     condition: when understanding why the architecture is structured this way
-last_updated: 2026-07-13
+last_updated: 2026-07-15
 ---
 
 # Architecture
@@ -20,7 +20,7 @@ last_updated: 2026-07-13
 ## System Overview
 MCP client calls `dist/server.js` -> `src/server.ts` validates tool input and maps semantic rejections.
 Run requests go through config/model/skill validation, then `src/runTask.ts` creates a durable run state keyed by `run_id`.
-`src/activeChildLease.ts` atomically admits top-level durable runs either to an active-child lease or to a bounded metadata-only owner queue. One process-owned pump promotes that owner's in-memory requests in order, avoiding per-ticket filesystem polling. Lease/ticket records publish atomically, unreadable records conservatively retain capacity, and confirmed lease deletion follows durable terminal publication; restart reconciliation recognizes both live queue tickets and active leases.
+`src/activeChildLease.ts` atomically admits top-level durable runs either to an active-child lease or to a bounded metadata-only owner queue. One process-owned pump promotes that owner's in-memory requests in order, avoiding per-ticket filesystem polling. New lease paths bind run and owner identity; unreadable records conservatively retain capacity, while unreadable legacy owner-only records classify liveness as unknown rather than claiming a specific run. Confirmed lease deletion follows durable terminal publication; restart reconciliation recognizes live queue tickets and only attributable active leases.
 `src/runSubagent.ts` writes a Pi child request file, then `src/processRunner.ts` spawns and supervises the child process with serialized output consumption and a protected-free-disk watermark. `src/runTask.ts` and `src/activeChildLease.ts` own finite local capacity.
 Child output is projected directly into a sanitized public `.partial` transcript through `src/output.ts`; normal execution does not persist a private raw stdout/stderr spool. Active snapshots record that public staging path. Transcript publication atomically renames the complete public file, final-only success removes the redundant transcript staging file, and restart reconciliation promotes an interrupted partial transcript into the failed run's diagnostic output reference. Sanitized public events flow through run-event helpers, and failure records through `src/failureLog.ts`. Requested `final` output succeeds only when the child writes a final message; a clean exit without that artifact is classified as `missing_final_output`, with transcript output retained as diagnostics.
 Server-authored prompt provenance uses `src/prompt.ts` to project caller prompt text to a redacted public marker before it reaches public event views or transcript artifacts; child execution still receives the real composed prompt.
@@ -29,7 +29,7 @@ Server-launched children receive a private recursive control payload in the chil
 The MCP response projection strips backend Pi session IDs and internal mailbox filesystem paths while internal snapshots retain the data needed for recovery; callers use run/request IDs and output references instead.
 After an atomic terminal snapshot captures the bounded public event projection and settled input views, `runTask.ts` removes that run's redundant event ledger and mailbox directory and evicts its in-memory task object after confirmed capacity release. Active and input-required runs retain both. Snapshot temp files are removed on local failure; startup recovers a valid dead-owner temp only when no canonical successor exists, and otherwise removes only provably dead-owner temps. Named-session candidate directories remain isolated during execution, then `session.ts` removes the exact attempt workspace after canonical promotion or failure telemetry persistence; the recorded attempt session id is historical audit metadata rather than a durable path.
 Operation-only semantic failures from those run-operation tools project as `kind:"operation_rejected"` instead of MCP text errors; child-invocation preflight failures remain `kind:"preflight_rejected"` with `child_started:false`.
-Named sessions add `src/session.ts` manifest/ledger/lock handling around the same child execution path. Manifest eligibility failures known before launch, such as missing `require_existing` sessions, reject before durable task registration with `preflight_rejected` and `child_started:false`; locked execution checks still run later as race protection. Terminal session failures logged after durable task creation preserve the caller tool, durable `run_id`, and `task_kind:"session"` so telemetry can be correlated with public run views.
+Named sessions add `src/session.ts` manifest/ledger/lock handling around the same child execution path. Locks remain owned until matching release or definite local owner death. A hash-verified pending commit publishes the canonical session file, ledger record, and manifest in recoverable order; the retained candidate workspace is deleted only after all three are verified. Manifest eligibility failures known before launch, such as missing `require_existing` sessions, reject before durable task registration with `preflight_rejected` and `child_started:false`; locked execution checks still run later as race protection. Terminal session failures logged after durable task creation preserve the caller tool, durable `run_id`, and `task_kind:"session"` so telemetry can be correlated with public run views.
 
 ## Key Components
 - `server.ts` - MCP tool surface, schema/preflight rejection shape, retry and cancellation-eligibility guidance, and failure logging for handler-level failures.
@@ -42,7 +42,7 @@ Named sessions add `src/session.ts` manifest/ledger/lock handling around the sam
 - `diskReserve.ts` - preflight and active-run host free-space protection; it stops work rather than truncating a continuing transcript.
 - `ownedTemporaryArtifact.ts` - owner metadata and startup reconciliation for child-request/final-message temp directories.
 - `buildReleaseLease.ts` / `scripts/build-atomic.mjs` - versioned build publication through `dist/current` and live-release protection.
-- `session.ts` - named-session manifests, read-only preflight eligibility checks, candidate ledgers, packet policy, skill/cwd immutability, local session locks, and session terminal failure telemetry with durable caller context. Required packet failures distinguish missing, malformed, and parse-valid not-ready packets by reason code.
+- `session.ts` - named-session manifests, read-only preflight eligibility checks, non-expiring local session locks, hash-verified pending commits, candidate ledgers, packet policy, skill/cwd immutability, and session terminal failure telemetry with durable caller context. Required packet failures distinguish missing, malformed, and parse-valid not-ready packets by reason code.
 - `runtimeReadiness.ts` - built-entrypoint, source-state, contract, and public-tool readiness checks.
 
 ## External Dependencies

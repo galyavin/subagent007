@@ -609,19 +609,84 @@ test("run_subagent_session recovers only definitely stale local locks", async ()
           lease_expires_at: new Date(Date.now() - 1_000).toISOString(),
         })}\n`,
       );
-      const recoveredExpiredLease = await runSubagentSession(
-        {
-          cwd: fixture.projectDir,
-          prompt: "FAST",
-          session_key: "coherent-execution:T005",
-          model_class: "C",
-        },
-        { sessionsDir: fixture.sessionsDir },
+      await assert.rejects(
+        runSubagentSession(
+          {
+            cwd: fixture.projectDir,
+            prompt: "FAST",
+            session_key: "coherent-execution:T005",
+            model_class: "C",
+          },
+          { sessionsDir: fixture.sessionsDir },
+        ),
+        /session is already running/,
       );
-      assert.equal(recoveredExpiredLease.success, true);
       await fs.rm(lockPath, { force: true });
     },
   );
+});
+
+test("run_subagent_session recovers pending commits across every publication boundary", async () => {
+  for (const phase of ["prepared", "canonical_published", "ledger_published", "manifest_published"] as const) {
+    const fixture = await createSessionFixture();
+    await withEnv(
+      {
+        SUBAGENT007_PI_CHILD_PATH: fixture.fakeChildPath,
+        FAKE_PI_LOG_PATH: fixture.fakeLogPath,
+        SUBAGENT007_FAILURE_LOG: "off",
+      },
+      async () => {
+        const created = await runSubagentSession(
+          {
+            cwd: fixture.projectDir,
+            prompt: "FAST",
+            session_key: `coherent-execution:commit-${phase}`,
+            model_class: "C",
+          },
+          { sessionsDir: fixture.sessionsDir },
+        );
+        await assert.rejects(
+          runSubagentSession(
+            {
+              cwd: fixture.projectDir,
+              prompt: "FAST",
+              session_key: `coherent-execution:commit-${phase}`,
+              model_class: "C",
+            },
+            {
+              sessionsDir: fixture.sessionsDir,
+              onSessionCommitPhase: (currentPhase) => {
+                if (currentPhase === phase) {
+                  throw new Error(`fault after ${phase}`);
+                }
+              },
+            },
+          ),
+          /fault after/,
+        );
+        await fs.stat(path.join(created.session_dir, "pending-commit.json"));
+
+        const recovered = await runSubagentSession(
+          {
+            cwd: fixture.projectDir,
+            prompt: "FAST",
+            session_key: `coherent-execution:commit-${phase}`,
+            model_class: "C",
+          },
+          { sessionsDir: fixture.sessionsDir },
+        );
+        assert.equal(recovered.success, true);
+        assert.equal(recovered.subagent_session_id, created.subagent_session_id);
+        const records = await readJsonl<SessionRunRecord>(created.ledger_path);
+        assert.equal(records.length, 3);
+        assert.deepEqual(records.map((record) => record.sequence), [1, 2, 3]);
+        assert.equal(new Set(records.map((record) => record.run_id)).size, 3);
+        await assert.rejects(fs.stat(path.join(created.session_dir, "pending-commit.json")), /ENOENT/);
+        const piSessionEntries = await fs.readdir(path.dirname(created.subagent_session_id!));
+        assert.equal(piSessionEntries.some((entry) => entry.includes(".pending-")), false);
+      },
+    );
+  }
 });
 
 test("run_subagent_session can require packets without making packet logic part of the workflow", async () => {

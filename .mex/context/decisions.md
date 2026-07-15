@@ -12,12 +12,19 @@ edges:
     condition: when a decision relates to system structure
   - target: context/stack.md
     condition: when a decision relates to technology choice
-last_updated: 2026-07-14
+last_updated: 2026-07-15
 ---
 
 # Decisions
 
 ## Decision Log
+
+### Session ownership survives time and partial publication
+**Date:** 2026-07-15
+**Status:** Active
+**Decision:** Named-session locks never transfer merely because time elapsed; only matching release or definite local owner death permits recovery. Successful candidate-session promotion writes a hash-verified pending commit before atomically publishing the canonical file, idempotently appending its `run_id` ledger record, and publishing the manifest. The attempt workspace remains until those durable effects are verified. New active-child lease filenames include both the encoded run id and owner id; unreadable legacy owner-only leases retain capacity but return explicit unknown liveness.
+**Reasoning:** A duration cannot prove a live local session owner lost authority. Likewise, replacing canonical state before its ledger and manifest advance can leave callers with conflicting durable views. Legacy unreadable lease files lack enough identity to safely attach to a particular run, but treating them as absent would allow destructive restart drift.
+**Consequences:** Interrupted session promotion resumes from one marker without a false canonical/ledger/manifest combination or duplicate record. Session inspection reports `operation_rejected` with `run_liveness_unknown` for legacy ambiguity, and restart reconciliation leaves that snapshot untouched until ownership becomes observable.
 
 ### Complete public transcripts replace raw child spools
 **Date:** 2026-07-12

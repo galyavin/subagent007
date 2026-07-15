@@ -17,6 +17,7 @@ const LOCK_RETRY_MS = 10;
 const LOCK_ATTEMPTS = 100;
 const QUEUE_POLL_MS = 100;
 const PROCESS_OWNER_ID = randomBytes(12).toString("hex");
+const ATTRIBUTED_ACTIVE_LEASE_PATTERN = /^[A-Za-z0-9_-]+\.[a-f0-9]{24}\.json$/;
 
 interface ActiveChildLeaseRecord {
   schema_version: 1;
@@ -29,6 +30,8 @@ interface ActiveChildLeaseRecord {
 export interface ActiveChildLease {
   release: () => Promise<void>;
 }
+
+export type ActiveChildLeaseLiveness = "live" | "absent" | "unknown";
 
 interface QueuedRunTicketRecord {
   schema_version: 1;
@@ -67,6 +70,10 @@ let ownerPumpTimer: ReturnType<typeof setTimeout> | undefined;
 
 function activeChildrenDir(): string {
   return defaultSubagentStatePath(ACTIVE_CHILDREN_DIR_ENV, "active-children");
+}
+
+function activeLeaseRunPrefix(runId: string): string {
+  return `${Buffer.from(runId, "utf8").toString("base64url")}.`;
 }
 
 function queuedRunsDir(): string {
@@ -236,7 +243,10 @@ function activeLeaseRecord(runId?: string): ActiveChildLeaseRecord {
 
 async function writeActiveLease(dir: string, runId?: string): Promise<ActiveChildLease> {
   const lease = activeLeaseRecord(runId);
-  const leasePath = path.join(dir, `${lease.owner_id}.json`);
+  const leasePath = path.join(
+    dir,
+    runId ? `${activeLeaseRunPrefix(runId)}${lease.owner_id}.json` : `${lease.owner_id}.json`,
+  );
   await publishJsonExclusive(leasePath, lease);
   return {
     release: async () => {
@@ -463,7 +473,34 @@ export async function hasLiveQueuedRunTicket(runId: string): Promise<boolean> {
   return true;
 }
 
+export async function activeChildLeaseLiveness(runId: string): Promise<ActiveChildLeaseLiveness> {
+  const dir = activeChildrenDir();
+  const runPrefix = activeLeaseRunPrefix(runId);
+  let unknownLegacyLease = false;
+  for (const leasePath of await listLeasePaths(dir)) {
+    const lease = await readLease(leasePath);
+    if (!lease) {
+      const leaseName = path.basename(leasePath);
+      if (leaseName.startsWith(runPrefix)) {
+        return "live";
+      }
+      if (ATTRIBUTED_ACTIVE_LEASE_PATTERN.test(leaseName)) {
+        continue;
+      }
+      unknownLegacyLease = true;
+      continue;
+    }
+    if (processIsDefinitelyGone(lease.pid)) {
+      await fs.rm(leasePath, { force: true });
+      continue;
+    }
+    if (lease.run_id === runId) {
+      return "live";
+    }
+  }
+  return unknownLegacyLease ? "unknown" : "absent";
+}
+
 export async function hasLiveActiveChildLease(runId: string): Promise<boolean> {
-  const active = await pruneStaleLeases(activeChildrenDir());
-  return active.some((lease) => lease === null || lease.run_id === runId);
+  return (await activeChildLeaseLiveness(runId)) === "live";
 }

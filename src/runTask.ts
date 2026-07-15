@@ -75,8 +75,8 @@ import { assertModelClassUsableForOneShot } from "./modelHealth.js";
 import { safeIntegerFromEnv } from "./env.js";
 import {
   acquireActiveChildLease,
+  activeChildLeaseLiveness,
   admitActiveChild,
-  hasLiveActiveChildLease,
   hasLiveQueuedRunTicket,
   type ActiveChildAdmission,
   type ActiveChildLease,
@@ -1669,13 +1669,20 @@ export async function getRunTask(runId: string, allowUnreleasedTerminal = false)
     const inputRequests = await listInputRequests({ mailboxRoot, runId });
     const eventProjection = await loadSnapshotEvents(snapshot);
     if (snapshot.status === "working" || snapshot.status === "input_required") {
-      if (await hasLiveActiveChildLease(runId) || await hasLiveQueuedRunTicket(runId)) {
+      const leaseLiveness = await activeChildLeaseLiveness(runId);
+      if (leaseLiveness === "live" || await hasLiveQueuedRunTicket(runId)) {
         return {
           ...contractFields(),
           ...snapshot,
           ...eventProjection,
           input_requests: inputRequests,
         };
+      }
+      if (leaseLiveness === "unknown") {
+        throw new ValidationError(
+          "run liveness is unknown because a legacy active-child lease is unreadable",
+          "run_liveness_unknown",
+        );
       }
       return persistRestartDriftSnapshotOnce(
         { ...contractFields(), ...snapshot, input_requests: inputRequests },
@@ -1765,7 +1772,11 @@ export async function reconcilePersistedActiveRunTasks(): Promise<number> {
     if (snapshot?.status !== "working" && snapshot?.status !== "input_required") {
       continue;
     }
-    if (await hasLiveActiveChildLease(runId) || await hasLiveQueuedRunTicket(runId)) {
+    const leaseLiveness = await activeChildLeaseLiveness(runId);
+    if (leaseLiveness === "live" || await hasLiveQueuedRunTicket(runId)) {
+      continue;
+    }
+    if (leaseLiveness === "unknown") {
       continue;
     }
     await getRunTask(runId);

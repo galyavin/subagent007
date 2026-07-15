@@ -5,6 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import {
   acquireActiveChildLease,
+  activeChildLeaseLiveness,
   admitActiveChild,
   DEFAULT_MAX_ACTIVE_CHILDREN,
   hasLiveActiveChildLease,
@@ -89,9 +90,14 @@ test("default active-child capacity is finite and still allows an explicit opt-o
   );
 });
 
-test("unreadable active leases conservatively consume capacity", async () => {
+test("unreadable active leases preserve capacity without certifying unrelated runs", async () => {
   const activeChildrenDir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-unreadable-lease-"));
-  await fs.writeFile(path.join(activeChildrenDir, "unreadable.json"), "{");
+  const attributedRunId = "run.more";
+  const leasePath = path.join(
+    activeChildrenDir,
+    `${Buffer.from(attributedRunId, "utf8").toString("base64url")}.${"a".repeat(24)}.json`,
+  );
+  await fs.writeFile(leasePath, "{");
   await withEnv(
     {
       SUBAGENT007_ACTIVE_CHILDREN_DIR: activeChildrenDir,
@@ -99,8 +105,26 @@ test("unreadable active leases conservatively consume capacity", async () => {
     },
     async () => {
       await assert.rejects(acquireActiveChildLease("blocked"), /local child capacity exhausted/);
-      assert.equal(await hasLiveActiveChildLease("unknown-owner"), true);
-      assert.equal(await fs.readFile(path.join(activeChildrenDir, "unreadable.json"), "utf8"), "{");
+      assert.equal(await hasLiveActiveChildLease(attributedRunId), true);
+      assert.equal(await activeChildLeaseLiveness("run"), "absent");
+      assert.equal(await hasLiveActiveChildLease("run"), false);
+      assert.equal(await fs.readFile(leasePath, "utf8"), "{");
+    },
+  );
+});
+
+test("unreadable legacy active leases remain explicit liveness unknowns", async () => {
+  const activeChildrenDir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-legacy-lease-"));
+  await fs.writeFile(path.join(activeChildrenDir, "legacy-owner.json"), "{");
+  await withEnv(
+    {
+      SUBAGENT007_ACTIVE_CHILDREN_DIR: activeChildrenDir,
+      SUBAGENT007_MAX_ACTIVE_CHILDREN: "1",
+    },
+    async () => {
+      assert.equal(await activeChildLeaseLiveness("run-1"), "unknown");
+      assert.equal(await hasLiveActiveChildLease("run-1"), false);
+      await assert.rejects(acquireActiveChildLease("blocked"), /local child capacity exhausted/);
     },
   );
 });

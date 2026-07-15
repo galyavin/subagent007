@@ -5,7 +5,6 @@ import path from "node:path";
 import { z } from "zod";
 import { loadConfig } from "./config.js";
 import { assertDiskReserveAvailable } from "./diskReserve.js";
-import { safeIntegerFromEnv } from "./env.js";
 import {
   failureClassForSessionResult,
   failureReasonCodeForSessionResult,
@@ -96,7 +95,19 @@ const sessionRunRecordSchema = z.object({
   stop_reason: z.enum(RUN_STOP_REASONS).optional(),
   stop_signal: z.string().nullable().optional(),
   error: z.string().optional(),
+}).passthrough();
+
+const sessionCommitSchema = z.object({
+  schema_version: z.literal(1),
+  attempt_subagent_session_id: z.string(),
+  predecessor_sha256: z.string().nullable(),
+  successor_sha256: z.string(),
+  run_record: sessionRunRecordSchema,
+  next_manifest: sessionManifestSchema,
 });
+
+type PendingSessionCommit = z.infer<typeof sessionCommitSchema>;
+export type SessionCommitPhase = "prepared" | "canonical_published" | "ledger_published" | "manifest_published";
 
 interface LockOwner {
   pid: number;
@@ -104,18 +115,10 @@ interface LockOwner {
   created_at: string;
   owner_id?: string;
   task_id?: string;
-  lease_expires_at?: string;
 }
 
 interface SessionLock {
   release: () => Promise<void>;
-  refresh: () => Promise<void>;
-}
-
-const DEFAULT_SESSION_LOCK_LEASE_MS = 30_000;
-
-function sessionLockLeaseMs(): number {
-  return safeIntegerFromEnv("SUBAGENT007_SESSION_LOCK_LEASE_MS", DEFAULT_SESSION_LOCK_LEASE_MS, 1);
 }
 
 function validationSummary(error: z.ZodError): string {
@@ -253,45 +256,36 @@ function isStaleLocalLock(owner: LockOwner | null): boolean {
   );
 }
 
-function isExpiredLease(owner: LockOwner | null, now = Date.now()): boolean {
-  if (!owner?.lease_expires_at) {
-    return false;
-  }
-  const expiresAt = Date.parse(owner.lease_expires_at);
-  return Number.isFinite(expiresAt) && expiresAt <= now;
-}
-
 async function acquireLock(lockPath: string, taskId?: string): Promise<SessionLock> {
   const ownerId = randomBytes(12).toString("hex");
-  const leaseMs = sessionLockLeaseMs();
   const owner: LockOwner = {
     pid: process.pid,
     hostname: os.hostname(),
     created_at: new Date().toISOString(),
     owner_id: ownerId,
     ...(taskId ? { task_id: taskId } : {}),
-    lease_expires_at: new Date(Date.now() + leaseMs).toISOString(),
-  };
-  const writeOwner = async (writeFlag: "wx" | "w") => {
-    owner.lease_expires_at = new Date(Date.now() + leaseMs).toISOString();
-    await fs.writeFile(lockPath, `${JSON.stringify(owner)}\n`, { encoding: "utf8", flag: writeFlag });
   };
   for (const staleRecoveryAttempt of [false, true]) {
     try {
-      await writeOwner("wx");
+      await fs.writeFile(lockPath, `${JSON.stringify(owner)}\n`, { encoding: "utf8", flag: "wx" });
       return {
-        refresh: async () => {
-          const current = await readLockOwner(lockPath);
-          if (current?.owner_id !== ownerId) {
-            throw new ValidationError("session lock ownership was lost", "session_already_running");
-          }
-          await writeOwner("w");
-        },
         release: async () => {
           const current = await readLockOwner(lockPath);
-          if (!current?.owner_id || current.owner_id === ownerId) {
-            await fs.rm(lockPath, { force: true });
+          if (!current) {
+            try {
+              await fs.access(lockPath);
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+                return;
+              }
+              throw error;
+            }
+            throw new ValidationError("session lock ownership cannot be confirmed", "session_already_running");
           }
+          if (current.owner_id !== ownerId) {
+            throw new ValidationError("session lock ownership was lost", "session_already_running");
+          }
+          await fs.rm(lockPath, { force: true });
         },
       };
     } catch (error) {
@@ -299,7 +293,7 @@ async function acquireLock(lockPath: string, taskId?: string): Promise<SessionLo
         throw error;
       }
       const existingOwner = await readLockOwner(lockPath);
-      if (!staleRecoveryAttempt && (isStaleLocalLock(existingOwner) || isExpiredLease(existingOwner))) {
+      if (!staleRecoveryAttempt && isStaleLocalLock(existingOwner)) {
         await fs.rm(lockPath, { force: true });
         continue;
       }
@@ -425,10 +419,10 @@ async function readLedgerRecords(ledgerPath: string): Promise<SessionRunRecord[]
   });
 }
 
-async function writeManifestAtomic(manifestPath: string, manifest: SessionManifest): Promise<void> {
-  const tmpPath = `${manifestPath}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
-  await fs.writeFile(tmpPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-  await fs.rename(tmpPath, manifestPath);
+async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
+  const tmpPath = `${filePath}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+  await fs.writeFile(tmpPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await fs.rename(tmpPath, filePath);
 }
 
 async function reconcileManifestWithLedger(
@@ -459,7 +453,7 @@ async function reconcileManifestWithLedger(
     last_run_at: last.finished_at,
     last_output_path: last.output_path,
   };
-  await writeManifestAtomic(manifestPath, reconciled);
+  await writeJsonAtomic(manifestPath, reconciled);
   return reconciled;
 }
 
@@ -507,6 +501,164 @@ async function copyDirectoryContents(sourceDir: string, targetDir: string): Prom
   await fs.cp(sourceDir, targetDir, { recursive: true, force: true });
 }
 
+function pendingCommitPath(sessionDir: string): string {
+  return path.join(sessionDir, "pending-commit.json");
+}
+
+async function sha256File(filePath: string): Promise<string | null> {
+  try {
+    return createHash("sha256").update(await fs.readFile(filePath)).digest("hex");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function assertCommitPathInside(sessionDir: string, filePath: string): void {
+  const relative = path.relative(sessionDir, filePath);
+  if (relative === "" || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new ValidationError("session commit contains an invalid artifact path", "session_commit_invalid");
+  }
+}
+
+async function readPendingCommit(sessionDir: string): Promise<PendingSessionCommit | null> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await fs.readFile(pendingCommitPath(sessionDir), "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+    throw new ValidationError(`session commit is unreadable: ${(error as Error).message}`, "session_commit_invalid");
+  }
+  const result = sessionCommitSchema.safeParse(parsed);
+  if (!result.success) {
+    throw new ValidationError(`session commit is invalid: ${validationSummary(result.error)}`, "session_commit_invalid");
+  }
+  assertCommitPathInside(sessionDir, result.data.next_manifest.subagent_session_id);
+  assertCommitPathInside(sessionDir, result.data.attempt_subagent_session_id);
+  return result.data;
+}
+
+function stagedCanonicalPath(commit: PendingSessionCommit): string {
+  const canonicalPath = commit.next_manifest.subagent_session_id;
+  return path.join(
+    path.dirname(canonicalPath),
+    `.${path.basename(canonicalPath)}.pending-${encodeURIComponent(commit.run_record.run_id)}`,
+  );
+}
+
+async function appendRunRecordIdempotent(ledgerPath: string, record: SessionRunRecord): Promise<void> {
+  const existing = (await readLedgerRecords(ledgerPath)).find((candidate) => candidate.run_id === record.run_id);
+  if (existing) {
+    if (!jsonEquivalent(existing, record)) {
+      throw new ValidationError("session ledger already contains a conflicting committed run", "session_ledger_invalid");
+    }
+    return;
+  }
+  await fs.appendFile(ledgerPath, `${JSON.stringify(record)}\n`, "utf8");
+}
+
+function jsonEquivalent(left: unknown, right: unknown): boolean {
+  const normalize = (value: unknown): unknown => {
+    if (Array.isArray(value)) {
+      return value.map(normalize);
+    }
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>)
+          .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+          .map(([key, entry]) => [key, normalize(entry)]),
+      );
+    }
+    return value;
+  };
+  return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
+}
+
+async function publishAttemptFile(commit: PendingSessionCommit): Promise<void> {
+  const canonicalPath = commit.next_manifest.subagent_session_id;
+  const stagedPath = stagedCanonicalPath(commit);
+  const canonicalHash = await sha256File(canonicalPath);
+  if (canonicalHash === commit.successor_sha256) {
+    return;
+  }
+  if (canonicalHash !== commit.predecessor_sha256) {
+    throw new ValidationError("canonical session content does not match the pending commit", "session_commit_invalid");
+  }
+  const attemptHash = await sha256File(commit.attempt_subagent_session_id);
+  if (attemptHash !== commit.successor_sha256) {
+    throw new ValidationError("attempt session content does not match the pending commit", "session_commit_invalid");
+  }
+  await fs.mkdir(path.dirname(canonicalPath), { recursive: true });
+  await fs.rm(stagedPath, { force: true });
+  try {
+    await fs.copyFile(commit.attempt_subagent_session_id, stagedPath);
+    await fs.rename(stagedPath, canonicalPath);
+  } finally {
+    await fs.rm(stagedPath, { force: true });
+  }
+}
+
+async function applyPendingCommit(
+  sessionDir: string,
+  ledgerPath: string,
+  manifestPath: string,
+  commit: PendingSessionCommit,
+  onPhase?: (phase: SessionCommitPhase) => void | Promise<void>,
+): Promise<void> {
+  await publishAttemptFile(commit);
+  await onPhase?.("canonical_published");
+  await appendRunRecordIdempotent(ledgerPath, commit.run_record);
+  await onPhase?.("ledger_published");
+  await writeJsonAtomic(manifestPath, commit.next_manifest);
+  await onPhase?.("manifest_published");
+  if (await sha256File(commit.next_manifest.subagent_session_id) !== commit.successor_sha256) {
+    throw new ValidationError("canonical session verification failed after commit", "session_commit_invalid");
+  }
+  const record = (await readLedgerRecords(ledgerPath)).find(
+    (candidate) => candidate.run_id === commit.run_record.run_id,
+  );
+  if (!record || !jsonEquivalent(record, commit.run_record)) {
+    throw new ValidationError("session ledger verification failed after commit", "session_commit_invalid");
+  }
+  const manifest = await readManifest(manifestPath);
+  if (!manifest || !jsonEquivalent(manifest, commit.next_manifest)) {
+    throw new ValidationError("session manifest verification failed after commit", "session_commit_invalid");
+  }
+  await fs.rm(stagedCanonicalPath(commit), { force: true });
+  await fs.rm(path.dirname(commit.attempt_subagent_session_id), { recursive: true, force: true });
+  await fs.rm(pendingCommitPath(sessionDir), { force: true });
+}
+
+async function commitAttemptSession(options: {
+  sessionDir: string;
+  ledgerPath: string;
+  manifestPath: string;
+  attemptSubagentSessionId: string;
+  runRecord: SessionRunRecord;
+  nextManifest: SessionManifest;
+  onPhase?: (phase: SessionCommitPhase) => void | Promise<void>;
+}): Promise<void> {
+  const successorSha256 = await sha256File(options.attemptSubagentSessionId);
+  if (!successorSha256) {
+    throw new ValidationError("attempt session file is missing before commit", "session_commit_invalid");
+  }
+  const commit: PendingSessionCommit = {
+    schema_version: 1,
+    attempt_subagent_session_id: options.attemptSubagentSessionId,
+    predecessor_sha256: await sha256File(options.nextManifest.subagent_session_id),
+    successor_sha256: successorSha256,
+    run_record: options.runRecord as z.infer<typeof sessionRunRecordSchema>,
+    next_manifest: options.nextManifest,
+  };
+  await writeJsonAtomic(pendingCommitPath(options.sessionDir), commit);
+  await options.onPhase?.("prepared");
+  await applyPendingCommit(options.sessionDir, options.ledgerPath, options.manifestPath, commit, options.onPhase);
+}
+
 async function prepareAttemptSession(
   sessionDir: string,
   runId: string,
@@ -531,23 +683,6 @@ async function prepareAttemptSession(
   };
 }
 
-async function promoteAttemptSession(options: {
-  sessionDir: string;
-  manifest: SessionManifest | null;
-  attemptSessionId: string;
-}): Promise<string> {
-  if (options.manifest) {
-    await copyDirectoryContents(
-      path.dirname(options.attemptSessionId),
-      path.dirname(options.manifest.subagent_session_id),
-    );
-    return options.manifest.subagent_session_id;
-  }
-
-  const canonicalPiSessionDir = path.join(options.sessionDir, "pi-session");
-  await copyDirectoryContents(path.dirname(options.attemptSessionId), canonicalPiSessionDir);
-  return path.join(canonicalPiSessionDir, path.basename(options.attemptSessionId));
-}
 
 export async function runSubagentSession(
   request: RunSubagentSessionRequest,
@@ -566,6 +701,7 @@ export async function runSubagentSession(
     onChildControlReady?: (send: (message: string) => boolean) => void;
     onInputResponseAccepted?: (response: ChildInputResponseAccepted) => void;
     failureLogTool?: Extract<FailureLogTool, "start_session_run" | "run_subagent_session">;
+    onSessionCommitPhase?: (phase: SessionCommitPhase) => void | Promise<void>;
   } = {},
 ): Promise<RunSubagentSessionResult> {
   assertNoRawSessionId(request);
@@ -597,14 +733,13 @@ export async function runSubagentSession(
   const lockPath = path.join(sessionDir, "run.lock");
   await fs.mkdir(sessionDir, { recursive: true });
   const sessionLock = await acquireLock(lockPath, options.taskId ?? options.childRunId);
-  const leaseRefreshInterval = setInterval(() => {
-    void sessionLock.refresh().catch(() => {
-      // The active run will fail if lock ownership loss affects the session write path.
-    });
-  }, Math.max(100, Math.floor(sessionLockLeaseMs() / 3)));
   let attemptPiSessionDir: string | undefined;
 
   try {
+    const pendingCommit = await readPendingCommit(sessionDir);
+    if (pendingCommit) {
+      await applyPendingCommit(sessionDir, ledgerPath, manifestPath, pendingCommit);
+    }
     let manifest = await readManifest(manifestPath);
     if (manifest) {
       manifest = await reconcileManifestWithLedger(manifest, manifestPath, ledgerPath);
@@ -674,11 +809,7 @@ export async function runSubagentSession(
           reason_code: failureReasonCodeForSessionResult(sessionFailureInput, packetIsSatisfied),
         };
     const committedSubagentSessionId = success && attemptSubagentSessionId
-      ? await promoteAttemptSession({
-          sessionDir,
-          manifest,
-          attemptSessionId: attemptSubagentSessionId,
-        })
+      ? manifest?.subagent_session_id ?? path.join(sessionDir, "pi-session", path.basename(attemptSubagentSessionId))
       : manifest?.subagent_session_id ?? null;
     const finishedAt = new Date().toISOString();
     const runRecord: SessionRunRecord = {
@@ -719,7 +850,7 @@ export async function runSubagentSession(
       stop_signal: runResult.stop_signal,
       error: missingSessionIdError,
     };
-    if (success && committedSubagentSessionId) {
+    if (success && committedSubagentSessionId && attemptSubagentSessionId) {
       const nextManifest: SessionManifest = {
         schema_version: 1,
         session_key: sessionKey,
@@ -733,8 +864,15 @@ export async function runSubagentSession(
         last_output_path: runResult.output_path,
         status: "active",
       };
-      await fs.appendFile(ledgerPath, `${JSON.stringify(runRecord)}\n`, "utf8");
-      await writeManifestAtomic(manifestPath, nextManifest);
+      await commitAttemptSession({
+        sessionDir,
+        ledgerPath,
+        manifestPath,
+        attemptSubagentSessionId,
+        runRecord,
+        nextManifest,
+        onPhase: options.onSessionCommitPhase,
+      });
     } else {
       await fs.appendFile(attemptsPath, `${JSON.stringify(runRecord)}\n`, "utf8");
     }
@@ -818,17 +956,24 @@ export async function runSubagentSession(
     }
     return result;
   } finally {
-    clearInterval(leaseRefreshInterval);
     if (attemptPiSessionDir) {
       const attemptDir = attemptPiSessionDir;
-      await fs.rm(attemptDir, { recursive: true, force: true }).catch((error) => {
-        console.error(
-          `[subagent007 warning] attempt cleanup failed for ${path.basename(attemptDir)}: ${String(error)}`,
-        );
-      });
-      await fs.rmdir(path.dirname(attemptDir)).catch(() => {
-        // Preserve the parent when another historical attempt remains.
-      });
+      let commit: PendingSessionCommit | null | undefined;
+      try {
+        commit = await readPendingCommit(sessionDir);
+      } catch {
+        commit = undefined;
+      }
+      if (commit !== undefined && path.dirname(commit?.attempt_subagent_session_id ?? "") !== attemptDir) {
+        await fs.rm(attemptDir, { recursive: true, force: true }).catch((error) => {
+          console.error(
+            `[subagent007 warning] attempt cleanup failed for ${path.basename(attemptDir)}: ${String(error)}`,
+          );
+        });
+        await fs.rmdir(path.dirname(attemptDir)).catch(() => {
+          // Preserve the parent when another historical attempt remains.
+        });
+      }
     }
     await sessionLock.release();
   }
