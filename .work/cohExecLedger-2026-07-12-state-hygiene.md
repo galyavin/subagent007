@@ -55,10 +55,10 @@ Trust Model:
 Boundary Closure Mini-Gate:
 | Projection / claim | Nearest false-green | Killing proof | Earliest forbidden side effect | Status |
 |---|---|---|---|---|
-| AC1 | child exit leaves suite fixtures | wrapper integration test/readback | host temp root fixture remains | TODO |
-| AC2 | snapshot loses events or inputs after cleanup | terminal/restart focused tests | redundant file removed without canonical view | TODO |
-| AC3 | active state compacted | active/input-required focused assertion | active event/mailbox removed | TODO |
-| AC4 | canonical or diagnostic session state removed | success/failure/resume session tests | canonical session removed | TODO |
+| AC1 | child exit leaves suite fixtures | wrapper integration test/readback | host temp root fixture remains | VERIFIED |
+| AC2 | snapshot loses events or inputs after cleanup | terminal/restart focused tests | redundant file removed without canonical view | VERIFIED |
+| AC3 | active state compacted | active/input-required focused assertion | active event/mailbox removed | VERIFIED |
+| AC4 | canonical or diagnostic session state removed | success/failure/resume session tests | canonical session removed | VERIFIED |
 
 ## Trace / Units
 

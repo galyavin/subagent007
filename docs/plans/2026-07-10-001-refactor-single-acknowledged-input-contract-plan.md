@@ -10,6 +10,8 @@ execution: code
 
 # Single Acknowledged Input Contract
 
+> Historical planning artifact. The Subagent007-side refactor landed in commit `fca5ad0` on 2026-07-11. This document retains its original forward-looking language, including external Bendum acceptance requirements; use [`README.md`](../../README.md) and [`src/durableRunContract.ts`](../../src/durableRunContract.ts) for the current server contract.
+
 ## Goal Capsule
 
 Replace the partially implemented v1/v2 caller-input split with one authoritative acknowledged-input contract optimized for Subagent007's current primary customer, Bendum.
@@ -110,7 +112,7 @@ The same run authority orders cancellation and finalization around this sequence
 4. Apply the same path to sessions and all operational privacy surfaces.
 5. Update observed probes and complete the Bendum lockstep canary before declaring the provider repair done.
 
-The current uncommitted v2 implementation is prototype evidence, not a compatibility baseline. Retain the live control channel, stable response identity, and safe receipt metadata; replace protocol branching, file-backed answer settlement, and write-as-delivery semantics.
+At the time of planning, the uncommitted v2 implementation was prototype evidence, not a compatibility baseline. Retain the live control channel, stable response identity, and safe receipt metadata; replace protocol branching, file-backed answer settlement, and write-as-delivery semantics.
 
 ### Risks and Dependencies
 

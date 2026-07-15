@@ -143,10 +143,8 @@ async function preflightRejectedResult(
   error: ValidationError,
 ): Promise<PreflightRejectedResult> {
   const reasonCode = failureReasonCodeForError(error);
-  const retryGuidance = error.message.includes("timeout_ms is not supported by run_subagent")
-    ? "Use schedule_run or start_run for timed work."
-    : error.message.includes("timeout_ms under budget for deadline-risk workload")
-      ? TIMEOUT_UNDERBUDGET_GUIDANCE
+  const retryGuidance = reasonCode === "timeout_underbudget_for_deadline_risk"
+    ? TIMEOUT_UNDERBUDGET_GUIDANCE
     : reasonCode === "local_capacity_exhausted"
       ? "Retry after an active child run completes or raise SUBAGENT007_MAX_ACTIVE_CHILDREN."
     : reasonCode === "local_queue_exhausted"

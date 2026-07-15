@@ -14,7 +14,7 @@ edges:
     condition: when setting up the dev environment or running the project for the first time
   - target: patterns/INDEX.md
     condition: when starting a task — check the pattern index for a matching pattern file
-last_updated: 2026-07-13
+last_updated: 2026-07-15
 ---
 
 # Session Bootstrap
@@ -44,7 +44,7 @@ Then read this file fully before doing anything else in this session.
 - Session terminal failure telemetry preserves the caller-facing durable context: packet failures from `start_session_run` and `run_subagent_session` log the correct public tool, durable `run_id`, and `task_kind:"session"`.
 - The durable-run contract exposes session start tools under `tools.session_start`, while preserving the existing `tools.start` tuple for run-only adapters.
 - Skill binding normalization and schema descriptions are centralized in `src/skillBinding.ts`; prompt-level skill invocation syntax is rejected unless the caller binds `skill_name`/legacy `skill`.
-- Failure reason codes come from explicit `ValidationError.reasonCode`; failure logging does not infer semantic codes from message text.
+- Failure reason codes and handler-level preflight retry guidance come from explicit `ValidationError.reasonCode`; neither failure logging nor guidance infers semantics from message text.
 - SAF repairs are in place for provider usage-limit metadata, parent-exit child-process cleanup, finite-by-default active-child launch fusing, structured run-operation semantic rejections, packet-required not-ready taxonomy, public prompt projection, and named-session manifest preflight eligibility.
 - Requested `final` output is a hard contract: a clean child exit without a captured final message fails as `missing_final_output` and writes the public transcript only as diagnostic output.
 - Server-launched children receive a native `delegate` tool backed by private parent-owned recursive control IPC; recursive descendants are normal durable runs with `parent_run_id`, `root_run_id`, `recursion_depth`, and direct `child_run_ids` in run views.
@@ -85,5 +85,5 @@ For every task, follow this loop:
 5. **GROW** — After meaningful work, run this binary checklist:
    - **Ground:** What changed in reality? Name the changed behavior, system, command, dependency, or workflow.
    - **Record:** If project state changed, update the "Current Project State" section above. If documented facts changed, update the relevant `context/` file surgically.
-   - **Orient:** If this task can recur and no pattern exists, create one in `patterns/` using `patterns/README.md`, then add it to `patterns/INDEX.md`. If a pattern exists but you learned a gotcha, update it.
+   - **Orient:** If this task can recur and no pattern exists, create a compact project-specific guide in `patterns/`, then add it to `patterns/INDEX.md`. If a pattern exists but you learned a gotcha, update it.
    - **Write:** Bump `last_updated` in every scaffold file you changed. If the why matters, run `mex log --type decision "<what changed and why>"` or `mex log "<note>"`.

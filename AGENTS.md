@@ -13,7 +13,7 @@ A private MCP server that delegates work to a separate Pi-backed child agent thr
 - Always work on `main`; do not create branches unless explicitly instructed.
 - Keep public MCP result fields, reason codes, durable-run statuses, and failure-log schema changes synchronized across source, tests, and README.
 - Do not parse or expose private thinking/tool payloads in public events, transcripts, failure logs, or run views.
-- Preflight validation must reject before child launch and report `child_started:false`.
+- Handler-level semantic preflight validation must reject before child launch and report `child_started:false`; SDK input-schema rejections must remain standard MCP `isError` responses before handler invocation.
 - Run `npm run build` after changing `src/` before runtime or MCP-server checks.
 - Do not set `SUBAGENT007_PI_CHILD_PATH` for normal MCP use; it is for tests and controlled probes.
 

@@ -12,7 +12,7 @@ edges:
     condition: when a decision relates to system structure
   - target: context/stack.md
     condition: when a decision relates to technology choice
-last_updated: 2026-07-12
+last_updated: 2026-07-14
 ---
 
 # Decisions
@@ -50,10 +50,10 @@ last_updated: 2026-07-12
 ### Validation reason codes are explicit data, not message parsing
 **Date:** 2026-07-09
 **Status:** Active
-**Decision:** Failure-log reason mapping uses `ValidationError.reasonCode` when present and otherwise reports `unknown_validation_error`; it does not inspect validation message text to derive semantic codes.
-**Reasoning:** Message parsing made public telemetry depend on prose that can drift independently from caller contracts. Typed reason ownership belongs at the validation throw site, where the author knows the semantic failure.
+**Decision:** Failure-log reason mapping and handler-level preflight retry guidance use `ValidationError.reasonCode` when present and otherwise report no inferred semantic code or guidance; neither inspects validation message text to derive semantics.
+**Reasoning:** Message parsing made public telemetry and caller guidance depend on prose that can drift independently from caller contracts. Typed reason ownership belongs at the validation throw site, where the author knows the semantic failure.
 **Alternatives considered:** Keep the message fallback as defense in depth (rejected because it silently hides missing structured codes), or centralize message strings and codes together (rejected because it still couples telemetry to copy).
-**Consequences:** New semantic validation paths must pass an explicit reason code. Tests should assert both explicit-code preservation and unknown fallback for uncoded validation errors.
+**Consequences:** New semantic validation paths must pass an explicit reason code. New retry guidance must be selected by that code, and tests should assert both explicit-code preservation and unknown fallback for uncoded validation errors.
 
 ### Legacy tool_profile is input-only compatibility
 **Date:** 2026-07-09
