@@ -421,8 +421,8 @@ test("accepts legacy tool profile input without adding resolved runtime state", 
 test("resolves model classes to calibrated model and thinking level", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-model-"));
   for (const [modelClass, model, thinkingLevel] of [
-    ["A", "openrouter/deepseek/deepseek-v4-flash", "high"],
-    ["B", "openrouter/deepseek/deepseek-v4-pro", "high"],
+    ["A", "openai-codex/gpt-5.6-luna", "low"],
+    ["B", "openai-codex/gpt-5.6-luna", "medium"],
     ["C", "openai-codex/gpt-5.6-luna", "xhigh"],
     ["D", "openai-codex/gpt-5.6-terra", "high"],
     ["E", "openai-codex/gpt-5.6-sol", "high"],

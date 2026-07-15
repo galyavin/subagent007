@@ -28,13 +28,13 @@ export const MODEL_CLASS_CALIBRATIONS: Record<ModelClass, {
   description: string;
 }> = {
   A: {
-    model: "openrouter/deepseek/deepseek-v4-flash",
-    thinkingLevel: "high",
+    model: "openai-codex/gpt-5.6-luna",
+    thinkingLevel: "low",
     description: "Lowest-complexity class for narrow read-only audits, low-risk probes, and concise first-pass judgment.",
   },
   B: {
-    model: "openrouter/deepseek/deepseek-v4-pro",
-    thinkingLevel: "high",
+    model: "openai-codex/gpt-5.6-luna",
+    thinkingLevel: "medium",
     description: "Simple coding, review, or search tasks with limited ambiguity.",
   },
   C: {

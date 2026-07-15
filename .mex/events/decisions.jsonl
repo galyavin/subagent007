@@ -60,3 +60,4 @@
 {"timestamp":"2026-07-15T16:00:31.633Z","kind":"note","message":"Clarified the intentional MCP SDK schema-error versus handler-level structured-preflight boundary for callers and maintainers; no runtime behavior changed.","files":[],"cwd":"."}
 {"timestamp":"2026-07-15T16:07:42.661Z","kind":"note","message":"Cococo cleanup reconciled four stale TODO statuses in the state-hygiene ledger with their verified trace and evidence; no runtime behavior changed.","files":[],"cwd":"."}
 {"timestamp":"2026-07-15T16:09:31.500Z","kind":"note","message":"Cococo cleanup removed an unreferenced generic patterns scaffold and repaired the router stale template link; concrete indexed patterns remain the only guidance.","files":[],"cwd":"."}
+{"timestamp":"2026-07-15T16:58:34.902Z","kind":"decision","message":"Mapped class A to openai-codex/gpt-5.6-luna at runtime low (user-facing light) and class B to the same model at medium.","files":[],"cwd":"."}
