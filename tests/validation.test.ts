@@ -418,6 +418,52 @@ test("accepts legacy tool profile input without adding resolved runtime state", 
   );
 });
 
+test("validates the opt-in effect profile without reinterpreting legacy tool_profile", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-effect-profile-"));
+  const resolved = await validateAndResolveRequest(
+    {
+      prompt: "x",
+      cwd,
+      model_class: "C",
+      effect_profile: "workspace_read_only",
+      tool_profile: "workspace_write",
+    },
+    {},
+  );
+
+  assert.equal(resolved.effectProfile, "workspace_read_only");
+  assert.equal(Object.hasOwn(resolved, "toolProfile"), false);
+  await assert.rejects(
+    validateAndResolveRequest(
+      { prompt: "x", cwd, effect_profile: "inspect" as never },
+      {},
+    ),
+    /effect_profile must be one of: workspace_read_only/,
+  );
+});
+
+test("expected_skill_sha256 is lowercase SHA-256 paired with canonical skill_name", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-expected-skill-"));
+  const digest = "a".repeat(64);
+  const resolved = await validateAndResolveRequest(
+    { prompt: "x", cwd, skill_name: "pda-lite", expected_skill_sha256: digest },
+    {},
+  );
+  assert.equal(resolved.expectedSkillSha256, digest);
+
+  for (const request of [
+    { prompt: "x", cwd, skill_name: "pda-lite", expected_skill_sha256: "A".repeat(64) },
+    { prompt: "x", cwd, skill_name: "pda-lite", expected_skill_sha256: "abc" },
+    { prompt: "x", cwd, skill: "pda-lite", expected_skill_sha256: digest },
+    { prompt: "x", cwd, expected_skill_sha256: digest },
+  ]) {
+    await assert.rejects(
+      validateAndResolveRequest(request, {}),
+      /expected_skill_sha256/,
+    );
+  }
+});
+
 test("resolves model classes to calibrated model and thinking level", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-model-"));
   for (const [modelClass, model, thinkingLevel] of [

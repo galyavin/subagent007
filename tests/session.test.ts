@@ -148,6 +148,50 @@ test("run_subagent_session rejects raw continuity", async () => {
   );
 });
 
+test("named-session APIs reject effect_profile instead of silently widening", async () => {
+  const fixture = await createSessionFixture();
+  await withEnv(
+    {
+      SUBAGENT007_PI_CHILD_PATH: fixture.fakeChildPath,
+      FAKE_PI_LOG_PATH: fixture.fakeLogPath,
+      SUBAGENT007_FAILURE_LOG: "off",
+      SUBAGENT007_PI_SKILL_PATHS: fixture.skillsRoot,
+    },
+    async () => {
+      await assert.rejects(
+        runSubagentSession({
+          cwd: fixture.projectDir,
+          prompt: "FAST",
+          session_key: "read-only:unsupported",
+          effect_profile: "workspace_read_only",
+        } as Parameters<typeof runSubagentSession>[0] & { effect_profile: string }, {
+          sessionsDir: fixture.sessionsDir,
+        }),
+        /effect_profile is not supported by named-session APIs/,
+      );
+      assert.deepEqual(await readJsonl(fixture.fakeLogPath).catch(() => []), []);
+    },
+  );
+});
+
+test("named-session MCP schemas reject effect_profile before handler invocation", async () => {
+  await withMcpSessionClient(async (client, fixture) => {
+    for (const name of ["start_session_run", "run_subagent_session"] as const) {
+      const response = await client.callTool({
+        name,
+        arguments: {
+          cwd: fixture.projectDir,
+          prompt: "FAST",
+          session_key: `read-only:${name}`,
+          effect_profile: "workspace_read_only",
+        },
+      });
+      assert.equal(response.isError, true, name);
+    }
+    assert.deepEqual(await readJsonl(fixture.fakeLogPath).catch(() => []), []);
+  });
+});
+
 test("run_subagent_session rejects invalid resume mode and packet policy", async () => {
   const fixture = await createSessionFixture();
   await withEnv(

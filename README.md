@@ -32,6 +32,7 @@ Use this server as a durable delegation boundary. Treat `run_id` as the unit of 
 - Node.js `>=22.19.0`
 - npm, using the committed `package-lock.json`
 - Pi-compatible model/auth configuration visible to the MCP process
+- For `effect_profile:"workspace_read_only"`, a valid `pi-search-hub` package at `<resolved Pi agent dir>/npm/node_modules/pi-search-hub`; this repository does not install that explicit provider
 
 The server uses the bundled `@earendil-works/pi-*` dependencies. A separately installed `pi` CLI is optional: normal MCP execution does not use it, while `npm run models:reconcile` queries `pi --list-models` when available and otherwise marks that inventory source unverified.
 
@@ -119,36 +120,45 @@ Optional common fields:
 - `output_mode`: `final` or `transcript`; default is `final`; use `transcript` for debugging or audit trails
 - `tool_profile`: legacy compatibility field; accepted values are validated and ignored; all registered child tools are active
 
+Opt-in effect and skill-identity fields are accepted only by `run_subagent`, `start_run`, and `schedule_run`. They are independent; a skill digest may be pinned without selecting an effect profile.
+
+- `effect_profile: "workspace_read_only"`: creates the Pi session with exactly `read`, `grep`, `find`, `ls`, `web_search`, `web_read`, and `request_input`; ambient project/global extensions and recursive `delegate` are excluded
+- `expected_skill_sha256`: optional lowercase SHA-256 content pin paired with canonical `skill_name`; the parent rejects a source mismatch before child launch, and the child rejects a snapshot mismatch before prompt submission
+
 Child-invocation input rules:
 
 | Tool | Required beyond `cwd`/`prompt` | Accepted fields beyond common inputs | Rejected fields |
 | --- | --- | --- | --- |
-| `run_subagent` | `run_kind: "quick_noninteractive"` | `continuity` | `timeout_ms`, top-level `session_id` |
-| `schedule_run` | none | `continuity`, `timeout_ms`, `wait_ms` | top-level `session_id` |
-| `start_run` | none | `continuity`, `timeout_ms` | top-level `session_id` |
-| `start_session_run` | `session_key` | `resume_mode`, `packet_policy`, `timeout_ms` | `continuity`, top-level `session_id` |
-| `run_subagent_session` | `session_key` | `resume_mode`, `packet_policy`, `timeout_ms` | `continuity`, top-level `session_id` |
+| `run_subagent` | `run_kind: "quick_noninteractive"` | `continuity`, `effect_profile`, `expected_skill_sha256` | `timeout_ms`, top-level `session_id` |
+| `schedule_run` | none | `continuity`, `timeout_ms`, `wait_ms`, `effect_profile`, `expected_skill_sha256` | top-level `session_id` |
+| `start_run` | none | `continuity`, `timeout_ms`, `effect_profile`, `expected_skill_sha256` | top-level `session_id` |
+| `start_session_run` | `session_key` | `resume_mode`, `packet_policy`, `timeout_ms` | `continuity`, top-level `session_id`, `effect_profile`, `expected_skill_sha256` |
+| `run_subagent_session` | `session_key` | `resume_mode`, `packet_policy`, `timeout_ms` | `continuity`, top-level `session_id`, `effect_profile`, `expected_skill_sha256` |
 
 Operation-only tools do not accept `cwd` or `prompt`: `get_run` takes `run_id`; `cancel_run` takes `run_id`; `answer_run_input` requires `run_id`, `request_id`, `response_id`, and `answer`. A successful receipt means the child-side waiter accepted that exact response. During a live run, an exact retry returns the prior receipt without redelivery; a changed answer under the same response identity is rejected.
 
-For raw Pi `continuity`, use `mode: "ephemeral"`, `mode: "fresh"`, or `mode: "resume"` with absolute `continuity.session_id`. Resume session ids must point to an existing, readable, nonempty session file. Prefer named sessions for durable project work; raw continuity is for callers that already manage Pi session files.
+For raw Pi `continuity`, use `mode: "ephemeral"`, `mode: "fresh"`, or `mode: "resume"` with absolute `continuity.session_id`. Resume session ids must point to an existing, readable, nonempty session file. The session file does not retain `effect_profile`; send the profile on every constrained resume invocation. Prefer named sessions for unconstrained durable project work; named-session APIs do not accept the constrained profile.
 
-Every child receives all tools registered by the embedded Pi session, including required `web_search` and `web_read`, installed Pi extension/MCP tools, and the native recursive `delegate` tool. Child startup fails if a required web tool is absent. This server does not enumerate Codex MCP servers; add capabilities to the Pi environment so they appear in `session.getAllTools()`.
+When `effect_profile` is omitted, every child retains the legacy behavior: all tools registered by the embedded Pi session are active, including installed Pi extension/MCP tools and the native recursive `delegate` tool. Legacy `tool_profile` does not alter that behavior. Legacy startup still fails if `web_search` or `web_read` is unavailable from the registered Pi tools. Subagent007 does not import Codex MCP registrations; install legacy capabilities in the Pi environment.
 
-`skill_name` must resolve to exactly one bare skill name before model invocation. Unknown, ambiguous, prompt-syntax, markdown, prose, and path forms reject with `child_started:false`; terminal metadata records the resolved path and content hash.
+`effect_profile:"workspace_read_only"` is an additive fail-closed exception. Before the first prompt, Subagent007 disables ambient project/global extension discovery, explicitly loads `pi-search-hub` from the resolved Pi agent directory, constructs the Pi session with the exact seven-tool allowlist, verifies the active tool set, and emits `subagent007.activation_confirmed`. `web_search`, `web_read`, and `request_input` each have a provider identity and implementation SHA-256 in `activation_receipt.tool_bindings`; missing providers, missing receipts, conflicting toolsets, or digest-shape failures produce `reason_code:"effect_profile_activation_failed"`. The receipt precedes `child_prompt_submitted` and is copied into active/terminal durable views. This is a Pi tool-dispatch boundary, not an OS sandbox or a hostile-runtime security claim.
+
+Activation receipt schema `1` is strict and requires `confirmed_before_prompt:true`. Its exact top-level fields are `schema_version`, `confirmed_before_prompt`, `requested_effect_profile`, `resolved_effect_profile`, `active_tool_names`, `tool_bindings`, `toolset_sha256`, and `skill_binding`. For `workspace_read_only`, both profile fields name that profile, the active tools use the documented seven-tool order, and bindings are ordered `request_input`, `web_read`, `web_search`, each with `tool_name`, `provider_id`, and lowercase `implementation_sha256`. `toolset_sha256` binds the profile, ordered tools, and bindings. For a digest-pinned skill without an effect profile, the profile fields and toolset digest are null, tool arrays are empty, and `skill_binding` carries `name`, canonical `path`, `content_sha256`, and `expected_content_sha256`.
+
+`skill_name` must resolve to exactly one bare skill name before model invocation. Unknown, ambiguous, prompt-syntax, markdown, prose, and path forms reject with `child_started:false`; terminal metadata records the resolved path and content hash. When `expected_skill_sha256` is supplied, Subagent007 compares it with the resolved `SKILL.md` content before launch, gives Pi a run-owned read-only snapshot of those bytes, and the child re-verifies that snapshot before prompt submission. A mismatch fails closed as `skill_content_mismatch`; a match is included under `activation_receipt.skill_binding`, whose path remains the canonical source path rather than the private snapshot.
 
 Result semantics:
 
 - `get_runtime_readiness` returns the concrete runtime snapshot from inside the running MCP server: resolved project root, server entrypoint, build/dist facts, git/source facts, durable-run contract compatibility, and public tool/capability surface. For pre-launch checks, use `npm run runtime:readiness`; it verifies `dist/server.js` exists before launching MCP, then calls `get_runtime_readiness`. A blocked result includes `status:"blocked"`, `ready:false`, and machine-readable `blocks[].class`.
   The default source policy is `require_clean`, which blocks dirty or unknown git state; `allow_dirty` permits dirty checkouts while still blocking unknown source state, and `allow_unknown` permits both dirty and unknown source state for package-style or exploratory probes.
-- `get_run_contract` returns the durable-run lifecycle contract. Version `2` defines non-terminal statuses `working` and `input_required`, terminal statuses `completed`, `failed`, `cancelled`, and `timed_out`, complete file-backed transcripts with bounded public excerpts, fail-closed disk-reserve protection, mailbox addressing by `run_id/request_id`, recursive lineage fields, session start tools under `tools.session_start`, and fail-closed restart drift behavior. Its acknowledged-input guarantees require response IDs, make receipts evidence of child-waiter acceptance, support exact live replay, forbid operational answer persistence, and fail closed after provider loss.
+- `get_run_contract` returns the durable-run lifecycle contract. Version `2` defines non-terminal statuses `working` and `input_required`, terminal statuses `completed`, `failed`, `cancelled`, and `timed_out`, complete file-backed transcripts with bounded public excerpts, fail-closed disk-reserve protection, mailbox addressing by `run_id/request_id`, recursive lineage fields, session start tools under `tools.session_start`, fail-closed restart drift behavior, and the additive `effect_profiles.workspace_read_only` capability/receipt schema. Its acknowledged-input guarantees require response IDs, make receipts evidence of child-waiter acceptance, support exact live replay, forbid operational answer persistence, and fail closed after provider loss.
 - Terminal views after child execution include `output_references` plus legacy `output_path`; read the referenced file for the full answer and check `written_output_mode`. File-backed public transcripts are complete and are not subject to a per-transcript byte cap; only bounded MCP event/excerpt projections are shortened. Requested `final` output succeeds only when a final message is captured. A clean child exit without that final message fails with `reason_code:"missing_final_output"` and writes the public transcript as diagnostic output; timeout, cancellation, disk-reserve termination, and other failures can also expose transcript output. Schema and preflight rejections do not create output artifacts.
 - Failed, timed-out, restart-drift, and structured rejection views include `error_class` and `reason_code` when the server can classify the failure; adapters should branch on those fields instead of parsing `error`.
 - Provider usage-limit failures use `reason_code:"usage_limit_reached"` and may include provider reset/retry fields such as `provider_status_code`, `provider_error_message`, `usage_limit_resets_in_seconds`, `usage_limit_retry_after_seconds`, and primary/secondary usage percentages. The same fields are copied to failure-log records.
 - SDK input-schema errors—such as missing required fields, invalid enum values, or unrecognized inputs—return standard MCP `isError` responses before the server handler or child starts. They do not carry `kind:"preflight_rejected"` or `child_started`; correct the input and retry.
 - Child-invocation preflight rejections return structured content with `kind:"preflight_rejected"`, `success:false`, and `child_started:false`; no child model work ran.
 - Operation-only semantic rejections from `get_run`, `answer_run_input`, and `cancel_run` return structured content with `kind:"operation_rejected"`, `success:false`, and a typed `reason_code`; these views do not include `child_started` because the target run may already have launched.
-- Skill-bound terminal results include `requested_skill`, `resolved_skill_path`, and `resolved_skill_sha256`; unbound runs use `null` for those skill audit fields.
+- Skill-bound terminal results include `requested_skill`, `resolved_skill_path`, and `resolved_skill_sha256`; pinned runs also include `expected_skill_sha256` and the confirmed binding in `activation_receipt`; unbound runs use `null` for the legacy skill audit fields.
 - Valid `run_subagent` requests that are incompatible only with one-shot execution auto-promote and include `auto_promoted_from`, `promotion_reason_code`, `promotion_reason`, `poll_with`, and `cancel_with`.
 - `run_subagent`, `schedule_run`, `start_run`, `start_session_run`, and `run_subagent_session` create durable run-task snapshots inspectable with `get_run` by `run_id`.
 - Recursive descendant runs created through a child `delegate` tool are also durable root-visible runs. Run views include `root_run_id`, `recursion_depth`, direct `child_run_ids`, and `parent_run_id` for non-root descendants. Parent `recent_events` include sanitized `recursive_child_started` and `recursive_child_finished` events with child run id and terminal status/success metadata. There is no full descendant-tree manager or cascade cancellation; cancel each returned child run explicitly when needed.
@@ -329,11 +339,12 @@ Primary source boundaries:
 - `src/server.ts` registers public MCP tools and preflight result shaping.
 - `src/activeChildLease.ts` owns the shared active-child ceiling, bounded top-level admission queue, ticket-to-lease promotion, and abandoned-owner reconciliation.
 - `src/runTask.ts` owns durable task state, polling views, cancellation, promotion, and active-child lease release.
-- `src/runSubagent.ts` owns the Pi child request-file contract, output projection, timeout metadata, and provider error parsing.
+- `src/runSubagent.ts` owns the Pi child request-file contract, pre-launch skill hashing/snapshotting, output projection, timeout metadata, and provider error parsing.
+- `src/toolProfile.ts` owns the constrained allowlist, explicit provider identities/digests, and activation receipt construction/validation.
 - `src/processRunner.ts` owns backpressured child output consumption and timeout/cancel/disk-reserve/parent-exit termination.
 - `src/failureStorage.ts` owns locking, archival, the aggregate raw-byte budget, and whole-record compaction; `src/failureStorageWorker.ts` provides bounded asynchronous runtime writes.
 - `src/session.ts` owns named-session manifests, packet policy, and local session locks.
-- `src/skillBinding.ts` owns `skill_name`/legacy `skill` validation and prompt-level skill-invocation rejection.
+- `src/skillBinding.ts` owns `skill_name`/legacy `skill` validation and prompt-level skill-invocation rejection; `src/skillResources.ts` owns name-to-`SKILL.md` resolution and ambient resource isolation.
 - `src/types.ts` is the public type/reason-code source; keep it synchronized with README and tests when public fields change.
 
 Tests use `SUBAGENT007_PI_CHILD_PATH` to replace the real Pi child with a fake child process. Do not set it for normal MCP use. `npm test` runs test files serially inside one short, runner-owned temporary root. On Unix, success or failure terminates processes whose command line is owned by that exact root; every platform then removes the root. Unless explicitly overridden, run outputs, task snapshots, mailboxes, sessions, raw Pi sessions, model health, active-child leases, and the private failure ledger are all scoped beneath that root; explicit paths are preserved, and an inherited failure ledger is fingerprinted.

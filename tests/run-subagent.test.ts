@@ -78,6 +78,18 @@ type RunSubagentMetadata = {
   queued_at?: string;
   child_started_at?: string;
   queue_wait_ms?: number;
+  requested_effect_profile?: "workspace_read_only";
+  resolved_effect_profile?: "workspace_read_only";
+  activation_receipt?: {
+    schema_version: 1;
+    confirmed_before_prompt: true;
+    requested_effect_profile: "workspace_read_only" | null;
+    resolved_effect_profile: "workspace_read_only" | null;
+    active_tool_names: string[];
+    tool_bindings: Array<{ tool_name: string; provider_id: string; implementation_sha256: string }>;
+    toolset_sha256: string | null;
+    skill_binding: { name: string; path: string; content_sha256: string; expected_content_sha256: string | null } | null;
+  };
   kind?: string;
   retry_guidance?: string;
   input_response_id?: string;
@@ -611,6 +623,230 @@ test("runSubagent accepts legacy explicit tool profile without runtime profile s
   );
 });
 
+test("workspace_read_only requires an exact pre-prompt activation receipt", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-read-only-"));
+  const projectDir = path.join(tmp, "project");
+  const runsDir = path.join(tmp, "runs");
+  const fake = await createFakePiChild();
+  await fs.mkdir(projectDir, { recursive: true });
+
+  await withEnv(
+    {
+      SUBAGENT007_PI_CHILD_PATH: fake.childPath,
+      FAKE_PI_LOG_PATH: fake.logPath,
+      SUBAGENT007_FAILURE_LOG: "off",
+    },
+    async () => {
+      const result = await runSubagent(
+        { cwd: projectDir, prompt: "FAST", effect_profile: "workspace_read_only" },
+        { runsDir },
+      );
+      assert.equal(result.success, true);
+      assert.equal(result.requested_effect_profile, "workspace_read_only");
+      assert.equal(result.resolved_effect_profile, "workspace_read_only");
+      assert.deepEqual(result.activation_receipt?.active_tool_names, [
+        "read", "grep", "find", "ls", "web_search", "web_read", "request_input",
+      ]);
+      const logs = await readJsonl<{ request: Record<string, unknown> }>(fake.logPath);
+      assert.equal(logs[0].request.effectProfile, "workspace_read_only");
+      assert.equal(Object.hasOwn(logs[0].request, "recursiveControl"), false);
+
+      const missing = await runSubagent(
+        { cwd: projectDir, prompt: "OMIT_ACTIVATION_RECEIPT", effect_profile: "workspace_read_only" },
+        { runsDir },
+      );
+      assert.equal(missing.success, false);
+      assert.equal(missing.reason_code, "effect_profile_activation_failed");
+      assert.equal(missing.error_class, "capability_unavailable");
+      assert.equal(missing.resolved_effect_profile, undefined);
+
+      const conflicting = await runSubagent(
+        { cwd: projectDir, prompt: "CONFLICT_ACTIVATION_RECEIPT", effect_profile: "workspace_read_only" },
+        { runsDir },
+      );
+      assert.equal(conflicting.success, false);
+      assert.equal(conflicting.reason_code, "effect_profile_activation_failed");
+    },
+  );
+});
+
+test("durable constrained runs persist activation before prompt for start_run and schedule_run", async () => {
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    const startedResponse = await client.callTool({
+      name: "start_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "FAST",
+        effect_profile: "workspace_read_only",
+      },
+    });
+    assert.notEqual(startedResponse.isError, true);
+    const started = startedResponse.structuredContent as RunSubagentMetadata;
+    assert.equal(started.requested_effect_profile, "workspace_read_only");
+    const terminal = await waitForTerminalRun(client, started.run_id);
+    assert.equal(terminal.success, true);
+    assert.equal(terminal.resolved_effect_profile, "workspace_read_only");
+    assert.equal(terminal.activation_receipt?.confirmed_before_prompt, true);
+    const eventNames = terminal.recent_events?.map((event) => event.event) ?? [];
+    assert.ok(eventNames.indexOf("activation_confirmed") >= 0);
+    assert.ok(eventNames.indexOf("activation_confirmed") < eventNames.indexOf("child_prompt_submitted"));
+
+    const scheduledResponse = await client.callTool({
+      name: "schedule_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "FAST",
+        effect_profile: "workspace_read_only",
+        wait_ms: 5000,
+      },
+    });
+    assert.notEqual(scheduledResponse.isError, true);
+    const scheduled = scheduledResponse.structuredContent as RunSubagentMetadata;
+    assert.equal(scheduled.success, true);
+    assert.equal(scheduled.activation_receipt?.confirmed_before_prompt, true);
+
+    const conflictingResponse = await client.callTool({
+      name: "schedule_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "CONFLICT_ACTIVATION_RECEIPT",
+        effect_profile: "workspace_read_only",
+        wait_ms: 5000,
+      },
+    });
+    const conflicting = conflictingResponse.structuredContent as RunSubagentMetadata;
+    assert.equal(conflicting.success, false);
+    assert.equal(conflicting.reason_code, "effect_profile_activation_failed");
+    assert.equal(
+      conflicting.recent_events?.some((event) => event.event === "activation_confirmed") ?? false,
+      false,
+    );
+
+    const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
+    assert.equal(logs.length, 3);
+    assert.equal(logs.every((entry) => entry.request.effectProfile === "workspace_read_only"), true);
+    assert.equal(logs.every((entry) => !Object.hasOwn(entry.request, "recursiveControl")), true);
+  });
+});
+
+test("workspace_read_only supports fresh and raw resume only when supplied on each invocation", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-read-only-resume-"));
+  const projectDir = path.join(tmp, "project");
+  const runsDir = path.join(tmp, "runs");
+  const fake = await createFakePiChild();
+  await fs.mkdir(projectDir, { recursive: true });
+  await withEnv({
+    SUBAGENT007_PI_CHILD_PATH: fake.childPath,
+    FAKE_PI_LOG_PATH: fake.logPath,
+    SUBAGENT007_FAILURE_LOG: "off",
+    SUBAGENT007_PI_RAW_SESSIONS_DIR: path.join(tmp, "raw-sessions"),
+  }, async () => {
+    const fresh = await runSubagent({
+      cwd: projectDir,
+      prompt: "FAST",
+      continuity: { mode: "fresh" },
+      effect_profile: "workspace_read_only",
+    }, { runsDir, allowTimeout: true });
+    assert.equal(fresh.success, true);
+    assert.equal(typeof fresh.session_id, "string");
+    assert.equal(fresh.activation_receipt?.confirmed_before_prompt, true);
+
+    const resumed = await runSubagent({
+      cwd: projectDir,
+      prompt: "FAST",
+      continuity: { mode: "resume", session_id: fresh.session_id! },
+      effect_profile: "workspace_read_only",
+    }, { runsDir, allowTimeout: true });
+    assert.equal(resumed.success, true);
+    assert.equal(resumed.session_id, fresh.session_id);
+    assert.equal(resumed.activation_receipt?.confirmed_before_prompt, true);
+  });
+});
+
+test("expected_skill_sha256 mismatch fails before child launch and a match is receipted", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-skill-pin-"));
+  const projectDir = path.join(tmp, "project");
+  const runsDir = path.join(tmp, "runs");
+  const skillsRoot = path.join(tmp, "skills");
+  const skillName = "fixture-pinned-skill";
+  const skillPath = await writeSkillFixture(skillsRoot, skillName);
+  const actualDigest = await sha256File(skillPath);
+  const fake = await createFakePiChild();
+  await fs.mkdir(projectDir, { recursive: true });
+
+  await withEnv(
+    {
+      SUBAGENT007_PI_CHILD_PATH: fake.childPath,
+      FAKE_PI_LOG_PATH: fake.logPath,
+      SUBAGENT007_FAILURE_LOG: "off",
+      SUBAGENT007_PI_SKILL_PATHS: skillsRoot,
+    },
+    async () => {
+      await assert.rejects(
+        runSubagent({
+          cwd: projectDir,
+          prompt: "FAST",
+          skill_name: skillName,
+          expected_skill_sha256: "0".repeat(64),
+        }, { runsDir }),
+        (error: unknown) => error instanceof ValidationError && error.reasonCode === "skill_content_mismatch",
+      );
+      assert.deepEqual(await readJsonl(fake.logPath).catch(() => []), []);
+
+      const matched = await runSubagent({
+        cwd: projectDir,
+        prompt: "FAST",
+        skill_name: skillName,
+        expected_skill_sha256: actualDigest,
+      }, { runsDir });
+      assert.equal(matched.success, true);
+      assert.deepEqual(matched.activation_receipt?.skill_binding, {
+        name: skillName,
+        path: skillPath,
+        content_sha256: actualDigest,
+        expected_content_sha256: actualDigest,
+      });
+      const logs = await readJsonl<{ request: Record<string, unknown> }>(fake.logPath);
+      assert.equal(logs.length, 1);
+      assert.notEqual(logs[0].request.skillFilePath, skillPath);
+      assert.equal(path.basename(String(logs[0].request.skillFilePath)), "SKILL.md");
+      assert.deepEqual(logs[0].request.skillBinding, {
+        name: skillName,
+        path: skillPath,
+        content_sha256: actualDigest,
+        expected_content_sha256: actualDigest,
+      });
+    },
+  );
+});
+
+test("all constrained start surfaces preflight-reject a mismatched skill digest", async () => {
+  const skillsRoot = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-mcp-skill-pin-"));
+  const skillName = "fixture-mcp-pinned-skill";
+  await writeSkillFixture(skillsRoot, skillName);
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    for (const name of ["run_subagent", "start_run", "schedule_run"] as const) {
+      const response = await client.callTool({
+        name,
+        arguments: {
+          cwd: projectDir,
+          prompt: "FAST",
+          skill_name: skillName,
+          expected_skill_sha256: "0".repeat(64),
+          ...(name === "run_subagent" ? { run_kind: "quick_noninteractive" } : {}),
+        },
+      });
+      assert.notEqual(response.isError, true, name);
+      const rejected = response.structuredContent as RunSubagentMetadata;
+      assert.equal(rejected.status, "rejected", name);
+      assert.equal(rejected.kind, "preflight_rejected", name);
+      assert.equal(rejected.child_started, false, name);
+      assert.equal(rejected.reason_code, "skill_content_mismatch", name);
+    }
+    assert.deepEqual(await readJsonl(fakeLogPath).catch(() => []), []);
+  }, { env: { SUBAGENT007_PI_SKILL_PATHS: skillsRoot } });
+});
+
 test("runSubagent creates and resumes raw Pi session files", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-session-"));
   const projectDir = path.join(tmp, "project");
@@ -835,6 +1071,13 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       true,
     );
     assert.deepEqual(runSubagentTool.inputSchema.required, ["prompt", "cwd", "run_kind"]);
+    for (const toolName of ["run_subagent", "start_run", "schedule_run"]) {
+      const tool = response.tools.find((entry) => entry.name === toolName);
+      assert.ok(tool, toolName);
+      const properties = tool.inputSchema.properties as Record<string, unknown>;
+      assert.equal(Object.hasOwn(properties, "effect_profile"), true);
+      assert.equal(Object.hasOwn(properties, "expected_skill_sha256"), true);
+    }
     const getRunTool = response.tools.find((tool) => tool.name === "get_run");
     assert.ok(getRunTool);
     assert.match(getRunTool.description ?? "", /running_silent.*many minutes/i);
@@ -849,6 +1092,13 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       Object.hasOwn(runSubagentSessionTool.inputSchema.properties ?? {}, "continuity"),
       false,
     );
+    for (const toolName of ["start_session_run", "run_subagent_session"]) {
+      const tool = response.tools.find((entry) => entry.name === toolName);
+      assert.ok(tool, toolName);
+      const properties = tool.inputSchema.properties as Record<string, unknown>;
+      assert.equal(Object.hasOwn(properties, "effect_profile"), false);
+      assert.equal(Object.hasOwn(properties, "expected_skill_sha256"), false);
+    }
     for (const toolName of [
       "start_run",
       "schedule_run",
@@ -895,6 +1145,16 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
         raw_answer_persistence?: string;
         process_loss?: string;
       };
+      effect_profiles?: {
+        workspace_read_only?: {
+          supported_tools?: string[];
+          supported_start_tools?: string[];
+          supported_continuity_modes?: string[];
+          named_sessions?: string;
+          recursive_delegate?: string;
+          activation_receipt?: { event_type?: string; required_before_prompt?: boolean };
+        };
+      };
     };
     assert.equal(contract.contract_name, "subagent007.durable_run");
     assert.equal(contract.contract_version, 2);
@@ -910,6 +1170,26 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.equal(contract.capabilities?.includes("complete_file_backed_transcripts"), true);
     assert.equal(contract.capabilities?.includes("disk_reserve_fail_closed"), true);
     assert.equal(contract.capabilities?.includes("bounded_local_admission_queue"), true);
+    assert.equal(contract.capabilities?.includes("workspace_read_only_effect_profile"), true);
+    assert.deepEqual(contract.effect_profiles?.workspace_read_only?.supported_tools, [
+      "read", "grep", "find", "ls", "web_search", "web_read", "request_input",
+    ]);
+    assert.deepEqual(contract.effect_profiles?.workspace_read_only?.supported_start_tools, [
+      "run_subagent", "start_run", "schedule_run",
+    ]);
+    assert.deepEqual(contract.effect_profiles?.workspace_read_only?.supported_continuity_modes, [
+      "ephemeral", "fresh", "resume",
+    ]);
+    assert.equal(contract.effect_profiles?.workspace_read_only?.named_sessions, "unsupported");
+    assert.equal(contract.effect_profiles?.workspace_read_only?.recursive_delegate, "excluded");
+    assert.equal(
+      contract.effect_profiles?.workspace_read_only?.activation_receipt?.event_type,
+      "subagent007.activation_confirmed",
+    );
+    assert.equal(
+      contract.effect_profiles?.workspace_read_only?.activation_receipt?.required_before_prompt,
+      true,
+    );
     assert.equal(
       contract.output_reference?.transcript_size_policy,
       "unbounded_file",
@@ -1351,7 +1631,7 @@ test("MCP run_subagent auto-promotes skill-bound work without one-shot health ga
           {
             schema_version: 1,
             model_class: "A",
-            resolved_model: "openrouter/deepseek/deepseek-v4-flash",
+            resolved_model: "openai-codex/gpt-5.6-luna",
             surface: "run_subagent_one_shot",
             checked_at: "2026-06-11T00:00:00.000Z",
             usable_for_one_shot: false,
@@ -1393,7 +1673,7 @@ test("MCP run_subagent auto-promotes skill-bound work without one-shot health ga
       assert.equal(logs.length, 1);
       assert.equal(logs[0].request.skill, skillName);
       assert.equal(logs[0].request.skillFilePath, skillPath);
-      assert.equal(logs[0].request.model, "openrouter/deepseek/deepseek-v4-flash");
+      assert.equal(logs[0].request.model, "openai-codex/gpt-5.6-luna");
 
       const persisted = JSON.parse(
         await fs.readFile(path.join(runTasksDir, `${metadata.run_id}.json`), "utf8"),
@@ -1544,7 +1824,7 @@ test("MCP run_subagent fails fast for known unhealthy one-shot model class", asy
         {
           schema_version: 1,
           model_class: "A",
-          resolved_model: "openrouter/deepseek/deepseek-v4-flash",
+          resolved_model: "openai-codex/gpt-5.6-luna",
           surface: "run_subagent_one_shot",
           checked_at: "2026-06-11T00:00:00.000Z",
           usable_for_one_shot: false,

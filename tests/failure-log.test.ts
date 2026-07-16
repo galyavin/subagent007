@@ -84,6 +84,20 @@ test("disk-reserve exhaustion remains typed ahead of exit and signal fallbacks",
   assert.equal(failureReasonCodeForSessionResult(sessionFailure, true), "disk_reserve_exhausted");
 });
 
+test("constrained activation failures remain typed ahead of exit fallbacks", () => {
+  for (const reason_code of ["effect_profile_activation_failed", "skill_content_mismatch"] as const) {
+    assert.equal(
+      failureClassForProcessResult({
+        timed_out: false,
+        exit_code: 1,
+        stop_signal: null,
+        reason_code,
+      }),
+      "capability_unavailable",
+    );
+  }
+});
+
 test("failure reason mapping uses explicit validation reason codes", () => {
   assert.equal(
     failureReasonCodeForError(

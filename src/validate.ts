@@ -3,6 +3,7 @@ import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import {
   MODEL_CLASSES,
+  EFFECT_PROFILES,
   OUTPUT_MODES,
   RUN_CONTINUITY_MODES,
   TOOL_PROFILES,
@@ -73,6 +74,10 @@ function validationReasonCodeForKey(key: string): FailureReasonCode {
       return "invalid_output_mode";
     case "tool_profile":
       return "invalid_tool_profile";
+    case "effect_profile":
+      return "invalid_effect_profile";
+    case "expected_skill_sha256":
+      return "invalid_expected_skill_sha256";
     case "skill":
     case "skill_name":
       return "invalid_skill";
@@ -322,6 +327,22 @@ export async function validateAndResolveRequest(
   await validateResumeSessionFile(continuity);
 
   validateChoice(request.tool_profile, "tool_profile", TOOL_PROFILES);
+  const effectProfile = validateChoice(request.effect_profile, "effect_profile", EFFECT_PROFILES);
+  const expectedSkillSha256 = trimOptional(request.expected_skill_sha256, "expected_skill_sha256");
+  if (expectedSkillSha256 !== undefined) {
+    if (!/^[0-9a-f]{64}$/.test(expectedSkillSha256)) {
+      throw new ValidationError(
+        "expected_skill_sha256 must be a lowercase 64-character SHA-256 hex digest",
+        "invalid_expected_skill_sha256",
+      );
+    }
+    if (typeof request.skill_name !== "string" || request.skill_name.trim() === "") {
+      throw new ValidationError(
+        "expected_skill_sha256 requires canonical skill_name",
+        "invalid_expected_skill_sha256",
+      );
+    }
+  }
 
   return {
     prompt,
@@ -332,6 +353,8 @@ export async function validateAndResolveRequest(
     timeoutMs,
     continuity,
     skill: resolveSkillBinding(request, prompt),
+    effectProfile,
+    expectedSkillSha256,
     outputMode: validateOutputMode(request.output_mode),
   };
 }

@@ -11,7 +11,7 @@ triggers:
 edges:
   - target: context/architecture.md
     condition: when a convention depends on understanding the system structure
-last_updated: 2026-07-13
+last_updated: 2026-07-15
 ---
 
 # Conventions
@@ -48,6 +48,8 @@ last_updated: 2026-07-13
 - When changing child execution, verify timeout/cancel/disk-reserve/parent-exit cleanup because fake child descendants can otherwise outlive the test run or exhaust host storage.
 - Compatibility aliases such as `list_allowed_models`, legacy `skill`, and legacy `tool_profile` are intentional unless a migration explicitly removes them.
 - Legacy `tool_profile` is boundary-only compatibility: validate accepted values, but do not add `toolProfile`, `resolved_tool_profile`, or failure-log profile fields downstream.
+- New effect ceilings use a separate `effect_profile`, must filter Pi tools at construction before prompt, must disable ambient extension loading separately, and must project only child receipts that the parent structurally validates.
+- Skill content pins must attest the bytes Pi actually expands. Use a run-owned snapshot; do not certify a source-path hash while Pi can reread different bytes later.
 - `ValidationError.reasonCode` is the semantic authority for failure reason mapping. Do not infer public reason codes from English message text.
 - Observed campaign result classes must prove the caller-visible contract they name. For `tool-listing`, assert the exact public tool surface and schema guidance; do not count a generic non-error `listTools()` response as full discovery coverage.
 - Full-current observed coverage must exercise two-hop recursion, a depth boundary after a valid hop, session resume, queued work lifecycle, and exact live input retry when those public capabilities exist.

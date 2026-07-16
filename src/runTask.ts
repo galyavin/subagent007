@@ -27,6 +27,7 @@ import {
 } from "./inputMailbox.js";
 import {
   assertPiChildEntrypointAvailable,
+  assertExpectedSkillBinding,
   runSubagentCore,
   resolveSkillFilePathForRequest,
   RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT,
@@ -90,8 +91,9 @@ const TERMINAL_RUN_STATUS_SET = new Set<RunTaskStatus>(TERMINAL_RUN_STATUSES);
 type RunTaskTerminalResult = RunSubagentResult | RunSubagentSessionResult;
 type ChildLifecycleEventName = Extract<
   RunPublicEventName,
-  "child_spawned" | "child_bridge_started" | "child_session_established" | "child_prompt_submitted"
+  "child_spawned" | "child_bridge_started" | "child_session_established" | "activation_confirmed" | "child_prompt_submitted"
 >;
+type StandardChildLifecycleEventName = Exclude<ChildLifecycleEventName, "activation_confirmed">;
 type RunTaskFailureLogTool = Extract<
   FailureLogTool,
   "run_subagent" | "schedule_run" | "start_run" | "start_session_run" | "run_subagent_session"
@@ -191,6 +193,9 @@ interface RunTaskState {
   queuedAt?: string;
   childStartedAt?: string;
   capacityReleased: boolean;
+  requestedEffectProfile?: RunSubagentRequest["effect_profile"];
+  activationReceipt?: RunSubagentResult["activation_receipt"];
+  expectedSkillSha256?: string;
 }
 
 interface PendingInputDelivery {
@@ -636,6 +641,24 @@ function activeProgressView(state: RunTaskState): RunTaskProgressView {
   return progressView(state, Math.max(0, Date.now() - Date.parse(state.startedAt)));
 }
 
+function activationView(state: RunTaskState): Pick<
+  RunTaskView,
+  "requested_effect_profile" | "resolved_effect_profile" | "expected_skill_sha256" | "activation_receipt"
+> {
+  return {
+    ...(state.requestedEffectProfile ? { requested_effect_profile: state.requestedEffectProfile } : {}),
+    ...(state.expectedSkillSha256 ? { expected_skill_sha256: state.expectedSkillSha256 } : {}),
+    ...(state.activationReceipt
+      ? {
+          ...(state.activationReceipt.resolved_effect_profile
+            ? { resolved_effect_profile: state.activationReceipt.resolved_effect_profile }
+            : {}),
+          activation_receipt: state.activationReceipt,
+        }
+      : {}),
+  };
+}
+
 function activeRunTaskView(state: RunTaskState, inputRequests: InputRequestView[]): RunTaskView {
   const hasPendingInput = inputRequests.some((request) => request.status === "pending");
   if (hasPendingInput) {
@@ -657,6 +680,7 @@ function activeRunTaskView(state: RunTaskState, inputRequests: InputRequestView[
     input_requests: inputRequests,
     ...admissionView(state),
     ...activeProgressView(state),
+    ...activationView(state),
     ...(state.partialOutputPath ? { partial_output_path: state.partialOutputPath } : {}),
   };
 }
@@ -851,6 +875,10 @@ async function registerRunTaskState(
   request: RunSubagentRequest | RunSubagentSessionRequest,
 ): Promise<void> {
   state.cwd = typeof request.cwd === "string" ? request.cwd : undefined;
+  if ("effect_profile" in request) {
+    state.requestedEffectProfile = request.effect_profile;
+    state.expectedSkillSha256 = request.expected_skill_sha256;
+  }
   tasks.set(state.runId, state);
   await appendRunStartedEvent(state, request);
   await writeTaskSnapshot(await getRunTask(state.runId));
@@ -1061,6 +1089,8 @@ async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
       ? "timeout"
       : result.error_class === "resource_exhausted"
         ? "resource_exhausted"
+      : result.error_class === "capability_unavailable"
+        ? "capability_unavailable"
       : result.error_class === "missing_final_output"
         ? "missing_final_output"
       : result.error_class === "missing_session_id"
@@ -1076,12 +1106,14 @@ async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
         ? "disk_reserve_exhausted"
       : failureClass === "missing_session_id"
         ? "missing_session_id"
-        : failureClass === "missing_final_output"
+      : failureClass === "missing_final_output"
           ? "missing_final_output"
           : failureClass === "nonzero_exit" && result.reason_code
             ? result.reason_code
             : failureClass === "nonzero_exit"
               ? "nonzero_exit"
+              : failureClass === "capability_unavailable" && result.reason_code
+                ? result.reason_code
               : failureClass === "signal_terminated"
                 ? "process_signal_terminated"
                 : "unknown_error";
@@ -1128,6 +1160,12 @@ async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
       : {}),
     model_class: result.resolved_model_class,
     skill: result.requested_skill,
+    resolved_skill_path: result.resolved_skill_path,
+    resolved_skill_sha256: result.resolved_skill_sha256,
+    expected_skill_sha256: result.expected_skill_sha256,
+    requested_effect_profile: result.requested_effect_profile,
+    resolved_effect_profile: result.resolved_effect_profile,
+    activation_toolset_sha256: result.activation_receipt?.toolset_sha256,
     output_mode: result.requested_output_mode,
   });
 }
@@ -1255,7 +1293,7 @@ function isProcessControlMarkerLine(line: string): boolean {
   return trimmed === "[subagent007 cancelled]" || trimmed.startsWith("[subagent007 timeout]");
 }
 
-function isChildLifecycleEventName(value: unknown): value is ChildLifecycleEventName {
+function isStandardChildLifecycleEventName(value: unknown): value is StandardChildLifecycleEventName {
   return value === "child_bridge_started" ||
     value === "child_session_established" ||
     value === "child_prompt_submitted";
@@ -1283,11 +1321,18 @@ function childLifecycleFromProcessLine(line: string): {
       },
     };
   }
+  if (parsed.type === "subagent007.activation_confirmed") {
+    return {
+      event: "activation_confirmed",
+      text: "[activation_confirmed] constrained child activation confirmed",
+      progressMessage: "constrained activation confirmed before prompt",
+    };
+  }
   if (parsed.type !== "subagent007.lifecycle") {
     return null;
   }
   const event = parsed.event ?? parsed.phase;
-  if (!isChildLifecycleEventName(event)) {
+  if (!isStandardChildLifecycleEventName(event)) {
     return null;
   }
   switch (event) {
@@ -1367,6 +1412,9 @@ async function appendTerminalEvent(state: RunTaskState): Promise<void> {
 async function observeOutputLine(state: RunTaskState, line: string): Promise<void> {
   const lifecycle = childLifecycleFromProcessLine(line);
   if (lifecycle) {
+    if (lifecycle.event === "activation_confirmed" && !state.activationReceipt) {
+      return;
+    }
     const occurredAt = new Date().toISOString();
     if (state.activePhase === "awaiting_child_event" || state.activePhase === "running_silent") {
       setTaskPhase(state, "running_silent", occurredAt);
@@ -1376,7 +1424,14 @@ async function observeOutputLine(state: RunTaskState, line: string): Promise<voi
       lifecycle.event,
       lifecycle.text,
       lifecycle.progressMessage,
-      { occurredAt, ...(lifecycle.metadata ? { metadata: lifecycle.metadata } : {}) },
+      {
+        occurredAt,
+        ...(lifecycle.event === "activation_confirmed" && state.activationReceipt
+          ? { metadata: { receipt: state.activationReceipt } }
+          : lifecycle.metadata
+            ? { metadata: lifecycle.metadata }
+            : {}),
+      },
     );
     await writeTaskSnapshot(await getRunTask(state.runId));
     return;
@@ -1432,12 +1487,16 @@ function taskChildRuntimeOptions(
   onOutputLine: (line: string) => Promise<void>;
   onTranscriptStaged: (stagingPath: string) => Promise<void>;
   onChildSpawned: () => Promise<void>;
+  onActivationConfirmed: (receipt: NonNullable<RunSubagentResult["activation_receipt"]>) => void;
 } {
   return {
     heartbeat: (beat, message) => handleTaskHeartbeat(state, beat, message, options.heartbeat),
     heartbeatIntervalMs: options.heartbeatIntervalMs,
     abortSignal: state.abortController.signal,
     onOutputLine: (line) => observeOutputLine(state, line),
+    onActivationConfirmed: (receipt) => {
+      state.activationReceipt = receipt;
+    },
     onTranscriptStaged: async (stagingPath) => {
       state.partialOutputPath = stagingPath;
       await writeTaskSnapshot(await getRunTask(state.runId));
@@ -1711,6 +1770,7 @@ export async function getRunTask(runId: string, allowUnreleasedTerminal = false)
       ...contractFields(),
       ...state.result,
       ...promotionView(state),
+      ...activationView(state),
       run_id: state.runId,
       task_id: state.runId,
       task_kind: state.taskKind,
@@ -1742,6 +1802,7 @@ export async function getRunTask(runId: string, allowUnreleasedTerminal = false)
       task_kind: state.taskKind,
       ...lineageView(state),
       ...promotionView(state),
+      ...activationView(state),
       ...(state.sessionKey ? { session_key: state.sessionKey } : {}),
       status: state.cancelRequested ? "cancelled" : "failed",
       started_at: state.startedAt,
@@ -1818,6 +1879,7 @@ export async function startRunTask(
   const resolved = await validateAndResolveRequest(request, config);
   assertDeadlineRiskTimeoutBudget(request, resolved, failureLogTool);
   const skillFilePath = resolveSkillFilePathForRequest(resolved);
+  await assertExpectedSkillBinding(resolved, skillFilePath);
   await assertPiChildEntrypointAvailable();
   await assertDiskReserveAvailable(options.runsDir);
 
@@ -2140,6 +2202,7 @@ export async function runSubagentOneShotTask(
   const config = await loadConfig();
   const resolved = await validateAndResolveRequest(request, config);
   const skillFilePath = resolveSkillFilePathForRequest(resolved);
+  await assertExpectedSkillBinding(resolved, skillFilePath);
   const incompatibility = runSubagentOneShotIncompatibility(request, resolved);
   if (incompatibility) {
     return runSubagentPromotedTask(request, incompatibility, skillFilePath, options);

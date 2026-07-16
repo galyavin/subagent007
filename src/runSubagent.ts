@@ -29,6 +29,8 @@ import { resolvePiAgentDir } from "./piAgentDir.js";
 import { resolveRequestedSkill } from "./skillResources.js";
 import type { FailureReasonCode, RunStopReason } from "./types.js";
 import type {
+  ActivationReceipt,
+  ActivationSkillBinding,
   OutputMode,
   PromptProvenance,
   ResolvedRunSubagentRequest,
@@ -42,6 +44,7 @@ import {
   recursiveControlConfigForChild,
   type RecursiveControlChildConfig,
 } from "./recursiveControl.js";
+import { validatedActivationReceipt } from "./toolProfile.js";
 
 const DEFAULT_RUN_SUBAGENT_TIMEOUT_MS = 110_000;
 export const RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT =
@@ -89,6 +92,9 @@ interface PiChildRequestFile {
   sessionFile?: string;
   sessionDir?: string;
   recursiveControl?: RecursiveControlChildConfig;
+  effectProfile?: ResolvedRunSubagentRequest["effectProfile"];
+  expectedSkillSha256?: string;
+  skillBinding?: ActivationSkillBinding;
 }
 
 export interface ChildInputResponseAccepted {
@@ -187,7 +193,23 @@ async function writeChildRequestFile(request: PiChildRequestFile): Promise<{
 }> {
   const dir = await createOwnedTemporaryDir("subagent007-pi-child-");
   const requestPath = path.join(dir, `${randomBytes(6).toString("hex")}.json`);
-  await fs.writeFile(requestPath, `${JSON.stringify(request, null, 2)}\n`, {
+  let persistedRequest = request;
+  if (request.skillBinding && request.skillFilePath) {
+    const skillSnapshotDir = path.join(dir, "skill-snapshot");
+    const skillSnapshotPath = path.join(skillSnapshotDir, "SKILL.md");
+    await fs.mkdir(skillSnapshotDir, { recursive: true });
+    try {
+      await fs.copyFile(request.skillFilePath, skillSnapshotPath);
+    } catch (error) {
+      throw new ValidationError(
+        `resolved skill content could not be snapshotted before child launch: ${(error as Error).message}`,
+        "skill_content_mismatch",
+      );
+    }
+    await fs.chmod(skillSnapshotPath, 0o400);
+    persistedRequest = { ...request, skillFilePath: skillSnapshotPath };
+  }
+  await fs.writeFile(requestPath, `${JSON.stringify(persistedRequest, null, 2)}\n`, {
     encoding: "utf8",
     mode: 0o600,
   });
@@ -320,6 +342,12 @@ function parseSubagentErrorEvent(line: string): Record<string, unknown> | undefi
 
 function childFailureMetadataFromLine(line: string): ChildFailureMetadata {
   const errorEvent = parseSubagentErrorEvent(line);
+  if (
+    errorEvent?.reason_code === "effect_profile_activation_failed" ||
+    errorEvent?.reason_code === "skill_content_mismatch"
+  ) {
+    return { reasonCode: errorEvent.reason_code };
+  }
   const providerError = asRecord(errorEvent?.error);
   if (providerError?.type === "usage_limit_reached") {
     return {
@@ -344,6 +372,7 @@ function runErrorTaxonomy(input: {
   sessionEstablished: boolean;
   missingFinalOutput: boolean;
   resourceExhausted: boolean;
+  activationFailed: boolean;
   childFailureReasonCode?: FailureReasonCode;
 }): { error_class?: string; reason_code?: FailureReasonCode } {
   if (input.success || input.cancelled) {
@@ -354,6 +383,12 @@ function runErrorTaxonomy(input: {
   }
   if (input.resourceExhausted || input.stopReason === "resource_exhausted") {
     return { error_class: "resource_exhausted", reason_code: "disk_reserve_exhausted" };
+  }
+  if (input.activationFailed || input.childFailureReasonCode === "effect_profile_activation_failed" || input.childFailureReasonCode === "skill_content_mismatch") {
+    return {
+      error_class: "capability_unavailable",
+      reason_code: input.childFailureReasonCode ?? "effect_profile_activation_failed",
+    };
   }
   if (input.stopReason === "spawn_error") {
     return { error_class: "unknown_error", reason_code: "spawn_error" };
@@ -395,19 +430,73 @@ async function resolvedSkillAuditMetadata(
 ): Promise<{
   resolvedSkillPath: string | null;
   resolvedSkillSha256: string | null;
+  skillBinding: ActivationSkillBinding | null;
 }> {
   if (!resolved.skill || !skillFilePath) {
     return {
       resolvedSkillPath: null,
       resolvedSkillSha256: null,
+      skillBinding: null,
     };
   }
   const resolvedSkillPath = path.resolve(skillFilePath);
   const content = await fs.readFile(resolvedSkillPath);
+  const resolvedSkillSha256 = createHash("sha256").update(content).digest("hex");
   return {
     resolvedSkillPath,
-    resolvedSkillSha256: createHash("sha256").update(content).digest("hex"),
+    resolvedSkillSha256,
+    skillBinding: {
+      name: resolved.skill,
+      path: resolvedSkillPath,
+      content_sha256: resolvedSkillSha256,
+      expected_content_sha256: null,
+    },
   };
+}
+
+export async function assertExpectedSkillBinding(
+  resolved: Pick<ResolvedRunSubagentRequest, "skill" | "expectedSkillSha256">,
+  skillFilePath: string | undefined,
+): Promise<void> {
+  if (!resolved.expectedSkillSha256) {
+    return;
+  }
+  let audit: Awaited<ReturnType<typeof resolvedSkillAuditMetadata>>;
+  try {
+    audit = await resolvedSkillAuditMetadata(resolved, skillFilePath);
+  } catch (error) {
+    throw new ValidationError(
+      `resolved skill content could not be verified before child launch: ${(error as Error).message}`,
+      "skill_content_mismatch",
+    );
+  }
+  if (audit.resolvedSkillSha256 !== resolved.expectedSkillSha256) {
+    throw new ValidationError(
+      `resolved skill content SHA-256 does not match expected_skill_sha256 for ${JSON.stringify(resolved.skill)}`,
+      "skill_content_mismatch",
+    );
+  }
+}
+
+function activationReceiptFromLine(input: {
+  line: string;
+  resolved: ResolvedRunSubagentRequest;
+  skillBinding: ActivationSkillBinding | null;
+}): ActivationReceipt | undefined {
+  try {
+    const event = JSON.parse(input.line) as { type?: unknown; receipt?: unknown };
+    if (event.type !== "subagent007.activation_confirmed") {
+      return undefined;
+    }
+    return validatedActivationReceipt({
+      value: event.receipt,
+      effectProfile: input.resolved.effectProfile,
+      skillBinding: input.skillBinding,
+      expectedSkillSha256: input.resolved.expectedSkillSha256,
+    });
+  } catch {
+    return undefined;
+  }
 }
 
 export async function runSubagentCore(
@@ -430,6 +519,7 @@ export async function runSubagentCore(
     onInputResponseAccepted?: (response: ChildInputResponseAccepted) => void;
     onTranscriptStaged?: (stagingPath: string) => void | Promise<void>;
     onChildSpawned?: () => void | Promise<void>;
+    onActivationConfirmed?: (receipt: ActivationReceipt) => void | Promise<void>;
   } = {},
 ): Promise<RunSubagentResult> {
   if (!options.allowTimeout && request.timeout_ms !== undefined) {
@@ -441,7 +531,25 @@ export async function runSubagentCore(
   const config = await loadConfig();
   const resolved = await validateAndResolveRequest(request, config);
   const skillFilePath = options.skillFilePath ?? resolveSkillFilePathForRequest(resolved);
-  const skillAudit = await resolvedSkillAuditMetadata(resolved, skillFilePath);
+  let skillAudit: Awaited<ReturnType<typeof resolvedSkillAuditMetadata>>;
+  try {
+    skillAudit = await resolvedSkillAuditMetadata(resolved, skillFilePath);
+  } catch (error) {
+    if (resolved.expectedSkillSha256 || resolved.effectProfile) {
+      throw new ValidationError(
+        `resolved skill content could not be verified before child launch: ${(error as Error).message}`,
+        "skill_content_mismatch",
+      );
+    }
+    throw error;
+  }
+  await assertExpectedSkillBinding(resolved, skillFilePath);
+  const skillBinding = skillAudit.skillBinding
+    ? {
+        ...skillAudit.skillBinding,
+        expected_content_sha256: resolved.expectedSkillSha256 ?? null,
+      }
+    : null;
   const runId = options.runId ?? newRunId();
   const mailboxRoot = options.mailboxRoot ?? defaultInputRequestsDir();
   const inputRequestsDir = path.join(mailboxRoot, runId);
@@ -492,10 +600,19 @@ export async function runSubagentCore(
         rootRunId: options.rootRunId,
         recursionDepth: options.recursionDepth,
       }),
+      ...(resolved.effectProfile ? { effectProfile: resolved.effectProfile } : {}),
+      ...(resolved.expectedSkillSha256 ? { expectedSkillSha256: resolved.expectedSkillSha256 } : {}),
+      ...((resolved.effectProfile || resolved.expectedSkillSha256) && skillBinding
+        ? { skillBinding }
+        : {}),
     };
+    if (resolved.effectProfile) {
+      delete childPayload.recursiveControl;
+    }
     childRequest = await writeChildRequestFile(childPayload);
     let parsedSessionId: string | null = null;
     let childFailure: ChildFailureMetadata = {};
+    let activationReceipt: ActivationReceipt | undefined;
     const processResult = await runChildProcess({
       command: process.execPath,
       args: [childEntrypoint, childRequest.requestPath],
@@ -515,6 +632,11 @@ export async function runSubagentCore(
       onOutputLine: async (line) => {
         await transcript?.appendProcessLine(line);
         parsedSessionId ??= extractSubagentSessionId(line);
+        const lineActivationReceipt = activationReceiptFromLine({ line, resolved, skillBinding });
+        if (!activationReceipt && lineActivationReceipt) {
+          activationReceipt = lineActivationReceipt;
+          await options.onActivationConfirmed?.(lineActivationReceipt);
+        }
         const lineFailure = childFailureMetadataFromLine(line);
         if (lineFailure.reasonCode || lineFailure.usageLimitMetadata) {
           childFailure = lineFailure;
@@ -543,6 +665,8 @@ export async function runSubagentCore(
       !processResult.timedOut &&
       !processResult.cancelled &&
       !processResult.resourceExhausted;
+    const activationRequired = Boolean(resolved.effectProfile || resolved.expectedSkillSha256);
+    const activationConfirmed = !activationRequired || activationReceipt !== undefined;
     const sessionId = sessionMode.kind === "fresh"
       ? parsedSessionId
       : sessionMode.kind === "resume"
@@ -555,7 +679,7 @@ export async function runSubagentCore(
         : false;
     const missingFinalOutput = processSuccess && resolved.outputMode === "final" && !finalMessage;
     const success =
-      processSuccess && !missingFinalOutput && (sessionMode.kind !== "fresh" || sessionEstablished);
+      processSuccess && activationConfirmed && !missingFinalOutput && (sessionMode.kind !== "fresh" || sessionEstablished);
     const partialOutputAvailable = partialOutputAvailableForRun({
       timedOut: processResult.timedOut,
       resourceExhausted: processResult.resourceExhausted,
@@ -603,6 +727,12 @@ export async function runSubagentCore(
       requested_skill: resolved.skill ?? null,
       resolved_skill_path: skillAudit.resolvedSkillPath,
       resolved_skill_sha256: skillAudit.resolvedSkillSha256,
+      ...(resolved.expectedSkillSha256 ? { expected_skill_sha256: resolved.expectedSkillSha256 } : {}),
+      ...(resolved.effectProfile ? { requested_effect_profile: resolved.effectProfile } : {}),
+      ...(activationReceipt?.resolved_effect_profile
+        ? { resolved_effect_profile: activationReceipt.resolved_effect_profile }
+        : {}),
+      ...(activationReceipt ? { activation_receipt: activationReceipt } : {}),
       requested_output_mode: resolved.outputMode,
       written_output_mode: writtenOutputMode,
       stop_reason: processResult.stopReason,
@@ -618,7 +748,14 @@ export async function runSubagentCore(
         sessionEstablished,
         missingFinalOutput,
         resourceExhausted: processResult.resourceExhausted,
-        childFailureReasonCode: childFailure.reasonCode,
+        activationFailed: !activationConfirmed,
+        childFailureReasonCode: childFailure.reasonCode ?? (
+          !activationConfirmed
+            ? resolved.effectProfile
+              ? "effect_profile_activation_failed"
+              : "skill_content_mismatch"
+            : undefined
+        ),
       }),
       ...(childFailure.usageLimitMetadata ?? {}),
       ...(timeoutRecoveryHint ? { timeout_recovery_hint: timeoutRecoveryHint } : {}),

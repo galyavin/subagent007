@@ -87,3 +87,26 @@ test("requested skill resolution fails fast for unknown or ambiguous skills", as
     /ambiguous/,
   );
 });
+
+test("workspace_read_only resource loading excludes ambient extensions and binds only explicit providers", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-skill-resources-extensions-"));
+  const cwd = path.join(tmp, "project");
+  const agentDir = path.join(tmp, "agent");
+  const explicitExtension = path.join(tmp, "explicit-extension.ts");
+  await fs.mkdir(path.join(agentDir, "extensions"), { recursive: true });
+  await fs.mkdir(path.join(cwd, ".pi", "extensions"), { recursive: true });
+  await fs.writeFile(path.join(agentDir, "extensions", "ambient.ts"), "export default () => {};\n");
+  await fs.writeFile(path.join(cwd, ".pi", "extensions", "project.ts"), "export default () => {};\n");
+  await fs.writeFile(explicitExtension, "export default () => {};\n");
+
+  const loader = createSkillScopedResourceLoader({
+    cwd,
+    agentDir,
+    noAmbientExtensions: true,
+    explicitExtensionPaths: [explicitExtension],
+  });
+  await loader.reload();
+  const extensions = loader.getExtensions().extensions;
+  assert.equal(extensions.length, 1);
+  assert.equal(extensions[0].sourceInfo?.path, explicitExtension);
+});

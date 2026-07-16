@@ -46,6 +46,7 @@ import {
 import { SERVER_VERSION } from "./runtimeMetadata.js";
 import {
   type FailureReasonCode,
+  EFFECT_PROFILES,
   OUTPUT_MODES,
   MODEL_CLASSES,
   type OperationRejectedResult,
@@ -318,8 +319,21 @@ const baseRunInputSchema = {
     .describe("Legacy compatibility field; accepted values are validated and ignored; all registered child tools are active."),
 };
 
-const runInputSchema = z.strictObject({
+const constrainedRunInputSchema = {
   ...baseRunInputSchema,
+  effect_profile: z
+    .enum(EFFECT_PROFILES)
+    .optional()
+    .describe("Opt-in enforced Pi construction-time effect ceiling. Omitted preserves the legacy all-tools behavior."),
+  expected_skill_sha256: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/, "expected_skill_sha256 must be a lowercase 64-character SHA-256 hex digest")
+    .optional()
+    .describe("Optional pre-prompt skill-content pin; requires canonical skill_name."),
+};
+
+const runInputSchema = z.strictObject({
+  ...constrainedRunInputSchema,
   run_kind: runKindSchema,
   continuity: continuitySchema.optional(),
 }, {
@@ -331,7 +345,7 @@ const runInputSchema = z.strictObject({
 });
 
 const timedRunInputSchema = {
-  ...baseRunInputSchema,
+  ...constrainedRunInputSchema,
   continuity: continuitySchema.optional(),
   timeout_ms: z
     .number()

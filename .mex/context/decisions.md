@@ -68,7 +68,23 @@ last_updated: 2026-07-15
 **Decision:** The public request schema still accepts known `tool_profile` values, but validation discards the field and runtime/result/session/failure surfaces no longer carry `toolProfile` or `resolved_tool_profile`.
 **Reasoning:** All registered child tools are active, so carrying a resolved profile implied a policy switch that no longer exists. Keeping the input avoids breaking old callers while removing false downstream contract surface.
 **Alternatives considered:** Remove the input immediately (rejected as unnecessary caller breakage), keep returning `resolved_tool_profile:"all"` (rejected because it preserves misleading public state), or implement real profiles again (rejected because current child tooling depends on all registered tools being active).
-**Consequences:** Child request files omit profile state; failure logs omit profile state; README documents validation-and-ignore behavior; tests prove legacy input acceptance and downstream absence.
+**Consequences:** Legacy `tool_profile` never enters child requests or failure logs and never produces resolved profile fields; README/tests preserve that compatibility contract independently of additive `effect_profile` behavior.
+
+### workspace_read_only is an additive Pi-boundary ceiling
+**Date:** 2026-07-15
+**Status:** Active
+**Decision:** `effect_profile:"workspace_read_only"` is separate from legacy `tool_profile`. It disables ambient project/global extension loading, explicitly binds and digests the web provider and native `request_input`, constructs Pi with only `read`, `grep`, `find`, `ls`, `web_search`, `web_read`, and `request_input`, excludes `delegate`, and requires an exact receipt before prompt submission. The native provider digest covers its owning runtime modules and excludes unrelated release and live lease files. Omission preserves all-tools behavior; named sessions reject the new field.
+**Reasoning:** Prompt policy and post-effect detection cannot deny an effect. Pi's construction-time `tools` allowlist owns ordinary model-issued tool dispatch, while extension loading must be disabled separately because extension hooks run outside that callable list.
+**Alternatives considered:** Reinterpret legacy `tool_profile` (rejected as a compatibility break), filter only after session construction (rejected because extension hooks would already have run), or claim OS sandboxing (rejected because this slice does not own hostile runtime code or direct host APIs).
+**Consequences:** The durable contract advertises exact tools, continuity modes, provider binding, receipt fields, and claim ceiling. Raw resume must supply the profile on every constrained invocation. Failure is typed as `capability_unavailable` with `effect_profile_activation_failed` or `skill_content_mismatch`.
+
+### Skill content pins execute from run-owned snapshots
+**Date:** 2026-07-15
+**Status:** Active
+**Decision:** `expected_skill_sha256` requires canonical `skill_name`. The parent resolves and hashes canonical `SKILL.md` before launch, copies those bytes into the owned child-request directory, and Pi rehashes/expands that snapshot before prompt. Public receipt/result paths continue to identify the canonical source.
+**Reasoning:** Pi expands `/skill:name` by rereading `skill.filePath` at prompt time. Hashing only the source path before launch leaves a time-of-check/time-of-use gap between the receipt and the bytes Pi actually sends to the model.
+**Alternatives considered:** Report the digest only after execution (rejected as too late), re-read the canonical path in the child without snapshotting (rejected because Pi would read it again), or expose the private snapshot path (rejected because callers need stable canonical identity).
+**Consequences:** Source mutation or disappearance fails closed before prompt; owned-temp cleanup removes snapshots with the child request; omitted expected digests preserve legacy behavior.
 
 ### Session failures preserve durable caller context
 **Date:** 2026-07-08

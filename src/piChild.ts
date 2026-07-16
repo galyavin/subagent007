@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 import {
   AuthStorage,
   createAgentSession,
@@ -16,8 +18,19 @@ import { terminateOwnedProcessGroupOnControlLoss } from "./controlChannel.js";
 import { resolvePiAgentDir } from "./piAgentDir.js";
 import { createRecursiveDelegateTool } from "./recursiveDelegateTool.js";
 import { createSkillScopedResourceLoader } from "./skillResources.js";
-import { activateAllRegisteredTools } from "./toolProfile.js";
+import {
+  WORKSPACE_READ_ONLY_TOOL_NAMES,
+  activateAllRegisteredTools,
+  activateWorkspaceReadOnlyTools,
+  requestInputImplementationSha256,
+  resolveWorkspaceReadOnlyWebProvider,
+  skillOnlyActivationReceipt,
+  workspaceReadOnlyActivationReceipt,
+} from "./toolProfile.js";
 import type {
+  ActivationSkillBinding,
+  EffectProfile,
+  FailureReasonCode,
   OutputMode,
   PromptProvenance,
   ThinkingLevel,
@@ -41,6 +54,60 @@ interface PiChildRequest {
   sessionFile?: string;
   sessionDir?: string;
   recursiveControl?: RecursiveControlChildConfig;
+  effectProfile?: EffectProfile;
+  expectedSkillSha256?: string;
+  skillBinding?: ActivationSkillBinding;
+}
+
+class ChildContractError extends Error {
+  constructor(message: string, readonly reasonCode: FailureReasonCode) {
+    super(message);
+  }
+}
+
+function asChildContractError(error: unknown, reasonCode: FailureReasonCode): ChildContractError {
+  return error instanceof ChildContractError
+    ? error
+    : new ChildContractError(error instanceof Error ? error.message : String(error), reasonCode);
+}
+
+async function verifiedSkillBinding(request: PiChildRequest): Promise<ActivationSkillBinding | null> {
+  if (!request.skillBinding) {
+    if (request.expectedSkillSha256) {
+      throw new ChildContractError(
+        "expected_skill_sha256 was supplied without a resolved skill binding",
+        "skill_content_mismatch",
+      );
+    }
+    return null;
+  }
+  if (!request.skillFilePath) {
+    throw new ChildContractError("resolved skill binding is missing its run-owned snapshot", "skill_content_mismatch");
+  }
+  const resolvedPath = path.resolve(request.skillBinding.path);
+  let contentSha256: string;
+  try {
+    contentSha256 = createHash("sha256").update(await fs.readFile(request.skillFilePath)).digest("hex");
+  } catch (error) {
+    throw asChildContractError(error, "skill_content_mismatch");
+  }
+  if (
+    request.skillBinding.name !== request.skill ||
+    resolvedPath !== request.skillBinding.path ||
+    contentSha256 !== request.skillBinding.content_sha256 ||
+    (request.expectedSkillSha256 && contentSha256 !== request.expectedSkillSha256)
+  ) {
+    throw new ChildContractError(
+      `resolved skill content does not match the preflight binding for ${JSON.stringify(request.skill)}`,
+      "skill_content_mismatch",
+    );
+  }
+  return {
+    ...request.skillBinding,
+    path: resolvedPath,
+    content_sha256: contentSha256,
+    expected_content_sha256: request.expectedSkillSha256 ?? null,
+  };
 }
 
 const requestInputParameters = Type.Object({
@@ -272,11 +339,22 @@ async function main(): Promise<void> {
   writeEvent({ type: "subagent007.lifecycle", event: "child_bridge_started" });
   const agentDir = resolvePiAgentDir();
   process.env.PI_CODING_AGENT_DIR = agentDir;
+  const webProvider = request.effectProfile
+    ? await resolveWorkspaceReadOnlyWebProvider(agentDir).catch((error) => {
+        throw asChildContractError(error, "effect_profile_activation_failed");
+      })
+    : undefined;
   const resourceLoader = createSkillScopedResourceLoader({
     cwd: request.cwd,
     agentDir,
     skill: request.skill,
     skillFilePath: request.skillFilePath,
+    ...(request.effectProfile
+      ? {
+          noAmbientExtensions: true,
+          explicitExtensionPaths: [webProvider!.extensionPath],
+        }
+      : {}),
   });
   const authStorage = AuthStorage.create(path.join(agentDir, "auth.json"));
   const modelRegistry = ModelRegistry.create(authStorage, path.join(agentDir, "models.json"));
@@ -294,14 +372,22 @@ async function main(): Promise<void> {
           )
         : SessionManager.create(request.cwd, request.sessionDir);
 
-  await resourceLoader.reload();
-  const customTools: ToolDefinition<any>[] = [createRequestInputTool(request, inputControl)];
-  const recursiveDelegateTool = createRecursiveDelegateTool({
-    cwd: request.cwd,
-    recursiveControl: request.recursiveControl,
+  await resourceLoader.reload().catch((error) => {
+    throw asChildContractError(
+      error,
+      request.effectProfile ? "effect_profile_activation_failed" : "unknown_error",
+    );
   });
-  if (recursiveDelegateTool) {
-    customTools.push(recursiveDelegateTool);
+  const skillBinding = await verifiedSkillBinding(request);
+  const customTools: ToolDefinition<any>[] = [createRequestInputTool(request, inputControl)];
+  if (!request.effectProfile) {
+    const recursiveDelegateTool = createRecursiveDelegateTool({
+      cwd: request.cwd,
+      recursiveControl: request.recursiveControl,
+    });
+    if (recursiveDelegateTool) {
+      customTools.push(recursiveDelegateTool);
+    }
   }
 
   const { session, modelFallbackMessage } = await createAgentSession({
@@ -314,8 +400,17 @@ async function main(): Promise<void> {
     sessionManager,
     resourceLoader,
     customTools,
+    ...(request.effectProfile ? { tools: [...WORKSPACE_READ_ONLY_TOOL_NAMES] } : {}),
   });
-  activateAllRegisteredTools(session);
+  if (request.effectProfile) {
+    try {
+      activateWorkspaceReadOnlyTools(session);
+    } catch (error) {
+      throw asChildContractError(error, "effect_profile_activation_failed");
+    }
+  } else {
+    activateAllRegisteredTools(session);
+  }
   if (modelFallbackMessage) {
     writeEvent({ type: "subagent007.warning", message: modelFallbackMessage });
   }
@@ -327,6 +422,25 @@ async function main(): Promise<void> {
     session_file: sessionFile ?? null,
     pi_session_id: session.sessionId,
   });
+
+  if (request.effectProfile) {
+    let receipt;
+    try {
+      receipt = workspaceReadOnlyActivationReceipt({
+        webProvider: webProvider!,
+        requestInputSha256: await requestInputImplementationSha256(fileURLToPath(import.meta.url)),
+        skillBinding,
+      });
+    } catch (error) {
+      throw asChildContractError(error, "effect_profile_activation_failed");
+    }
+    writeEvent({ type: "subagent007.activation_confirmed", receipt });
+  } else if (request.expectedSkillSha256 && skillBinding) {
+    writeEvent({
+      type: "subagent007.activation_confirmed",
+      receipt: skillOnlyActivationReceipt(skillBinding),
+    });
+  }
 
   const unsubscribe = session.subscribe((event) => writeEvent(event));
   try {
@@ -347,6 +461,7 @@ main().catch((error: unknown) => {
   writeEvent({
     type: "subagent007.error",
     error: error instanceof Error ? error.message : String(error),
+    ...(error instanceof ChildContractError ? { reason_code: error.reasonCode } : {}),
   });
   process.exitCode = 1;
 });

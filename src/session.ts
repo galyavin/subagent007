@@ -174,6 +174,18 @@ function validateSessionPacketPolicy(value: unknown): SessionPacketPolicy {
 }
 
 function assertNoRawSessionId(request: RunSubagentSessionRequest): void {
+  if ((request as { effect_profile?: unknown }).effect_profile !== undefined) {
+    throw new ValidationError(
+      "effect_profile is not supported by named-session APIs; use run_subagent, start_run, or schedule_run",
+      "effect_profile_unsupported",
+    );
+  }
+  if ((request as { expected_skill_sha256?: unknown }).expected_skill_sha256 !== undefined) {
+    throw new ValidationError(
+      "expected_skill_sha256 is not supported by named-session APIs",
+      "skill_binding_unsupported",
+    );
+  }
   if ((request as { session_id?: unknown }).session_id !== undefined) {
     throw new ValidationError("session_id is not supported by run_subagent_session; use session_key", "raw_session_id_unsupported");
   }

@@ -215,6 +215,10 @@ test("runtime readiness returns a ready snapshot for a clean current build", asy
   assert.equal(snapshot.contract.compatible, true);
   assert.equal(snapshot.capabilities.public_tools.includes("get_runtime_readiness"), true);
   assert.equal(snapshot.build.child_entrypoint.exists, true);
+  assert.deepEqual(
+    snapshot.contract.effect_profiles.workspace_read_only.supported_tools,
+    ["read", "grep", "find", "ls", "web_search", "web_read", "request_input"],
+  );
 });
 
 test("runtime readiness blocks incompatible durable-run contract expectations", async () => {

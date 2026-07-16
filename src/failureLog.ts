@@ -57,6 +57,7 @@ export type FailureClass =
   | "missing_final_output"
   | "restart_drift"
   | "resource_exhausted"
+  | "capability_unavailable"
   | "session_error"
   | "signal_terminated"
   | "unknown_error";
@@ -100,6 +101,12 @@ export interface FailureLogRecord {
   promotion_reason?: string;
   model_class?: string;
   skill?: string | null;
+  expected_skill_sha256?: string;
+  resolved_skill_path?: string | null;
+  resolved_skill_sha256?: string | null;
+  requested_effect_profile?: string;
+  resolved_effect_profile?: string;
+  activation_toolset_sha256?: string | null;
   output_mode?: string;
   provider_error_type?: string;
   provider_status_code?: number;
@@ -167,6 +174,8 @@ function defaultReasonCode(failureClass: FailureClass): FailureReasonCode {
       return "server_restarted_active_run";
     case "resource_exhausted":
       return "disk_reserve_exhausted";
+    case "capability_unavailable":
+      return "effect_profile_activation_failed";
     case "packet_failed":
       return "packet_required_invalid";
     case "validation_error":
@@ -230,6 +239,12 @@ export function failureClassForProcessResult(result: {
   }
   if (result.reason_code === "disk_reserve_exhausted") {
     return "resource_exhausted";
+  }
+  if (
+    result.reason_code === "effect_profile_activation_failed" ||
+    result.reason_code === "skill_content_mismatch"
+  ) {
+    return "capability_unavailable";
   }
   if (result.exit_code !== null && result.exit_code !== 0) {
     return "nonzero_exit";

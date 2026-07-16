@@ -6,6 +6,8 @@ export const OUTPUT_MODES = ["final", "transcript"] as const;
 export type OutputMode = (typeof OUTPUT_MODES)[number];
 export const TOOL_PROFILES = ["all", "inspect", "web_search", "shell", "workspace_write"] as const;
 export type ToolProfile = (typeof TOOL_PROFILES)[number];
+export const EFFECT_PROFILES = ["workspace_read_only"] as const;
+export type EffectProfile = (typeof EFFECT_PROFILES)[number];
 export const NON_TERMINAL_RUN_STATUSES = ["working", "input_required"] as const;
 export const TERMINAL_RUN_STATUSES = ["completed", "failed", "cancelled", "timed_out"] as const;
 const RUN_STATUSES = [...NON_TERMINAL_RUN_STATUSES, ...TERMINAL_RUN_STATUSES] as const;
@@ -50,6 +52,12 @@ export type FailureReasonCode =
   | "invalid_skill"
   | "invalid_thinking_level"
   | "invalid_tool_profile"
+  | "invalid_effect_profile"
+  | "invalid_expected_skill_sha256"
+  | "effect_profile_unsupported"
+  | "skill_binding_unsupported"
+  | "effect_profile_activation_failed"
+  | "skill_content_mismatch"
   | "invalid_timeout_ms"
   | "invalid_wait_ms"
   | "local_capacity_exhausted"
@@ -111,6 +119,8 @@ export type RunContinuity =
 export interface RunSubagentRequest extends SubagentRequestBase {
   continuity?: RunContinuity;
   run_kind?: RunKind;
+  effect_profile?: EffectProfile;
+  expected_skill_sha256?: string;
 }
 
 export interface RunnerConfig {
@@ -126,7 +136,33 @@ export interface ResolvedRunSubagentRequest {
   timeoutMs?: number;
   continuity: RunContinuity;
   skill?: string;
+  effectProfile?: EffectProfile;
+  expectedSkillSha256?: string;
   outputMode: OutputMode;
+}
+
+export interface ActivationToolBinding {
+  tool_name: "request_input" | "web_read" | "web_search";
+  provider_id: string;
+  implementation_sha256: string;
+}
+
+export interface ActivationSkillBinding {
+  name: string;
+  path: string;
+  content_sha256: string;
+  expected_content_sha256: string | null;
+}
+
+export interface ActivationReceipt {
+  schema_version: 1;
+  confirmed_before_prompt: true;
+  requested_effect_profile: EffectProfile | null;
+  resolved_effect_profile: EffectProfile | null;
+  active_tool_names: string[];
+  tool_bindings: ActivationToolBinding[];
+  toolset_sha256: string | null;
+  skill_binding: ActivationSkillBinding | null;
 }
 
 export interface PromptProvenance {
@@ -162,6 +198,10 @@ interface SubagentRunResultBase {
   requested_skill: string | null;
   resolved_skill_path: string | null;
   resolved_skill_sha256: string | null;
+  expected_skill_sha256?: string;
+  requested_effect_profile?: EffectProfile;
+  resolved_effect_profile?: EffectProfile;
+  activation_receipt?: ActivationReceipt;
   requested_output_mode: OutputMode;
   written_output_mode: OutputMode;
   stop_reason: RunStopReason;
@@ -339,6 +379,7 @@ export type RunPublicEventName =
   | "child_spawned"
   | "child_bridge_started"
   | "child_session_established"
+  | "activation_confirmed"
   | "child_prompt_submitted"
   | "recursive_child_started"
   | "recursive_child_finished"

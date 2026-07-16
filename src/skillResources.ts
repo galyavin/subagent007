@@ -21,6 +21,8 @@ export interface SkillResourceOptions {
   skill?: string;
   skillFilePath?: string;
   lookupPaths?: string[];
+  noAmbientExtensions?: boolean;
+  explicitExtensionPaths?: string[];
 }
 
 function defaultSkillLookupPaths(home = os.homedir()): string[] {
@@ -91,5 +93,11 @@ export function createSkillScopedResourceLoader(options: SkillResourceOptions): 
     agentDir: options.agentDir,
     additionalSkillPaths: skillResourcePathsForRequest(options),
     noSkills: true,
+    ...(options.noAmbientExtensions
+      ? {
+          noExtensions: true,
+          additionalExtensionPaths: options.explicitExtensionPaths ?? [],
+        }
+      : {}),
   });
 }

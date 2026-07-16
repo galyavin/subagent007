@@ -11,6 +11,7 @@ For a multi-section pattern, add one row per task anchor.
 
 | Pattern | Use when |
 |---------|----------|
+| [effect-profile-boundary.md](effect-profile-boundary.md) | Adding or changing an enforced Pi callable-tool ceiling and its activation receipt |
 | [observed-campaign-saf.md](observed-campaign-saf.md) | Running customer-style observed MCP campaigns and turning findings into SAF repairs |
 | [runtime-artifact-ownership.md](runtime-artifact-ownership.md) | Adding child output, runtime temp state, or build artifacts that need explicit lifecycle ownership |
 | [terminal-state-compaction.md](terminal-state-compaction.md) | Removing redundant run/session filesystem state without weakening durable views or live-state safety |

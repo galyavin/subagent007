@@ -39,6 +39,8 @@ const SKILL_BINDING_TOOLS = [
   "start_run",
   "start_session_run",
 ].sort();
+const CONSTRAINED_RUN_TOOLS = ["run_subagent", "schedule_run", "start_run"];
+const NAMED_SESSION_TOOLS = ["run_subagent_session", "start_session_run"];
 const FORBIDDEN_PUBLIC_CALIBRATION_FIELDS = new Set([
   "resolved_model",
   "resolved_thinking_level",
@@ -288,6 +290,7 @@ function responseMatchesResultShape(response, resultClass) {
       response.tool_surface_complete === true &&
       response.tool_surface_exact === true &&
       response.skill_alias_guidance_clear === true &&
+      response.effect_profile_schema_exact === true &&
       response.operational_guidance_clear === true;
   }
   if (resultClass === "success") {
@@ -915,6 +918,15 @@ function toolListingSummary(response) {
     session_default_and_scope: includesAll(startSessionRun?.description ?? "", [/resume_or_new/i, /scoped to cwd/i, /skill binding/i]),
     session_wrapper: includesAll(runSubagentSession?.description ?? "", [/synchronous compatibility wrapper/i, /prefer start_session_run/i]),
   };
+  const effectProfileSchemaExact =
+    CONSTRAINED_RUN_TOOLS.every((toolName) => {
+      const properties = tools.find((tool) => tool?.name === toolName)?.inputSchema?.properties ?? {};
+      return Object.hasOwn(properties, "effect_profile") && Object.hasOwn(properties, "expected_skill_sha256");
+    }) &&
+    NAMED_SESSION_TOOLS.every((toolName) => {
+      const properties = tools.find((tool) => tool?.name === toolName)?.inputSchema?.properties ?? {};
+      return !Object.hasOwn(properties, "effect_profile") && !Object.hasOwn(properties, "expected_skill_sha256");
+    });
   return {
     tool_count: toolNames.length,
     tool_names: toolNames,
@@ -924,6 +936,7 @@ function toolListingSummary(response) {
     tool_surface_complete: missingTools.length === 0,
     tool_surface_exact: missingTools.length === 0 && unexpectedTools.length === 0,
     skill_alias_guidance_clear: unclearSkillTools.length === 0,
+    effect_profile_schema_exact: effectProfileSchemaExact,
     unclear_skill_alias_tools: unclearSkillTools,
     operational_guidance_clear: Object.values(operationalGuidance).every(Boolean),
     unclear_operational_guidance: Object.entries(operationalGuidance)

@@ -25,6 +25,8 @@ Then read this file fully before doing anything else in this session.
 
 ## Current Project State
 **Working:**
+- Opt-in `effect_profile:"workspace_read_only"` constructs Pi with exactly seven read/input/web tools, disables ambient extension discovery and recursive delegation, requires a validated pre-prompt activation receipt, and preserves omitted/legacy `tool_profile` behavior. Constrained runs support ephemeral, fresh, and raw resume continuity; named-session schemas reject the profile.
+- Optional `expected_skill_sha256` on run start surfaces pins canonical `skill_name` content before launch. Pi reads a run-owned read-only snapshot of the verified bytes, and the activation receipt preserves the canonical source path/name/SHA-256.
 - Durable runs expose one version-2 acknowledged-input contract: every answer has a response ID, a receipt is created only after the child waiter accepts that response, exact live retries replay safely, and raw answer text remains only on the private live control path/Pi context.
 - MCP public tools expose one-shot, durable run, scheduler, named-session, mailbox, contract, readiness, and model-class surfaces.
 - Durable runs persist snapshots and public event ledgers, support cancellation and caller input, and fail closed on restart drift.
@@ -55,7 +57,8 @@ Then read this file fully before doing anything else in this session.
 **Not Built:**
 - Admission queueing is limited to top-level `start_run` and `schedule_run`; one-shot, named-session, and recursive launches remain fail-fast at capacity.
 - There is no database or remote job manager; state is local filesystem-backed.
-- Tool profiles are compatibility inputs only: legacy values are validated, then ignored, and no runtime/result/session/failure surface carries resolved profile state.
+- Named-session effect profiles are not built; `start_session_run` and `run_subagent_session` reject `effect_profile` and `expected_skill_sha256` at schema/direct-call boundaries.
+- `workspace_read_only` is a Pi callable-tool ceiling, not an OS sandbox or hostile-runtime containment boundary.
 - Recursive delegation currently provides one child-facing `delegate` tool and direct lineage metadata only; full descendant-tree management and cascade cancel are not built.
 
 **Known Issues:**
