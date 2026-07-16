@@ -41,6 +41,7 @@ const PUBLIC_TOOL_SURFACE = [
   "run_subagent",
   "start_session_run",
   "run_subagent_session",
+  "verify_skill_bindings",
 ] as const;
 
 const RUNTIME_READINESS_CAPABILITIES = [

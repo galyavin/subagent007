@@ -41,8 +41,14 @@ import {
 import { startRecursiveControlServer } from "./recursiveControl.js";
 import {
   LEGACY_SKILL_INPUT_DESCRIPTION,
+  SKILL_NAME_PATTERN,
   SKILL_NAME_INPUT_DESCRIPTION,
 } from "./skillBinding.js";
+import {
+  LOWERCASE_SHA256_PATTERN,
+  MAX_SKILL_BINDING_VERIFICATION_ENTRIES,
+  verifySkillBindingsRequest,
+} from "./skillVerification.js";
 import { SERVER_VERSION } from "./runtimeMetadata.js";
 import {
   type FailureReasonCode,
@@ -415,6 +421,29 @@ const runSessionInputSchema = z.strictObject({
   ),
 });
 
+const skillBindingVerificationEntrySchema = z.strictObject({
+  skill_name: z
+    .string()
+    .regex(SKILL_NAME_PATTERN, "skill_name must be a canonical bare skill name"),
+  expected_skill_sha256: z
+    .string()
+    .regex(LOWERCASE_SHA256_PATTERN, "expected_skill_sha256 must be a lowercase 64-character SHA-256 hex digest"),
+});
+
+const verifySkillBindingsInputSchema = z.strictObject({
+  contract_version: z.literal(1),
+  cwd: z.string().trim().min(1),
+  bindings: z
+    .array(skillBindingVerificationEntrySchema)
+    .min(1)
+    .max(MAX_SKILL_BINDING_VERIFICATION_ENTRIES)
+    .refine(
+      (bindings) => bindings.every((binding, index) =>
+        index === 0 || bindings[index - 1]!.skill_name < binding.skill_name),
+      "bindings must be unique and strictly ASCII-sorted by skill_name",
+    ),
+});
+
 async function listModelClassesResult(): Promise<ReturnType<typeof jsonToolResult<Record<string, unknown>>>> {
   const configRecord = await loadConfigRecord();
   const config = normalizeConfigRecord(configRecord);
@@ -482,6 +511,17 @@ server.registerTool(
     inputSchema: {},
   },
   async () => jsonObjectToolResult(durableRunContractView()),
+);
+
+server.registerTool(
+  "verify_skill_bindings",
+  {
+    title: "Verify Skill Bindings",
+    description:
+      "Resolve and verify one canonical, bounded skill-name/digest set without invoking a model or creating operational state. Verification is point-in-time; constrained launches recheck skill content.",
+    inputSchema: verifySkillBindingsInputSchema,
+  },
+  async (request) => jsonObjectToolResult(await verifySkillBindingsRequest(request)),
 );
 
 server.registerTool(

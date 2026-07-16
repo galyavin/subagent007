@@ -12,12 +12,20 @@ edges:
     condition: when a decision relates to system structure
   - target: context/stack.md
     condition: when a decision relates to technology choice
-last_updated: 2026-07-15
+last_updated: 2026-07-16
 ---
 
 # Decisions
 
 ## Decision Log
+
+### Batch skill verification is a point-in-time public owner boundary
+**Date:** 2026-07-16
+**Status:** Active
+**Decision:** `verify_skill_bindings` contract version 1 accepts one absolute cwd and 1–64 unique, strictly ASCII name-sorted canonical skill/digest pairs. Subagent007 resolves the complete set through one catalog and uses the same skill-file read/hash/compare primitive as launch. The transient all-or-nothing response binds cwd, count, and the canonical request SHA-256; launch retains its independent recheck.
+**Reasoning:** Callers such as Bendum must reject mismatched name/digest pairs before publishing routes, but importing private build modules or reproducing Subagent007 discovery would split authority. Starting a child merely to compare local bytes would add model/runtime dependency and operational state without improving the comparison.
+**Alternatives considered:** Caller-side resolution and hashing (rejected as duplicate authority), one MCP call per skill (rejected because partial responses are not bound to the complete publication set), and a model-backed canary (rejected because it creates unnecessary child/run state).
+**Consequences:** The durable-run contract stays at version 2 and advertises additive capability `batch_skill_binding_verification`. The operation invokes no model or child and writes no run/session/admission/snapshot/lease/event/temp/cache/failure-log state. Typed semantic failures distinguish unknown, ambiguous, unreadable, mismatch, and cwd failures; malformed request shape remains a standard MCP input error. The receipt is point-in-time evidence, not a durable filesystem transaction or substitute for launch-time checking.
 
 ### Session ownership survives time and partial publication
 **Date:** 2026-07-15

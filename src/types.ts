@@ -154,6 +154,87 @@ export interface ActivationSkillBinding {
   expected_content_sha256: string | null;
 }
 
+export interface SkillBindingVerificationEntry {
+  skill_name: string;
+  expected_skill_sha256: string;
+}
+
+export interface SkillBindingVerificationRequest {
+  contract_version: 1;
+  cwd: string;
+  bindings: SkillBindingVerificationEntry[];
+}
+
+export type SkillBindingVerificationCwdReasonCode =
+  | "cwd_not_absolute"
+  | "cwd_inaccessible"
+  | "cwd_not_directory";
+
+export type SkillBindingVerificationSkillReasonCode =
+  | "skill_not_found"
+  | "skill_ambiguous"
+  | "skill_unreadable"
+  | "skill_content_mismatch";
+
+export type SkillBindingVerificationReasonCode =
+  | SkillBindingVerificationCwdReasonCode
+  | SkillBindingVerificationSkillReasonCode;
+
+export interface SkillBindingVerificationRequestBinding {
+  cwd: string;
+  count: number;
+  canonical_request_sha256: string;
+}
+
+interface SkillBindingVerificationResultBase {
+  contract_name: "subagent007.skill_binding_verification";
+  contract_version: 1;
+  success: boolean;
+  verified: boolean;
+  child_started: false;
+  model_invoked: false;
+  request_binding: SkillBindingVerificationRequestBinding;
+}
+
+export interface VerifiedSkillBindingResultEntry extends SkillBindingVerificationEntry {
+  resolved_skill_path: string;
+  resolved_skill_sha256: string;
+}
+
+export interface SkillBindingsVerifiedResult extends SkillBindingVerificationResultBase {
+  kind: "skill_bindings_verified";
+  success: true;
+  verified: true;
+  bindings: VerifiedSkillBindingResultEntry[];
+}
+
+interface SkillBindingVerificationRejectedResultBase extends SkillBindingVerificationResultBase {
+  kind: "skill_binding_verification_rejected";
+  success: false;
+  verified: false;
+  message: string;
+}
+
+export interface SkillBindingVerificationCwdRejectedResult
+  extends SkillBindingVerificationRejectedResultBase {
+  reason_code: SkillBindingVerificationCwdReasonCode;
+  failed_binding?: never;
+}
+
+export interface SkillBindingVerificationSkillRejectedResult
+  extends SkillBindingVerificationRejectedResultBase {
+  reason_code: SkillBindingVerificationSkillReasonCode;
+  failed_binding: SkillBindingVerificationEntry & { index: number };
+}
+
+export type SkillBindingVerificationRejectedResult =
+  | SkillBindingVerificationCwdRejectedResult
+  | SkillBindingVerificationSkillRejectedResult;
+
+export type SkillBindingVerificationResult =
+  | SkillBindingsVerifiedResult
+  | SkillBindingVerificationRejectedResult;
+
 export interface ActivationReceipt {
   schema_version: 1;
   confirmed_before_prompt: true;

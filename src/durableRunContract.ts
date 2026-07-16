@@ -5,6 +5,11 @@ import {
   type RunStatus,
 } from "./types.js";
 import { WORKSPACE_READ_ONLY_TOOL_NAMES } from "./toolProfile.js";
+import {
+  MAX_SKILL_BINDING_VERIFICATION_ENTRIES,
+  SKILL_BINDING_VERIFICATION_CONTRACT_NAME,
+  SKILL_BINDING_VERIFICATION_CONTRACT_VERSION,
+} from "./skillVerification.js";
 
 export const DURABLE_RUN_CONTRACT_NAME = "subagent007.durable_run";
 export const DURABLE_RUN_CONTRACT_VERSION = 2;
@@ -31,6 +36,7 @@ export const DURABLE_RUN_CAPABILITIES = [
   "recursive_delegate_lineage",
   "workspace_read_only_effect_profile",
   "pre_prompt_skill_content_binding",
+  "batch_skill_binding_verification",
 ] as const;
 
 export function durableRunContractView(): {
@@ -73,6 +79,17 @@ export function durableRunContractView(): {
     replay: "live_exact_response";
     raw_answer_persistence: "forbidden";
     process_loss: "fails_closed";
+  };
+  skill_binding_verification: {
+    tool: "verify_skill_bindings";
+    contract_name: typeof SKILL_BINDING_VERIFICATION_CONTRACT_NAME;
+    contract_version: typeof SKILL_BINDING_VERIFICATION_CONTRACT_VERSION;
+    max_bindings: typeof MAX_SKILL_BINDING_VERIFICATION_ENTRIES;
+    all_or_nothing: true;
+    model_invocation: "none";
+    operational_state_writes: "none";
+    verification_scope: "point_in_time";
+    launch_recheck_required: true;
   };
   effect_profiles: {
     workspace_read_only: {
@@ -145,6 +162,17 @@ export function durableRunContractView(): {
       replay: "live_exact_response",
       raw_answer_persistence: "forbidden",
       process_loss: "fails_closed",
+    },
+    skill_binding_verification: {
+      tool: "verify_skill_bindings",
+      contract_name: SKILL_BINDING_VERIFICATION_CONTRACT_NAME,
+      contract_version: SKILL_BINDING_VERIFICATION_CONTRACT_VERSION,
+      max_bindings: MAX_SKILL_BINDING_VERIFICATION_ENTRIES,
+      all_or_nothing: true,
+      model_invocation: "none",
+      operational_state_writes: "none",
+      verification_scope: "point_in_time",
+      launch_recheck_required: true,
     },
     effect_profiles: {
       workspace_read_only: {

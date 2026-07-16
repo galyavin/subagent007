@@ -214,6 +214,8 @@ test("runtime readiness returns a ready snapshot for a clean current build", asy
   assert.deepEqual(snapshot.blocks, []);
   assert.equal(snapshot.contract.compatible, true);
   assert.equal(snapshot.capabilities.public_tools.includes("get_runtime_readiness"), true);
+  assert.equal(snapshot.capabilities.public_tools.includes("verify_skill_bindings"), true);
+  assert.equal(snapshot.capabilities.durable_run.includes("batch_skill_binding_verification"), true);
   assert.equal(snapshot.build.child_entrypoint.exists, true);
   assert.deepEqual(
     snapshot.contract.effect_profiles.workspace_read_only.supported_tools,

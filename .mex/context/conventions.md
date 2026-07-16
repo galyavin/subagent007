@@ -11,7 +11,7 @@ triggers:
 edges:
   - target: context/architecture.md
     condition: when a convention depends on understanding the system structure
-last_updated: 2026-07-15
+last_updated: 2026-07-16
 ---
 
 # Conventions
@@ -28,6 +28,7 @@ last_updated: 2026-07-15
 - `src/runTask.ts` owns durable task lifecycle; do not duplicate task state transitions in handlers.
 - `src/runSubagent.ts` owns the Pi child request-file contract and child result projection.
 - `src/skillBinding.ts` owns `skill_name`/legacy `skill` validation, prompt-invocation rejection, and MCP schema description text.
+- `src/skillVerification.ts` owns public batch-verification request binding and the shared resolved-skill read/hash/compare primitive; launch code must call that primitive rather than reproduce hashing or compare logic.
 - `src/types.ts` is the public type/reason-code source; update tests and README when public fields change.
 - `tests/*.test.ts` are integration-heavy Node tests; helpers live in `tests/helpers/`.
 - `scripts/*.mjs` are operational commands and should be documented in AGENTS/setup context when added.
@@ -50,6 +51,7 @@ last_updated: 2026-07-15
 - Legacy `tool_profile` is boundary-only compatibility: validate accepted values, but do not add `toolProfile`, `resolved_tool_profile`, or failure-log profile fields downstream.
 - New effect ceilings use a separate `effect_profile`, must filter Pi tools at construction before prompt, must disable ambient extension loading separately, and must project only child receipts that the parent structurally validates.
 - Skill content pins must attest the bytes Pi actually expands. Use a run-owned snapshot; do not certify a source-path hash while Pi can reread different bytes later.
+- Read-only verification operations that promise no operational state must return expected semantic failures directly and must not use child-entrypoint preflight, run/session registration, admission, temporary artifacts, or failure-logging wrappers.
 - `ValidationError.reasonCode` is the semantic authority for failure reason mapping. Do not infer public reason codes from English message text.
 - Observed campaign result classes must prove the caller-visible contract they name. For `tool-listing`, assert the exact public tool surface and schema guidance; do not count a generic non-error `listTools()` response as full discovery coverage.
 - Full-current observed coverage must exercise two-hop recursion, a depth boundary after a valid hop, session resume, queued work lifecycle, and exact live input retry when those public capabilities exist.

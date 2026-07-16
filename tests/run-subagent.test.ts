@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import type { SkillBindingVerificationResult } from "../src/types.js";
 import { createInputRequest, listInputRequests } from "../src/inputMailbox.js";
 import { PUBLIC_PROMPT_REDACTED_MARKER } from "../src/prompt.js";
 import {
@@ -847,6 +849,225 @@ test("all constrained start surfaces preflight-reject a mismatched skill digest"
   }, { env: { SUBAGENT007_PI_SKILL_PATHS: skillsRoot } });
 });
 
+test("verify_skill_bindings is canonical, all-or-nothing, and writes no operational state", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-skill-verification-mcp-"));
+  const skillsRoot = path.join(tmp, "skills");
+  const stateRoot = path.join(tmp, "state");
+  const firstName = "alpha-verification-skill";
+  const secondName = "beta-verification-skill";
+  const firstPath = await writeSkillFixture(skillsRoot, firstName);
+  const secondPath = await writeSkillFixture(skillsRoot, secondName);
+  const firstDigest = await sha256File(firstPath);
+  const secondDigest = await sha256File(secondPath);
+  const operationalPaths = {
+    runs: path.join(stateRoot, "runs"),
+    tasks: path.join(stateRoot, "run-tasks"),
+    sessions: path.join(stateRoot, "sessions"),
+    inputs: path.join(stateRoot, "input-requests"),
+    active: path.join(stateRoot, "active-children"),
+    queued: path.join(stateRoot, "queued-runs"),
+    temp: path.join(stateRoot, "temp"),
+    failures: path.join(stateRoot, "failures.jsonl"),
+  };
+
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    const bindings = [
+      { skill_name: firstName, expected_skill_sha256: firstDigest },
+      { skill_name: secondName, expected_skill_sha256: secondDigest },
+    ];
+    const canonicalRequestSha256 = createHash("sha256")
+      .update(
+        "subagent007.skill_binding_verification.request.v1\n" +
+          JSON.stringify({ contract_version: 1, cwd: projectDir, bindings }),
+      )
+      .digest("hex");
+
+    const successResponse = await client.callTool({
+      name: "verify_skill_bindings",
+      arguments: { contract_version: 1, cwd: projectDir, bindings },
+    });
+    assert.notEqual(successResponse.isError, true);
+    const success = successResponse.structuredContent as SkillBindingVerificationResult;
+    assert.deepEqual(success, {
+      contract_name: "subagent007.skill_binding_verification",
+      contract_version: 1,
+      kind: "skill_bindings_verified",
+      success: true,
+      verified: true,
+      child_started: false,
+      model_invoked: false,
+      request_binding: {
+        cwd: projectDir,
+        count: 2,
+        canonical_request_sha256: canonicalRequestSha256,
+      },
+      bindings: [
+        {
+          skill_name: firstName,
+          expected_skill_sha256: firstDigest,
+          resolved_skill_path: firstPath,
+          resolved_skill_sha256: firstDigest,
+        },
+        {
+          skill_name: secondName,
+          expected_skill_sha256: secondDigest,
+          resolved_skill_path: secondPath,
+          resolved_skill_sha256: secondDigest,
+        },
+      ],
+    });
+
+    const mismatchBindings = [
+      bindings[0],
+      { skill_name: secondName, expected_skill_sha256: "0".repeat(64) },
+    ];
+    const mismatchRequestSha256 = createHash("sha256")
+      .update(
+        "subagent007.skill_binding_verification.request.v1\n" +
+          JSON.stringify({ contract_version: 1, cwd: projectDir, bindings: mismatchBindings }),
+      )
+      .digest("hex");
+    const mismatchResponse = await client.callTool({
+      name: "verify_skill_bindings",
+      arguments: { contract_version: 1, cwd: projectDir, bindings: mismatchBindings },
+    });
+    assert.notEqual(mismatchResponse.isError, true);
+    const mismatch = mismatchResponse.structuredContent as SkillBindingVerificationResult;
+    assert.deepEqual(mismatch, {
+      contract_name: "subagent007.skill_binding_verification",
+      contract_version: 1,
+      kind: "skill_binding_verification_rejected",
+      success: false,
+      verified: false,
+      child_started: false,
+      model_invoked: false,
+      request_binding: {
+        cwd: projectDir,
+        count: 2,
+        canonical_request_sha256: mismatchRequestSha256,
+      },
+      reason_code: "skill_content_mismatch",
+      failed_binding: {
+        index: 1,
+        skill_name: secondName,
+        expected_skill_sha256: "0".repeat(64),
+      },
+      message: "Skill content does not match the expected digest.",
+    });
+    assert.equal(Object.hasOwn(mismatch, "bindings"), false);
+
+    const unknownBindings = [{
+      skill_name: "missing-verification-skill",
+      expected_skill_sha256: "1".repeat(64),
+    }];
+    const unknownResponse = await client.callTool({
+      name: "verify_skill_bindings",
+      arguments: { contract_version: 1, cwd: projectDir, bindings: unknownBindings },
+    });
+    assert.notEqual(unknownResponse.isError, true);
+    const unknown = unknownResponse.structuredContent as SkillBindingVerificationResult;
+    assert.equal(unknown.kind, "skill_binding_verification_rejected");
+    assert.equal(unknown.reason_code, "skill_not_found");
+    assert.deepEqual(unknown.failed_binding, { index: 0, ...unknownBindings[0] });
+    assert.equal(Object.hasOwn(unknown, "bindings"), false);
+
+    const cwdResponse = await client.callTool({
+      name: "verify_skill_bindings",
+      arguments: { contract_version: 1, cwd: "relative", bindings: unknownBindings },
+    });
+    assert.notEqual(cwdResponse.isError, true);
+    const cwdRejected = cwdResponse.structuredContent as SkillBindingVerificationResult;
+    assert.equal(cwdRejected.kind, "skill_binding_verification_rejected");
+    assert.equal(cwdRejected.reason_code, "cwd_not_absolute");
+    assert.equal(Object.hasOwn(cwdRejected, "failed_binding"), false);
+
+    for (const invalidArguments of [
+      { contract_version: 1, cwd: projectDir, bindings: [bindings[1], bindings[0]] },
+      { contract_version: 1, cwd: projectDir, bindings: [bindings[0], bindings[0]] },
+      { contract_version: 1, cwd: projectDir, bindings: [] },
+      {
+        contract_version: 1,
+        cwd: projectDir,
+        bindings: Array.from({ length: 65 }, (_, index) => ({
+          skill_name: `skill-${String(index).padStart(2, "0")}`,
+          expected_skill_sha256: "a".repeat(64),
+        })),
+      },
+      { contract_version: 2, cwd: projectDir, bindings },
+      {
+        contract_version: 1,
+        cwd: projectDir,
+        bindings: [{ skill_name: firstName, expected_skill_sha256: "not-a-digest" }],
+      },
+      { contract_version: 1, cwd: projectDir, bindings, extra: true },
+    ]) {
+      const response = await client.callTool({
+        name: "verify_skill_bindings",
+        arguments: invalidArguments,
+      });
+      assert.equal(response.isError, true);
+    }
+
+    assert.deepEqual(await readJsonl(fakeLogPath).catch(() => []), []);
+    for (const statePath of Object.values(operationalPaths)) {
+      await assert.rejects(fs.stat(statePath), (error: unknown) =>
+        (error as NodeJS.ErrnoException).code === "ENOENT");
+    }
+  }, {
+    config: { default_model_class: "invalid" },
+    env: {
+      SUBAGENT007_PI_SKILL_PATHS: skillsRoot,
+      SUBAGENT007_PI_CHILD_PATH: path.join(tmp, "missing-pi-child.js"),
+      SUBAGENT007_FAILURE_LOG: "on",
+      SUBAGENT007_FAILURE_LOG_PATH: operationalPaths.failures,
+      SUBAGENT007_RUNS_DIR: operationalPaths.runs,
+      SUBAGENT007_RUN_TASKS_DIR: operationalPaths.tasks,
+      SUBAGENT007_SESSIONS_DIR: operationalPaths.sessions,
+      SUBAGENT007_INPUT_REQUESTS_DIR: operationalPaths.inputs,
+      SUBAGENT007_ACTIVE_CHILDREN_DIR: operationalPaths.active,
+      SUBAGENT007_QUEUED_RUNS_DIR: operationalPaths.queued,
+      SUBAGENT007_TEMP_DIR: operationalPaths.temp,
+    },
+  });
+});
+
+test("verify_skill_bindings does not replace the launch-time skill digest recheck", async () => {
+  const skillsRoot = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-skill-verification-drift-"));
+  const skillName = "drift-verification-skill";
+  const skillPath = await writeSkillFixture(skillsRoot, skillName);
+  const originalDigest = await sha256File(skillPath);
+
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    const verified = await client.callTool({
+      name: "verify_skill_bindings",
+      arguments: {
+        contract_version: 1,
+        cwd: projectDir,
+        bindings: [{ skill_name: skillName, expected_skill_sha256: originalDigest }],
+      },
+    });
+    assert.notEqual(verified.isError, true);
+    assert.equal((verified.structuredContent as SkillBindingVerificationResult).verified, true);
+
+    await fs.appendFile(skillPath, "\nchanged after verification\n");
+    const startResponse = await client.callTool({
+      name: "start_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "must not launch",
+        skill_name: skillName,
+        expected_skill_sha256: originalDigest,
+      },
+    });
+    assert.notEqual(startResponse.isError, true);
+    const rejected = startResponse.structuredContent as RunSubagentMetadata;
+    assert.equal(rejected.kind, "preflight_rejected");
+    assert.equal(rejected.reason_code, "skill_content_mismatch");
+    assert.equal(rejected.child_started, false);
+    assert.deepEqual(await readJsonl(fakeLogPath).catch(() => []), []);
+  }, { env: { SUBAGENT007_PI_SKILL_PATHS: skillsRoot } });
+});
+
 test("runSubagent creates and resumes raw Pi session files", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-session-"));
   const projectDir = path.join(tmp, "project");
@@ -1050,6 +1271,33 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.equal(names.includes("list_allowed_models"), true);
     assert.equal(names.includes("get_run_contract"), true);
     assert.equal(names.includes("get_runtime_readiness"), true);
+    assert.equal(names.includes("verify_skill_bindings"), true);
+    const verifySkillBindingsTool = response.tools.find((tool) => tool.name === "verify_skill_bindings");
+    assert.ok(verifySkillBindingsTool);
+    assert.equal(verifySkillBindingsTool.title, "Verify Skill Bindings");
+    assert.match(verifySkillBindingsTool.description ?? "", /without invoking a model or creating operational state/i);
+    const verificationSchema = verifySkillBindingsTool.inputSchema as {
+      additionalProperties?: boolean;
+      required?: string[];
+      properties?: {
+        contract_version?: { const?: number };
+        bindings?: {
+          minItems?: number;
+          maxItems?: number;
+          items?: { additionalProperties?: boolean; required?: string[] };
+        };
+      };
+    };
+    assert.equal(verificationSchema.additionalProperties, false);
+    assert.deepEqual(verificationSchema.required, ["contract_version", "cwd", "bindings"]);
+    assert.equal(verificationSchema.properties?.contract_version?.const, 1);
+    assert.equal(verificationSchema.properties?.bindings?.minItems, 1);
+    assert.equal(verificationSchema.properties?.bindings?.maxItems, 64);
+    assert.equal(verificationSchema.properties?.bindings?.items?.additionalProperties, false);
+    assert.deepEqual(
+      verificationSchema.properties?.bindings?.items?.required,
+      ["skill_name", "expected_skill_sha256"],
+    );
     assert.equal(names.includes("run_codex"), false);
     assert.equal(names.includes("run_codex_session"), false);
     const listModelClassesTool = response.tools.find((tool) => tool.name === "list_model_classes");
@@ -1125,6 +1373,17 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       contract_version?: number;
       statuses?: { non_terminal?: string[]; terminal?: string[] };
       capabilities?: string[];
+      skill_binding_verification?: {
+        tool?: string;
+        contract_name?: string;
+        contract_version?: number;
+        max_bindings?: number;
+        all_or_nothing?: boolean;
+        model_invocation?: string;
+        operational_state_writes?: string;
+        verification_scope?: string;
+        launch_recheck_required?: boolean;
+      };
       output_reference?: { transcript_size_policy?: string };
       tools?: {
         start?: string[];
@@ -1171,6 +1430,18 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.equal(contract.capabilities?.includes("disk_reserve_fail_closed"), true);
     assert.equal(contract.capabilities?.includes("bounded_local_admission_queue"), true);
     assert.equal(contract.capabilities?.includes("workspace_read_only_effect_profile"), true);
+    assert.equal(contract.capabilities?.includes("batch_skill_binding_verification"), true);
+    assert.deepEqual(contract.skill_binding_verification, {
+      tool: "verify_skill_bindings",
+      contract_name: "subagent007.skill_binding_verification",
+      contract_version: 1,
+      max_bindings: 64,
+      all_or_nothing: true,
+      model_invocation: "none",
+      operational_state_writes: "none",
+      verification_scope: "point_in_time",
+      launch_recheck_required: true,
+    });
     assert.deepEqual(contract.effect_profiles?.workspace_read_only?.supported_tools, [
       "read", "grep", "find", "ls", "web_search", "web_read", "request_input",
     ]);

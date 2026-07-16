@@ -260,7 +260,7 @@ async function validateResumeSessionFile(continuity: RunContinuity): Promise<voi
   }
 }
 
-async function validateCwd(value: unknown): Promise<string> {
+export async function validateCwd(value: unknown): Promise<string> {
   if (typeof value !== "string" || value.trim() === "") {
     throw new ValidationError("cwd must be a nonempty absolute path", "cwd_not_absolute");
   }

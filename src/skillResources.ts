@@ -25,6 +25,19 @@ export interface SkillResourceOptions {
   explicitExtensionPaths?: string[];
 }
 
+export type SkillResolutionFailureCode = "skill_not_found" | "skill_ambiguous";
+
+export class SkillResolutionError extends ValidationError {
+  constructor(
+    message: string,
+    public readonly resolutionCode: SkillResolutionFailureCode,
+  ) {
+    super(message, "invalid_skill");
+  }
+}
+
+export type LoadedSkillCatalog = ReturnType<typeof loadSkills>;
+
 function defaultSkillLookupPaths(home = os.homedir()): string[] {
   const envPaths = process.env.SUBAGENT007_PI_SKILL_PATHS
     ?.split(path.delimiter)
@@ -46,35 +59,47 @@ function collisionName(diagnostic: unknown): string | undefined {
   return undefined;
 }
 
-function ambiguousSkillError(skillName: string): Error {
-  return new ValidationError(
+function ambiguousSkillError(skillName: string): SkillResolutionError {
+  return new SkillResolutionError(
     `skill ${JSON.stringify(skillName)} is ambiguous across configured Subagent007 skill paths`,
-    "invalid_skill",
+    "skill_ambiguous",
   );
 }
 
-export function resolveRequestedSkill(skillName: string, options: Omit<SkillResourceOptions, "skill">): Skill {
-  const result = loadSkills({
+export function loadSkillCatalog(
+  options: Pick<SkillResourceOptions, "cwd" | "agentDir" | "lookupPaths">,
+): LoadedSkillCatalog {
+  return loadSkills({
     cwd: options.cwd,
     agentDir: options.agentDir,
     skillPaths: options.lookupPaths ?? defaultSkillLookupPaths(),
     includeDefaults: true,
   });
+}
+
+export function resolveRequestedSkillFromCatalog(
+  skillName: string,
+  result: LoadedSkillCatalog,
+): Skill {
   if (result.diagnostics.some((diagnostic) => collisionName(diagnostic) === skillName)) {
     throw ambiguousSkillError(skillName);
   }
 
   const matches = result.skills.filter((skill) => skill.name === skillName);
   if (matches.length === 0) {
-    throw new ValidationError(
+    throw new SkillResolutionError(
       `unknown skill ${JSON.stringify(skillName)}; requested skills must resolve to exactly one configured Subagent007 skill`,
-      "invalid_skill",
+      "skill_not_found",
     );
   }
   if (matches.length > 1) {
     throw ambiguousSkillError(skillName);
   }
   return matches[0];
+}
+
+export function resolveRequestedSkill(skillName: string, options: Omit<SkillResourceOptions, "skill">): Skill {
+  return resolveRequestedSkillFromCatalog(skillName, loadSkillCatalog(options));
 }
 
 export function skillResourcePathsForRequest(options: SkillResourceOptions): string[] {

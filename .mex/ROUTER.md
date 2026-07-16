@@ -14,7 +14,7 @@ edges:
     condition: when setting up the dev environment or running the project for the first time
   - target: patterns/INDEX.md
     condition: when starting a task — check the pattern index for a matching pattern file
-last_updated: 2026-07-15
+last_updated: 2026-07-16
 ---
 
 # Session Bootstrap
@@ -27,6 +27,7 @@ Then read this file fully before doing anything else in this session.
 **Working:**
 - Opt-in `effect_profile:"workspace_read_only"` constructs Pi with exactly seven read/input/web tools, disables ambient extension discovery and recursive delegation, requires a validated pre-prompt activation receipt, and preserves omitted/legacy `tool_profile` behavior. Constrained runs support ephemeral, fresh, and raw resume continuity; named-session schemas reject the profile.
 - Optional `expected_skill_sha256` on run start surfaces pins canonical `skill_name` content before launch. Pi reads a run-owned read-only snapshot of the verified bytes, and the activation receipt preserves the canonical source path/name/SHA-256.
+- Public `verify_skill_bindings` contract version 1 validates a canonical batch of 1–64 name/digest pairs against the launch resolver without model, child, durable state, caches, temporary artifacts, or failure telemetry. Its all-or-nothing point-in-time response binds the complete cwd/request set by count and canonical SHA-256; launch still rechecks for drift.
 - Durable runs expose one version-2 acknowledged-input contract: every answer has a response ID, a receipt is created only after the child waiter accepts that response, exact live retries replay safely, and raw answer text remains only on the private live control path/Pi context.
 - MCP public tools expose one-shot, durable run, scheduler, named-session, mailbox, contract, readiness, and model-class surfaces.
 - Durable runs persist snapshots and public event ledgers, support cancellation and caller input, and fail closed on restart drift.
@@ -35,7 +36,7 @@ Then read this file fully before doing anything else in this session.
 - Builds publish versioned releases through an atomic `dist/current` switch; stable entrypoints remain available and live server release leases prevent cleanup races.
 - Model classes, config migration, model-health probes, observed campaign/probe tooling, and bounded raw failure telemetry with retained compact archive summaries are implemented.
 - Internal model-class calibration uses the current Pi registry, and the bundled Pi coding-agent dependency is kept new enough to resolve every calibrated class model during child execution.
-- Observed campaign tool-listing asserts the exact 12-tool public MCP surface and `skill_name` vs legacy `skill` schema guidance instead of treating `listTools()` as liveness-only.
+- Observed campaign tool-listing asserts the exact 13-tool public MCP surface and `skill_name` vs legacy `skill` schema guidance instead of treating `listTools()` as liveness-only.
 - Observed campaign coverage is keyed by caller-visible `surfaces` and `result_classes`; retired descriptive `lifecycle_phases` metadata is not part of the coverage contract.
 - Observed `full-current` coverage includes single- and two-hop recursive delegate lineage, depth-limit rejection both before launch and after one valid hop, forged-lineage rejection, and private recursive-control leakage checks.
 - Observed `full-current` coverage also includes missing-final-output classification, named-session resume and `require_existing` missing-session preflight, `start_session_run` packet-failure telemetry correlation, local queue/cancellation/overflow/promotion/release, exact input retry receipts, and local active-child capacity exhaustion/release.
@@ -45,7 +46,7 @@ Then read this file fully before doing anything else in this session.
 - Public MCP result/list/session surfaces, failure logs, and README expose model classes and health/migration guidance without concrete model IDs or thinking-level calibration values; observed campaign result matching asserts absence of forbidden calibration fields and thinking-level field-name variants.
 - Session terminal failure telemetry preserves the caller-facing durable context: packet failures from `start_session_run` and `run_subagent_session` log the correct public tool, durable `run_id`, and `task_kind:"session"`.
 - The durable-run contract exposes session start tools under `tools.session_start`, while preserving the existing `tools.start` tuple for run-only adapters.
-- Skill binding normalization and schema descriptions are centralized in `src/skillBinding.ts`; prompt-level skill invocation syntax is rejected unless the caller binds `skill_name`/legacy `skill`.
+- Skill binding normalization and schema descriptions are centralized in `src/skillBinding.ts`; canonical catalog resolution remains in `src/skillResources.ts`, and `src/skillVerification.ts` owns the shared read/hash/compare primitive used by batch verification and launch.
 - Failure reason codes and handler-level preflight retry guidance come from explicit `ValidationError.reasonCode`; neither failure logging nor guidance infers semantics from message text.
 - Named-session locks transfer only after definite local owner death, while successful candidate promotion is recovered through a hash-verified pending commit before its attempt workspace is removed. Active-child leases bind new files to both run and owner; unreadable legacy leases retain capacity but return `run_liveness_unknown` instead of triggering restart drift.
 - SAF repairs are in place for provider usage-limit metadata, parent-exit child-process cleanup, finite-by-default active-child launch fusing, structured run-operation semantic rejections, packet-required not-ready taxonomy, public prompt projection, and named-session manifest preflight eligibility.

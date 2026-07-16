@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { assertConfiguredChildEntrypointAvailable } from "./childEntrypoint.js";
 import { loadConfig } from "./config.js";
 import {
@@ -27,6 +27,10 @@ import { computeTimeoutBudget } from "./timeoutBudget.js";
 import { safeIntegerFromEnv } from "./env.js";
 import { resolvePiAgentDir } from "./piAgentDir.js";
 import { resolveRequestedSkill } from "./skillResources.js";
+import {
+  SkillBindingVerificationError,
+  verifySkillFileBinding,
+} from "./skillVerification.js";
 import type { FailureReasonCode, RunStopReason } from "./types.js";
 import type {
   ActivationReceipt,
@@ -425,7 +429,7 @@ export function resolveSkillFilePathForRequest(
 }
 
 async function resolvedSkillAuditMetadata(
-  resolved: Pick<ResolvedRunSubagentRequest, "skill">,
+  resolved: Pick<ResolvedRunSubagentRequest, "skill" | "expectedSkillSha256">,
   skillFilePath: string | undefined,
 ): Promise<{
   resolvedSkillPath: string | null;
@@ -439,19 +443,31 @@ async function resolvedSkillAuditMetadata(
       skillBinding: null,
     };
   }
-  const resolvedSkillPath = path.resolve(skillFilePath);
-  const content = await fs.readFile(resolvedSkillPath);
-  const resolvedSkillSha256 = createHash("sha256").update(content).digest("hex");
+  const skillBinding = await verifySkillFileBinding({
+    skill_name: resolved.skill,
+    ...(resolved.expectedSkillSha256
+      ? { expected_skill_sha256: resolved.expectedSkillSha256 }
+      : {}),
+    skillFilePath,
+  });
   return {
-    resolvedSkillPath,
-    resolvedSkillSha256,
-    skillBinding: {
-      name: resolved.skill,
-      path: resolvedSkillPath,
-      content_sha256: resolvedSkillSha256,
-      expected_content_sha256: null,
-    },
+    resolvedSkillPath: skillBinding.path,
+    resolvedSkillSha256: skillBinding.content_sha256,
+    skillBinding,
   };
+}
+
+function launchSkillContentError(error: unknown): ValidationError {
+  if (error instanceof SkillBindingVerificationError) {
+    const message = error.failureCode === "skill_unreadable"
+      ? "resolved skill content could not be verified before child launch"
+      : `resolved skill content SHA-256 does not match expected_skill_sha256 for ${JSON.stringify(error.skillName)}`;
+    return new ValidationError(message, "skill_content_mismatch");
+  }
+  return new ValidationError(
+    `resolved skill content could not be verified before child launch: ${(error as Error).message}`,
+    "skill_content_mismatch",
+  );
 }
 
 export async function assertExpectedSkillBinding(
@@ -461,20 +477,10 @@ export async function assertExpectedSkillBinding(
   if (!resolved.expectedSkillSha256) {
     return;
   }
-  let audit: Awaited<ReturnType<typeof resolvedSkillAuditMetadata>>;
   try {
-    audit = await resolvedSkillAuditMetadata(resolved, skillFilePath);
+    await resolvedSkillAuditMetadata(resolved, skillFilePath);
   } catch (error) {
-    throw new ValidationError(
-      `resolved skill content could not be verified before child launch: ${(error as Error).message}`,
-      "skill_content_mismatch",
-    );
-  }
-  if (audit.resolvedSkillSha256 !== resolved.expectedSkillSha256) {
-    throw new ValidationError(
-      `resolved skill content SHA-256 does not match expected_skill_sha256 for ${JSON.stringify(resolved.skill)}`,
-      "skill_content_mismatch",
-    );
+    throw launchSkillContentError(error);
   }
 }
 
@@ -536,14 +542,12 @@ export async function runSubagentCore(
     skillAudit = await resolvedSkillAuditMetadata(resolved, skillFilePath);
   } catch (error) {
     if (resolved.expectedSkillSha256 || resolved.effectProfile) {
-      throw new ValidationError(
-        `resolved skill content could not be verified before child launch: ${(error as Error).message}`,
-        "skill_content_mismatch",
-      );
+      throw launchSkillContentError(error);
     }
-    throw error;
+    throw error instanceof SkillBindingVerificationError && error.cause
+      ? error.cause
+      : error;
   }
-  await assertExpectedSkillBinding(resolved, skillFilePath);
   const skillBinding = skillAudit.skillBinding
     ? {
         ...skillAudit.skillBinding,

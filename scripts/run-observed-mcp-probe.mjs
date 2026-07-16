@@ -31,6 +31,7 @@ const EXPECTED_PUBLIC_TOOLS = [
   "schedule_run",
   "start_run",
   "start_session_run",
+  "verify_skill_bindings",
 ].sort();
 const SKILL_BINDING_TOOLS = [
   "run_subagent",
