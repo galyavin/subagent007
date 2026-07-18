@@ -26,12 +26,19 @@ const EXPECTED_PUBLIC_TOOLS = [
   "get_runtime_readiness",
   "list_allowed_models",
   "list_model_classes",
+  "close_skill_snapshot_references",
+  "delete_skill_snapshot",
+  "plan_skill_snapshot_deletion",
+  "publish_skill_snapshots",
+  "resolve_skill_bindings",
+  "resolve_skill_runtime_bundles",
   "run_subagent",
   "run_subagent_session",
   "schedule_run",
   "start_run",
   "start_session_run",
   "verify_skill_bindings",
+  "validate_skill_runtime_bundle",
 ].sort();
 const SKILL_BINDING_TOOLS = [
   "run_subagent",
@@ -611,6 +618,7 @@ async function createDeterministicFakeChild() {
       "if (request.sessionMode === 'fresh') sessionFile = sessionFileForFresh();",
       "if (request.sessionMode === 'resume') sessionFile = request.sessionFile;",
       "if (sessionFile) writeEvent({ type: 'subagent007.session', session_id: sessionFile });",
+      "writeEvent({ type: 'subagent007.recursive_delegation_confirmed', receipt: { schema_version: 1, confirmed_before_prompt: true, requested_recursive_delegation: request.requestedRecursiveDelegation == null ? null : request.requestedRecursiveDelegation, resolved_recursive_delegation: request.recursiveDelegation || 'disabled', delegate_tool_active: request.recursiveDelegation === 'enabled' && Boolean(request.recursiveControl) } });",
       "function packetFinal(packet) {",
       "  return '```contract_packet_v1\\n' + JSON.stringify(packet) + '\\n```';",
       "}",
@@ -1823,6 +1831,7 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
       args: {
         cwd,
         prompt: RECURSIVE_DELEGATE_SCENARIO_PROMPTS[scenario],
+        recursive_delegation: "enabled",
         wait_ms: 0,
       },
     });

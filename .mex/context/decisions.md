@@ -12,7 +12,7 @@ edges:
     condition: when a decision relates to system structure
   - target: context/stack.md
     condition: when a decision relates to technology choice
-last_updated: 2026-07-16
+last_updated: 2026-07-17
 ---
 
 # Decisions
@@ -141,6 +141,22 @@ last_updated: 2026-07-16
 **Reasoning:** Burst demand should retain a durable run identity without increasing concurrent child pressure. Keeping request payloads in owner memory avoids a new raw-prompt retention path, while excluding recursive work prevents all active parents from waiting on descendants that cannot acquire a slot.
 **Alternatives considered:** Strict global FIFO (rejected because another server process cannot execute an in-memory request and a stalled owner could block everyone), persisted request payloads (rejected as a new sensitive accumulation path), and queueing every tool (rejected because synchronous and recursive contracts need immediate capacity outcomes).
 **Consequences:** Queued views use `status:"working"` and `active_phase:"queued"`; one process-owned pump preserves FIFO per owner with approximate cross-process fairness. Cancellation removes a ticket before launch. Mutable safety preconditions are checked again at promotion, filesystem records publish atomically, unreadable ownership records fail closed, and restart drift never replays an unavailable prompt.
+
+### Skill resolution and recursive delegation remain authority-owned
+
+**Date:** 2026-07-16
+**Status:** Active
+**Decision:** `resolve_skill_bindings` v1 resolves 1–64 canonical sorted names through the same catalog/read/hash authority as verification and launch, with a domain-separated full-request digest and no execution-state writes. Recursive delegation is a separate explicit launch authority: omission disables it, raw resume reauthorizes every turn, named sessions reject it, and read-only conflicts with it. The child emits a strict pre-prompt receipt; ancestor views expose complete descendant IDs and terminal statuses, and parent terminal publication waits for subtree closure.
+**Consequences:** Callers can bind hashless semantic drafts without duplicating catalog authority, while launches retain drift rechecks. Recursive callers must opt in before prompt submission; enabled descendants inherit but cannot widen authority, and parent terminal views remain open until contributing descendants settle.
+
+### Complete skill bundles execute from owner snapshots
+
+**Date:** 2026-07-17
+**Status:** Active
+**Decision:** One execution-owner algorithm digests the complete admitted runtime closure. Exact-root validation is catalog-neutral for both staging and canonical-source recomputation. Publication independently resolves current catalog source, freezes captured bytes into a content-addressed snapshot, and exclusively claims stable `project_id` plus caller-persisted `publication_id` for one complete canonical request/snapshot set. Pending exact replay resumes and committed replay returns the same receipts; a different request under that identity fails closed. Launch accepts only owner receipt identities, derives the path, and revalidates in parent and Pi child before prompt.
+**Reasoning:** `SKILL.md`-only pins miss referenced runtime drift, mutable projections cannot preserve old project versions, and a final manifest hash is circular because the manifest depends on publication evidence. A stable pre-existing publication command identity survives crash retry without letting caller paths/hashes replace owner snapshot evidence.
+**Alternatives considered:** Caller-computed bundle hashes (rejected as duplicated authority), temporary installation of staging (rejected as effectful and resolver-visible), final manifest SHA references (rejected as circular), and mutable-source launch with post-hoc evidence (rejected as too late).
+**Consequences:** Active references close idempotently without identity change; active and closed references remain retained and deletion-visible. Automatic GC is disabled. Named sessions reject snapshot bindings. Recursive descendants inherit only an ancestor-confirmed snapshot binding. The claim is exact owner filesystem/Pi activation integrity, not hostile-runtime containment.
 
 ### Public model input is model_class, not concrete model ids
 **Date:** 2026-06-25

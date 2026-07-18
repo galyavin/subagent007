@@ -174,6 +174,12 @@ function validateSessionPacketPolicy(value: unknown): SessionPacketPolicy {
 }
 
 function assertNoRawSessionId(request: RunSubagentSessionRequest): void {
+  if ((request as { recursive_delegation?: unknown }).recursive_delegation !== undefined) {
+    throw new ValidationError(
+      "recursive_delegation is not supported by named-session APIs",
+      "recursive_delegation_unsupported",
+    );
+  }
   if ((request as { effect_profile?: unknown }).effect_profile !== undefined) {
     throw new ValidationError(
       "effect_profile is not supported by named-session APIs; use run_subagent, start_run, or schedule_run",
@@ -183,6 +189,12 @@ function assertNoRawSessionId(request: RunSubagentSessionRequest): void {
   if ((request as { expected_skill_sha256?: unknown }).expected_skill_sha256 !== undefined) {
     throw new ValidationError(
       "expected_skill_sha256 is not supported by named-session APIs",
+      "skill_binding_unsupported",
+    );
+  }
+  if ((request as { skill_snapshot_binding?: unknown }).skill_snapshot_binding !== undefined) {
+    throw new ValidationError(
+      "skill_snapshot_binding is not supported by named-session APIs",
       "skill_binding_unsupported",
     );
   }
@@ -483,6 +495,7 @@ function sessionRunRequest(
     continuity: manifest
       ? { mode: "resume", session_id: manifest.subagent_session_id }
       : { mode: "fresh" },
+    recursive_delegation: "disabled",
   };
 }
 

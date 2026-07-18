@@ -203,3 +203,30 @@ test("ledger guard kills detached processes owned by its suite root", async () =
   assert.equal(Number.isInteger(pid), true);
   assert.equal(processExists(pid), false);
 });
+
+test("ledger guard removes immutable owner artifacts from its private suite root", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-ledger-guard-immutable-"));
+  const capturePath = path.join(dir, "tmpdir.txt");
+  const childTest = await writeChildTest(
+    dir,
+    [
+      "import test from 'node:test';",
+      "import fs from 'node:fs';",
+      "import path from 'node:path';",
+      "test('create immutable owner artifact', () => {",
+      "  const root = path.join(process.env.TMPDIR, 'immutable-snapshot', 'runtime');",
+      "  fs.mkdirSync(root, { recursive: true });",
+      "  fs.writeFileSync(path.join(root, 'SKILL.md'), 'settled');",
+      "  fs.chmodSync(path.join(root, 'SKILL.md'), 0o444);",
+      "  fs.chmodSync(root, 0o555);",
+      "  fs.writeFileSync(process.env.CAPTURE_ENV_PATH, process.env.TMPDIR);",
+      "});",
+      "",
+    ].join("\n"),
+  );
+
+  const result = await runGuard(childTest, envWithoutInheritedFailureLog({ CAPTURE_ENV_PATH: capturePath }));
+
+  assert.equal(result.ok, true, result.stderr);
+  await assert.rejects(fs.stat(await fs.readFile(capturePath, "utf8")), { code: "ENOENT" });
+});

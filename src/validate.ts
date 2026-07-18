@@ -328,7 +328,23 @@ export async function validateAndResolveRequest(
 
   validateChoice(request.tool_profile, "tool_profile", TOOL_PROFILES);
   const effectProfile = validateChoice(request.effect_profile, "effect_profile", EFFECT_PROFILES);
+  const recursiveDelegation = request.recursive_delegation ?? "disabled";
+  if (request.continuity?.mode === "resume" && request.recursive_delegation === undefined) {
+    throw new ValidationError("raw resume requires explicit recursive_delegation reauthorization", "recursive_delegation_reauthorization_required");
+  }
+  if (effectProfile === "workspace_read_only" && recursiveDelegation === "enabled") {
+    throw new ValidationError("workspace_read_only excludes recursive delegation", "recursive_delegation_effect_conflict");
+  }
   const expectedSkillSha256 = trimOptional(request.expected_skill_sha256, "expected_skill_sha256");
+  const skillSnapshotBinding = request.skill_snapshot_binding;
+  if (skillSnapshotBinding !== undefined) {
+    if (typeof request.skill_name !== "string" || request.skill_name.trim() === "") {
+      throw new ValidationError("skill_snapshot_binding requires canonical skill_name", "invalid_skill_snapshot_binding");
+    }
+    if (expectedSkillSha256 !== undefined) {
+      throw new ValidationError("skill_snapshot_binding and expected_skill_sha256 are mutually exclusive", "invalid_skill_snapshot_binding");
+    }
+  }
   if (expectedSkillSha256 !== undefined) {
     if (!/^[0-9a-f]{64}$/.test(expectedSkillSha256)) {
       throw new ValidationError(
@@ -354,7 +370,10 @@ export async function validateAndResolveRequest(
     continuity,
     skill: resolveSkillBinding(request, prompt),
     effectProfile,
+    recursiveDelegation,
+    requestedRecursiveDelegation: request.recursive_delegation ?? null,
     expectedSkillSha256,
+    skillSnapshotBinding,
     outputMode: validateOutputMode(request.output_mode),
   };
 }

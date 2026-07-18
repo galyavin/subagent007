@@ -215,7 +215,15 @@ test("runtime readiness returns a ready snapshot for a clean current build", asy
   assert.equal(snapshot.contract.compatible, true);
   assert.equal(snapshot.capabilities.public_tools.includes("get_runtime_readiness"), true);
   assert.equal(snapshot.capabilities.public_tools.includes("verify_skill_bindings"), true);
+  assert.equal(snapshot.capabilities.public_tools.includes("resolve_skill_bindings"), true);
+  assert.equal(snapshot.capabilities.public_tools.includes("validate_skill_runtime_bundle"), true);
+  assert.equal(snapshot.capabilities.public_tools.includes("publish_skill_snapshots"), true);
+  assert.equal(snapshot.capabilities.public_tools.includes("close_skill_snapshot_references"), true);
+  assert.equal(snapshot.capabilities.public_tools.length, 20);
   assert.equal(snapshot.capabilities.durable_run.includes("batch_skill_binding_verification"), true);
+  assert.equal(snapshot.capabilities.durable_run.includes("batch_skill_binding_resolution"), true);
+  assert.equal(snapshot.capabilities.durable_run.includes("explicit_recursive_delegation"), true);
+  assert.equal(snapshot.capabilities.durable_run.includes("terminal_recursive_subtree_closure"), true);
   assert.equal(snapshot.build.child_entrypoint.exists, true);
   assert.deepEqual(
     snapshot.contract.effect_profiles.workspace_read_only.supported_tools,

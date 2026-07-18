@@ -10,6 +10,18 @@ import {
   SKILL_BINDING_VERIFICATION_CONTRACT_NAME,
   SKILL_BINDING_VERIFICATION_CONTRACT_VERSION,
 } from "./skillVerification.js";
+import {
+  MAX_SKILL_BINDING_RESOLUTION_ENTRIES,
+  SKILL_BINDING_RESOLUTION_CONTRACT_NAME,
+  SKILL_BINDING_RESOLUTION_CONTRACT_VERSION,
+} from "./skillResolution.js";
+import {
+  MAX_SKILL_RUNTIME_BUNDLE_RESOLUTION_ENTRIES,
+  SKILL_RUNTIME_BUNDLE_RESOLUTION_CONTRACT_NAME,
+  SKILL_RUNTIME_BUNDLE_RESOLUTION_CONTRACT_VERSION,
+} from "./skillSnapshot.js";
+import { SKILL_RUNTIME_BUNDLE_ALGORITHM } from "./skillRuntimeBundle.js";
+import { SKILL_RUNTIME_BUNDLE_VALIDATION_CONTRACT_NAME } from "./skillRuntimeBundleValidation.js";
 
 export const DURABLE_RUN_CONTRACT_NAME = "subagent007.durable_run";
 export const DURABLE_RUN_CONTRACT_VERSION = 2;
@@ -37,6 +49,15 @@ export const DURABLE_RUN_CAPABILITIES = [
   "workspace_read_only_effect_profile",
   "pre_prompt_skill_content_binding",
   "batch_skill_binding_verification",
+  "batch_skill_binding_resolution",
+  "full_runtime_bundle_resolution",
+  "exact_root_runtime_bundle_validation",
+  "immutable_skill_snapshots",
+  "snapshot_bound_launch",
+  "reference_retained_skill_snapshots",
+  "explicit_skill_snapshot_deletion",
+  "explicit_recursive_delegation",
+  "terminal_recursive_subtree_closure",
 ] as const;
 
 export function durableRunContractView(): {
@@ -91,6 +112,66 @@ export function durableRunContractView(): {
     verification_scope: "point_in_time";
     launch_recheck_required: true;
   };
+  skill_binding_resolution: {
+    tool: "resolve_skill_bindings";
+    contract_name: typeof SKILL_BINDING_RESOLUTION_CONTRACT_NAME;
+    contract_version: typeof SKILL_BINDING_RESOLUTION_CONTRACT_VERSION;
+    max_skill_names: typeof MAX_SKILL_BINDING_RESOLUTION_ENTRIES;
+    all_or_nothing: true;
+    model_invocation: "none";
+    operational_state_writes: "none";
+    resolution_scope: "point_in_time";
+    launch_recheck_required: true;
+  };
+  skill_runtime_bundle_resolution: {
+    tool: "resolve_skill_runtime_bundles";
+    contract_name: typeof SKILL_RUNTIME_BUNDLE_RESOLUTION_CONTRACT_NAME;
+    contract_version: typeof SKILL_RUNTIME_BUNDLE_RESOLUTION_CONTRACT_VERSION;
+    max_skill_names: typeof MAX_SKILL_RUNTIME_BUNDLE_RESOLUTION_ENTRIES;
+    digest_algorithm: typeof SKILL_RUNTIME_BUNDLE_ALGORITHM;
+    all_or_nothing: true;
+    model_invocation: "none";
+    operational_state_writes: "none";
+    resolution_scope: "point_in_time";
+    executable_identity: false;
+  };
+  skill_runtime_bundle_validation: {
+    tool: "validate_skill_runtime_bundle";
+    contract_name: typeof SKILL_RUNTIME_BUNDLE_VALIDATION_CONTRACT_NAME;
+    contract_version: 1;
+    digest_algorithm: typeof SKILL_RUNTIME_BUNDLE_ALGORITHM;
+    catalog_resolution: "none";
+    model_invocation: "none";
+    operational_state_writes: "none";
+    valid_root_contexts: ["settled_staging", "canonical_source"];
+  };
+  skill_snapshot_foundation: {
+    publication_tool: "publish_skill_snapshots";
+    deletion_plan_tool: "plan_skill_snapshot_deletion";
+    deletion_tool: "delete_skill_snapshot";
+    close_references_tool: "close_skill_snapshot_references";
+    contract_version: 1;
+    identity: "content_addressed_complete_runtime_bundle";
+    project_reference_lifecycles: ["active", "closed"];
+    project_reference_identity: "project_id_and_stable_publication_id";
+    publication_identity_cardinality: "one_canonical_request_and_snapshot_set";
+    publication_replay: "pending_resume_or_committed_exact_replay";
+    publication_conflict: "fail_closed";
+    automatic_gc: "disabled";
+    referenced_snapshot_gc: "forbidden";
+    deletion_authorization: "exact_fresh_impact_sha256";
+    source_updates: "future_publications_only";
+    concurrent_pinned_versions: true;
+    named_sessions: "unsupported";
+    launch: {
+      request_field: "skill_snapshot_binding";
+      supported_start_tools: ["run_subagent", "start_run", "schedule_run"];
+      supported_continuity_modes: ["ephemeral", "fresh", "resume"];
+      pre_prompt_revalidation: "parent_and_pi_child";
+      activation_receipt_field: "skill_snapshot_activation_receipt";
+      activation_event_type: "subagent007.skill_snapshot_activation_confirmed";
+    };
+  };
   effect_profiles: {
     workspace_read_only: {
       supported_tools: typeof WORKSPACE_READ_ONLY_TOOL_NAMES;
@@ -118,6 +199,24 @@ export function durableRunContractView(): {
           "skill_binding",
         ];
       };
+    };
+  };
+  recursive_delegation: {
+    request_field: "recursive_delegation";
+    values: ["disabled", "enabled"];
+    omitted: "disabled";
+    raw_resume: "explicit_reauthorization_required";
+    named_sessions: "unsupported";
+    enabled_scope: "entire_depth_bounded_subtree";
+    descendant_widening: "forbidden";
+    parent_terminal_rule: "full_subtree_terminal";
+    descendant_ids_field: "descendant_run_ids";
+    descendant_statuses_field: "descendant_terminal_statuses";
+    receipt: {
+      result_field: "recursive_delegation_receipt";
+      event_type: "subagent007.recursive_delegation_confirmed";
+      required_before_prompt: true;
+      schema_version: 1;
     };
   };
 } {
@@ -174,6 +273,66 @@ export function durableRunContractView(): {
       verification_scope: "point_in_time",
       launch_recheck_required: true,
     },
+    skill_binding_resolution: {
+      tool: "resolve_skill_bindings",
+      contract_name: SKILL_BINDING_RESOLUTION_CONTRACT_NAME,
+      contract_version: SKILL_BINDING_RESOLUTION_CONTRACT_VERSION,
+      max_skill_names: MAX_SKILL_BINDING_RESOLUTION_ENTRIES,
+      all_or_nothing: true,
+      model_invocation: "none",
+      operational_state_writes: "none",
+      resolution_scope: "point_in_time",
+      launch_recheck_required: true,
+    },
+    skill_runtime_bundle_resolution: {
+      tool: "resolve_skill_runtime_bundles",
+      contract_name: SKILL_RUNTIME_BUNDLE_RESOLUTION_CONTRACT_NAME,
+      contract_version: SKILL_RUNTIME_BUNDLE_RESOLUTION_CONTRACT_VERSION,
+      max_skill_names: MAX_SKILL_RUNTIME_BUNDLE_RESOLUTION_ENTRIES,
+      digest_algorithm: SKILL_RUNTIME_BUNDLE_ALGORITHM,
+      all_or_nothing: true,
+      model_invocation: "none",
+      operational_state_writes: "none",
+      resolution_scope: "point_in_time",
+      executable_identity: false,
+    },
+    skill_runtime_bundle_validation: {
+      tool: "validate_skill_runtime_bundle",
+      contract_name: SKILL_RUNTIME_BUNDLE_VALIDATION_CONTRACT_NAME,
+      contract_version: 1,
+      digest_algorithm: SKILL_RUNTIME_BUNDLE_ALGORITHM,
+      catalog_resolution: "none",
+      model_invocation: "none",
+      operational_state_writes: "none",
+      valid_root_contexts: ["settled_staging", "canonical_source"],
+    },
+    skill_snapshot_foundation: {
+      publication_tool: "publish_skill_snapshots",
+      deletion_plan_tool: "plan_skill_snapshot_deletion",
+      deletion_tool: "delete_skill_snapshot",
+      close_references_tool: "close_skill_snapshot_references",
+      contract_version: 1,
+      identity: "content_addressed_complete_runtime_bundle",
+      project_reference_lifecycles: ["active", "closed"],
+      project_reference_identity: "project_id_and_stable_publication_id",
+      publication_identity_cardinality: "one_canonical_request_and_snapshot_set",
+      publication_replay: "pending_resume_or_committed_exact_replay",
+      publication_conflict: "fail_closed",
+      automatic_gc: "disabled",
+      referenced_snapshot_gc: "forbidden",
+      deletion_authorization: "exact_fresh_impact_sha256",
+      source_updates: "future_publications_only",
+      concurrent_pinned_versions: true,
+      named_sessions: "unsupported",
+      launch: {
+        request_field: "skill_snapshot_binding",
+        supported_start_tools: ["run_subagent", "start_run", "schedule_run"],
+        supported_continuity_modes: ["ephemeral", "fresh", "resume"],
+        pre_prompt_revalidation: "parent_and_pi_child",
+        activation_receipt_field: "skill_snapshot_activation_receipt",
+        activation_event_type: "subagent007.skill_snapshot_activation_confirmed",
+      },
+    },
     effect_profiles: {
       workspace_read_only: {
         supported_tools: WORKSPACE_READ_ONLY_TOOL_NAMES,
@@ -201,6 +360,24 @@ export function durableRunContractView(): {
             "skill_binding",
           ],
         },
+      },
+    },
+    recursive_delegation: {
+      request_field: "recursive_delegation",
+      values: ["disabled", "enabled"],
+      omitted: "disabled",
+      raw_resume: "explicit_reauthorization_required",
+      named_sessions: "unsupported",
+      enabled_scope: "entire_depth_bounded_subtree",
+      descendant_widening: "forbidden",
+      parent_terminal_rule: "full_subtree_terminal",
+      descendant_ids_field: "descendant_run_ids",
+      descendant_statuses_field: "descendant_terminal_statuses",
+      receipt: {
+        result_field: "recursive_delegation_receipt",
+        event_type: "subagent007.recursive_delegation_confirmed",
+        required_before_prompt: true,
+        schema_version: 1,
       },
     },
   };

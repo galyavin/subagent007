@@ -28,6 +28,7 @@ import {
 import {
   assertPiChildEntrypointAvailable,
   assertExpectedSkillBinding,
+  assertSkillSnapshotBinding,
   runSubagentCore,
   resolveSkillFilePathForRequest,
   RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT,
@@ -55,6 +56,7 @@ import {
   type RunTaskTerminalStatus,
 } from "./runLifecycle.js";
 import type {
+  RecursiveDelegationReceipt,
   RunPublicEvent,
   RunPublicEventName,
   RunSubagentPromotion,
@@ -91,9 +93,9 @@ const TERMINAL_RUN_STATUS_SET = new Set<RunTaskStatus>(TERMINAL_RUN_STATUSES);
 type RunTaskTerminalResult = RunSubagentResult | RunSubagentSessionResult;
 type ChildLifecycleEventName = Extract<
   RunPublicEventName,
-  "child_spawned" | "child_bridge_started" | "child_session_established" | "activation_confirmed" | "child_prompt_submitted"
+  "child_spawned" | "child_bridge_started" | "child_session_established" | "activation_confirmed" | "skill_snapshot_activation_confirmed" | "recursive_delegation_confirmed" | "child_prompt_submitted"
 >;
-type StandardChildLifecycleEventName = Exclude<ChildLifecycleEventName, "activation_confirmed">;
+type StandardChildLifecycleEventName = Exclude<ChildLifecycleEventName, "activation_confirmed" | "skill_snapshot_activation_confirmed" | "recursive_delegation_confirmed">;
 type RunTaskFailureLogTool = Extract<
   FailureLogTool,
   "run_subagent" | "schedule_run" | "start_run" | "start_session_run" | "run_subagent_session"
@@ -109,6 +111,8 @@ export interface RunTaskView extends Partial<RunSubagentResult>, Partial<RunSuba
   root_run_id: string;
   recursion_depth: number;
   child_run_ids: string[];
+  descendant_run_ids: string[];
+  descendant_terminal_statuses: Record<string, RunTaskTerminalStatus>;
   status: DurableRunStatus;
   started_at: string;
   finished_at?: string;
@@ -145,11 +149,7 @@ export interface RunTaskLineage {
   recursionDepth?: number;
 }
 
-export interface RecursiveCallerLineage {
-  parentRunId: string;
-  rootRunId: string;
-  recursionDepth: number;
-}
+export type RecursiveCallerLineage = Required<RunTaskLineage>;
 
 interface RunTaskState {
   runId: string;
@@ -183,6 +183,8 @@ interface RunTaskState {
   rootRunId: string;
   recursionDepth: number;
   childRunIds: string[];
+  descendantRunIds: string[];
+  descendantTerminalStatuses: Record<string, RunTaskTerminalStatus>;
   childControlSend?: (message: string) => boolean;
   acceptedInputResponses: Map<string, { responseId: string; answer: string; receipt: string }>;
   pendingInputDeliveries: Map<string, PendingInputDelivery>;
@@ -195,6 +197,10 @@ interface RunTaskState {
   capacityReleased: boolean;
   requestedEffectProfile?: RunSubagentRequest["effect_profile"];
   activationReceipt?: RunSubagentResult["activation_receipt"];
+  skillSnapshotBinding?: RunSubagentResult["skill_snapshot_binding"];
+  skillSnapshotActivationReceipt?: RunSubagentResult["skill_snapshot_activation_receipt"];
+  recursiveDelegationReceipt?: RecursiveDelegationReceipt;
+  requestedRecursiveDelegation?: RunSubagentRequest["recursive_delegation"];
   expectedSkillSha256?: string;
 }
 
@@ -411,6 +417,8 @@ function createRunTaskState(
     rootRunId: lineage.rootRunId ?? runId,
     recursionDepth: lineage.recursionDepth ?? 0,
     childRunIds: [],
+    descendantRunIds: [],
+    descendantTerminalStatuses: {},
     acceptedInputResponses: new Map(),
     pendingInputDeliveries: new Map(),
     inputMutationQueue: Promise.resolve(),
@@ -627,13 +635,15 @@ function admissionView(state: RunTaskState): Pick<
 
 function lineageView(state: RunTaskState): Pick<
   RunTaskView,
-  "parent_run_id" | "root_run_id" | "recursion_depth" | "child_run_ids"
+  "parent_run_id" | "root_run_id" | "recursion_depth" | "child_run_ids" | "descendant_run_ids" | "descendant_terminal_statuses"
 > {
   return {
     ...(state.parentRunId ? { parent_run_id: state.parentRunId } : {}),
     root_run_id: state.rootRunId,
     recursion_depth: state.recursionDepth,
     child_run_ids: state.childRunIds,
+    descendant_run_ids: state.descendantRunIds,
+    descendant_terminal_statuses: state.descendantTerminalStatuses,
   };
 }
 
@@ -643,7 +653,7 @@ function activeProgressView(state: RunTaskState): RunTaskProgressView {
 
 function activationView(state: RunTaskState): Pick<
   RunTaskView,
-  "requested_effect_profile" | "resolved_effect_profile" | "expected_skill_sha256" | "activation_receipt"
+  "requested_effect_profile" | "resolved_effect_profile" | "expected_skill_sha256" | "activation_receipt" | "skill_snapshot_binding" | "skill_snapshot_activation_receipt" | "requested_recursive_delegation" | "resolved_recursive_delegation" | "recursive_delegation_receipt"
 > {
   return {
     ...(state.requestedEffectProfile ? { requested_effect_profile: state.requestedEffectProfile } : {}),
@@ -656,6 +666,15 @@ function activationView(state: RunTaskState): Pick<
           activation_receipt: state.activationReceipt,
         }
       : {}),
+    ...(state.skillSnapshotBinding ? { skill_snapshot_binding: state.skillSnapshotBinding } : {}),
+    ...(state.skillSnapshotActivationReceipt
+      ? { skill_snapshot_activation_receipt: state.skillSnapshotActivationReceipt }
+      : {}),
+    ...(state.requestedRecursiveDelegation ? { requested_recursive_delegation: state.requestedRecursiveDelegation } : {}),
+    ...(state.recursiveDelegationReceipt ? {
+      resolved_recursive_delegation: state.recursiveDelegationReceipt.resolved_recursive_delegation,
+      recursive_delegation_receipt: state.recursiveDelegationReceipt,
+    } : {}),
   };
 }
 
@@ -788,6 +807,16 @@ async function appendParentRecursiveChildFinishedEvent(child: RunTaskState): Pro
   const status = terminalStatusForRecursiveChild(child);
   const success = child.result?.success ?? false;
   const occurredAt = child.finishedAt ?? new Date().toISOString();
+  let ancestorId: string | undefined = child.parentRunId;
+  while (ancestorId) {
+    const ancestor = tasks.get(ancestorId);
+    if (!ancestor) break;
+    ancestor.descendantTerminalStatuses = {
+      ...ancestor.descendantTerminalStatuses,
+      [child.runId]: status,
+    };
+    ancestorId = ancestor.parentRunId;
+  }
   await appendParentRecursiveChildEvent(parent, {
     kind: "task",
     event: "recursive_child_finished",
@@ -879,6 +908,10 @@ async function registerRunTaskState(
     state.requestedEffectProfile = request.effect_profile;
     state.expectedSkillSha256 = request.expected_skill_sha256;
   }
+  if ("skill_snapshot_binding" in request) state.skillSnapshotBinding = request.skill_snapshot_binding;
+  if ("recursive_delegation" in request) {
+    state.requestedRecursiveDelegation = request.recursive_delegation;
+  }
   tasks.set(state.runId, state);
   await appendRunStartedEvent(state, request);
   await writeTaskSnapshot(await getRunTask(state.runId));
@@ -893,8 +926,29 @@ async function recordParentChildRun(state: RunTaskState): Promise<void> {
     return;
   }
   parent.childRunIds = [...parent.childRunIds, state.runId];
-  await writeTaskSnapshot(await getRunTask(parent.runId));
+  let ancestor: RunTaskState | undefined = parent;
+  while (ancestor) {
+    if (!ancestor.descendantRunIds.includes(state.runId)) {
+      ancestor.descendantRunIds = [...ancestor.descendantRunIds, state.runId];
+      await writeTaskSnapshot(await getRunTask(ancestor.runId));
+    }
+    ancestor = ancestor.parentRunId ? tasks.get(ancestor.parentRunId) : undefined;
+  }
   await appendParentRecursiveChildStartedEvent(state);
+}
+
+async function settleDescendantSubtreeBeforeTerminal(state: RunTaskState): Promise<void> {
+  const children = state.childRunIds.map((id) => tasks.get(id)).filter((child): child is RunTaskState => Boolean(child));
+  if (children.length === 0) return;
+  setTaskProgress(state, "waiting for recursive descendants to settle");
+  await writeTaskSnapshot(await getRunTask(state.runId));
+  const abnormal = state.cancelRequested || Boolean(state.error) || (state.result !== undefined && !state.result.success);
+  if (abnormal) {
+    for (const child of children) {
+      if (!child.terminalSnapshotStarted) child.abortController.abort();
+    }
+  }
+  await Promise.allSettled(children.map((child) => child.promise));
 }
 
 export function lineageForRecursiveDelegate(caller: RecursiveCallerLineage): RunTaskLineage {
@@ -907,7 +961,8 @@ export function lineageForRecursiveDelegate(caller: RecursiveCallerLineage): Run
   }
   if (
     parent.rootRunId !== caller.rootRunId ||
-    parent.recursionDepth !== caller.recursionDepth
+    parent.recursionDepth !== caller.recursionDepth ||
+    parent.requestedRecursiveDelegation !== "enabled"
   ) {
     throw new ValidationError(
       "recursive delegate caller lineage does not match the active parent run",
@@ -1010,6 +1065,7 @@ async function finalizeRegisteredRunTask(
 ): Promise<void> {
   let terminalDurable = false;
   try {
+    await settleDescendantSubtreeBeforeTerminal(state);
     await finalizeRunTask(state, closeReason);
     terminalDurable = true;
   } finally {
@@ -1328,6 +1384,20 @@ function childLifecycleFromProcessLine(line: string): {
       progressMessage: "constrained activation confirmed before prompt",
     };
   }
+  if (parsed.type === "subagent007.skill_snapshot_activation_confirmed") {
+    return {
+      event: "skill_snapshot_activation_confirmed",
+      text: "[skill_snapshot_activation_confirmed] immutable runtime snapshot confirmed",
+      progressMessage: "immutable runtime snapshot confirmed before prompt",
+    };
+  }
+  if (parsed.type === "subagent007.recursive_delegation_confirmed") {
+    return {
+      event: "recursive_delegation_confirmed",
+      text: "[recursive_delegation_confirmed] recursive delegation authority confirmed",
+      progressMessage: "recursive delegation authority confirmed before prompt",
+    };
+  }
   if (parsed.type !== "subagent007.lifecycle") {
     return null;
   }
@@ -1415,6 +1485,12 @@ async function observeOutputLine(state: RunTaskState, line: string): Promise<voi
     if (lifecycle.event === "activation_confirmed" && !state.activationReceipt) {
       return;
     }
+    if (lifecycle.event === "skill_snapshot_activation_confirmed" && !state.skillSnapshotActivationReceipt) {
+      return;
+    }
+    if (lifecycle.event === "recursive_delegation_confirmed" && !state.recursiveDelegationReceipt) {
+      return;
+    }
     const occurredAt = new Date().toISOString();
     if (state.activePhase === "awaiting_child_event" || state.activePhase === "running_silent") {
       setTaskPhase(state, "running_silent", occurredAt);
@@ -1428,6 +1504,10 @@ async function observeOutputLine(state: RunTaskState, line: string): Promise<voi
         occurredAt,
         ...(lifecycle.event === "activation_confirmed" && state.activationReceipt
           ? { metadata: { receipt: state.activationReceipt } }
+          : lifecycle.event === "skill_snapshot_activation_confirmed" && state.skillSnapshotActivationReceipt
+            ? { metadata: { receipt: state.skillSnapshotActivationReceipt } }
+          : lifecycle.event === "recursive_delegation_confirmed" && state.recursiveDelegationReceipt
+            ? { metadata: { receipt: state.recursiveDelegationReceipt } }
           : lifecycle.metadata
             ? { metadata: lifecycle.metadata }
             : {}),
@@ -1488,6 +1568,8 @@ function taskChildRuntimeOptions(
   onTranscriptStaged: (stagingPath: string) => Promise<void>;
   onChildSpawned: () => Promise<void>;
   onActivationConfirmed: (receipt: NonNullable<RunSubagentResult["activation_receipt"]>) => void;
+  onSkillSnapshotActivationConfirmed: (receipt: NonNullable<RunSubagentResult["skill_snapshot_activation_receipt"]>) => void;
+  onRecursiveDelegationConfirmed: (receipt: RecursiveDelegationReceipt) => void;
 } {
   return {
     heartbeat: (beat, message) => handleTaskHeartbeat(state, beat, message, options.heartbeat),
@@ -1496,6 +1578,12 @@ function taskChildRuntimeOptions(
     onOutputLine: (line) => observeOutputLine(state, line),
     onActivationConfirmed: (receipt) => {
       state.activationReceipt = receipt;
+    },
+    onSkillSnapshotActivationConfirmed: (receipt) => {
+      state.skillSnapshotActivationReceipt = receipt;
+    },
+    onRecursiveDelegationConfirmed: (receipt) => {
+      state.recursiveDelegationReceipt = receipt;
     },
     onTranscriptStaged: async (stagingPath) => {
       state.partialOutputPath = stagingPath;
@@ -1720,7 +1808,7 @@ function persistRestartDriftSnapshotOnce(
 export async function getRunTask(runId: string, allowUnreleasedTerminal = false): Promise<RunTaskView> {
   const state = tasks.get(runId);
   if (!state) {
-    const snapshot = await readTaskSnapshot(runId);
+    let snapshot = await readTaskSnapshot(runId);
     if (!snapshot) {
       throw taskNotFound(runId);
     }
@@ -1743,6 +1831,22 @@ export async function getRunTask(runId: string, allowUnreleasedTerminal = false)
           "run_liveness_unknown",
         );
       }
+      const descendantTerminalStatuses = { ...(snapshot.descendant_terminal_statuses ?? {}) };
+      for (const descendantRunId of snapshot.descendant_run_ids ?? []) {
+        const descendant = await getRunTask(descendantRunId);
+        if (descendant && !isTerminalRunStatus(descendant.status)) {
+          return {
+            ...contractFields(),
+            ...snapshot,
+            ...eventProjection,
+            input_requests: inputRequests,
+          };
+        }
+        if (descendant && isTerminalRunStatus(descendant.status)) {
+          descendantTerminalStatuses[descendantRunId] = descendant.status as RunTaskTerminalStatus;
+        }
+      }
+      snapshot = { ...snapshot, descendant_terminal_statuses: descendantTerminalStatuses };
       return persistRestartDriftSnapshotOnce(
         { ...contractFields(), ...snapshot, input_requests: inputRequests },
         eventProjection,
@@ -1878,7 +1982,8 @@ export async function startRunTask(
   const config = await loadConfig();
   const resolved = await validateAndResolveRequest(request, config);
   assertDeadlineRiskTimeoutBudget(request, resolved, failureLogTool);
-  const skillFilePath = resolveSkillFilePathForRequest(resolved);
+  const snapshotPreflight = await assertSkillSnapshotBinding(resolved);
+  const skillFilePath = snapshotPreflight?.receipt.resolved_skill_path ?? resolveSkillFilePathForRequest(resolved);
   await assertExpectedSkillBinding(resolved, skillFilePath);
   await assertPiChildEntrypointAvailable();
   await assertDiskReserveAvailable(options.runsDir);
@@ -2201,7 +2306,8 @@ export async function runSubagentOneShotTask(
   }
   const config = await loadConfig();
   const resolved = await validateAndResolveRequest(request, config);
-  const skillFilePath = resolveSkillFilePathForRequest(resolved);
+  const snapshotPreflight = await assertSkillSnapshotBinding(resolved);
+  const skillFilePath = snapshotPreflight?.receipt.resolved_skill_path ?? resolveSkillFilePathForRequest(resolved);
   await assertExpectedSkillBinding(resolved, skillFilePath);
   const incompatibility = runSubagentOneShotIncompatibility(request, resolved);
   if (incompatibility) {

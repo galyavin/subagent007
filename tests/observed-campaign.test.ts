@@ -1237,7 +1237,7 @@ test("observed MCP probe fails tool-listing coverage when unexpected public tool
       `import { StdioServerTransport } from ${JSON.stringify(pathToFileURL(path.resolve("node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js")).href)};`,
       `import { z } from ${JSON.stringify(pathToFileURL(path.resolve("node_modules/zod/index.js")).href)};`,
       "const server = new McpServer({ name: 'noisy-mcp-server', version: '0.0.0' });",
-      "const expectedTools = ['answer_run_input','cancel_run','get_run','get_run_contract','get_runtime_readiness','list_allowed_models','list_model_classes','run_subagent','run_subagent_session','schedule_run','start_run','start_session_run','verify_skill_bindings'];",
+      "const expectedTools = ['answer_run_input','cancel_run','close_skill_snapshot_references','delete_skill_snapshot','get_run','get_run_contract','get_runtime_readiness','list_allowed_models','list_model_classes','plan_skill_snapshot_deletion','publish_skill_snapshots','resolve_skill_bindings','resolve_skill_runtime_bundles','run_subagent','run_subagent_session','schedule_run','start_run','start_session_run','validate_skill_runtime_bundle','verify_skill_bindings'];",
       "const skillBindingTools = new Set(['run_subagent','run_subagent_session','schedule_run','start_run','start_session_run']);",
       "const skillName = z.string().nullable().optional().describe('Preferred bare skill name only, such as pda-lite or plugin:skill-name; null means no skill.');",
       "const skill = z.string().nullable().optional().describe('Legacy alias for skill_name; prefer skill_name for new callers. Bare skill name only, such as pda-lite or plugin:skill-name; null means no skill.');",

@@ -26,8 +26,14 @@ export interface SessionToolRegistry {
   setActiveToolsByName(toolNames: string[]): void;
 }
 
-export function activateAllRegisteredTools(session: SessionToolRegistry): void {
-  const allToolNames = session.getAllTools().map((tool) => tool.name);
+export function activateAllRegisteredTools(
+  session: SessionToolRegistry,
+  recursiveDelegation: "disabled" | "enabled",
+): void {
+  const registeredToolNames = session.getAllTools().map((tool) => tool.name);
+  const allToolNames = recursiveDelegation === "enabled"
+    ? registeredToolNames
+    : registeredToolNames.filter((name) => name !== "delegate");
   session.setActiveToolsByName(allToolNames);
   const activeToolNames = session.getActiveToolNames();
   const activeToolNameSet = new Set(activeToolNames);
@@ -36,6 +42,12 @@ export function activateAllRegisteredTools(session: SessionToolRegistry): void {
     throw new Error(
       `required Pi web search tools unavailable: ${missingWebTools.join(", ")}; install/configure the Pi web search extension before running Subagent007`,
     );
+  }
+  if (recursiveDelegation === "enabled" && !activeToolNameSet.has("delegate")) {
+    throw new Error("recursive delegation was enabled but the native delegate tool is unavailable");
+  }
+  if (recursiveDelegation === "disabled" && activeToolNameSet.has("delegate")) {
+    throw new Error("recursive delegation was disabled but delegate remained active");
   }
 }
 

@@ -63,6 +63,25 @@ function terminateSuiteProcesses(suiteRoot) {
   }
 }
 
+function makeSuiteTreeRemovable(target) {
+  let entry;
+  try {
+    entry = fs.lstatSync(target);
+  } catch (error) {
+    if (error && error.code === "ENOENT") return;
+    throw error;
+  }
+  if (entry.isSymbolicLink()) return;
+  if (!entry.isDirectory()) {
+    fs.chmodSync(target, 0o644);
+    return;
+  }
+  fs.chmodSync(target, 0o755);
+  for (const name of fs.readdirSync(target)) {
+    makeSuiteTreeRemovable(path.join(target, name));
+  }
+}
+
 const testFiles = process.argv.slice(2);
 if (testFiles.length === 0) {
   console.error("usage: run-tests-with-ledger-guard.mjs <test files...>");
@@ -110,7 +129,8 @@ child.on("exit", (code, signal) => {
     resolvedCode = 1;
   }
   terminateSuiteProcesses(suiteRoot);
-  fs.rmSync(suiteRoot, { recursive: true, force: true });
+  makeSuiteTreeRemovable(suiteRoot);
+  fs.rmSync(suiteRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   if (signal) {
     process.kill(process.pid, signal);
     return;

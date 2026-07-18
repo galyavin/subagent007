@@ -42,6 +42,13 @@ const PUBLIC_TOOL_SURFACE = [
   "start_session_run",
   "run_subagent_session",
   "verify_skill_bindings",
+  "resolve_skill_bindings",
+  "resolve_skill_runtime_bundles",
+  "validate_skill_runtime_bundle",
+  "publish_skill_snapshots",
+  "plan_skill_snapshot_deletion",
+  "delete_skill_snapshot",
+  "close_skill_snapshot_references",
 ] as const;
 
 const RUNTIME_READINESS_CAPABILITIES = [

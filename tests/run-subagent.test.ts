@@ -757,6 +757,7 @@ test("workspace_read_only supports fresh and raw resume only when supplied on ea
       cwd: projectDir,
       prompt: "FAST",
       continuity: { mode: "resume", session_id: fresh.session_id! },
+      recursive_delegation: "disabled",
       effect_profile: "workspace_read_only",
     }, { runsDir, allowTimeout: true });
     assert.equal(resumed.success, true);
@@ -847,6 +848,118 @@ test("all constrained start surfaces preflight-reject a mismatched skill digest"
     }
     assert.deepEqual(await readJsonl(fakeLogPath).catch(() => []), []);
   }, { env: { SUBAGENT007_PI_SKILL_PATHS: skillsRoot } });
+});
+
+test("all constrained start surfaces launch from one owner snapshot and closed references fail pre-prompt", async () => {
+  const skillsRoot = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-snapshot-surfaces-"));
+  const snapshotsRoot = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-snapshot-store-"));
+  const skillName = "fixture-snapshot-skill";
+  await writeSkillFixture(skillsRoot, skillName);
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    const resolvedResponse = await client.callTool({
+      name: "resolve_skill_runtime_bundles",
+      arguments: { contract_version: 1, cwd: projectDir, skill_names: [skillName] },
+    });
+    const resolved = resolvedResponse.structuredContent as {
+      bindings: Array<{ bundle_sha256: string }>;
+    };
+    const publicationResponse = await client.callTool({
+      name: "publish_skill_snapshots",
+      arguments: {
+        contract_version: 1,
+        cwd: projectDir,
+        project_reference: { project_id: "project-surfaces", publication_id: "route-command-001", lifecycle: "active" },
+        bindings: [{ skill_name: skillName, expected_bundle_sha256: resolved.bindings[0]!.bundle_sha256 }],
+      },
+    });
+    assert.notEqual(publicationResponse.isError, true);
+    const publication = publicationResponse.structuredContent as {
+      bindings: Array<{
+        snapshot_identity: { snapshot_id: string; metadata_sha256: string };
+        publication_receipt: { receipt_sha256: string; reference_id: string; project_reference: { project_id: string; publication_id: string } };
+      }>;
+    };
+    const item = publication.bindings[0]!;
+    const skill_snapshot_binding = {
+      contract_version: 1,
+      snapshot_id: item.snapshot_identity.snapshot_id,
+      metadata_sha256: item.snapshot_identity.metadata_sha256,
+      publication_receipt_sha256: item.publication_receipt.receipt_sha256,
+      reference_id: item.publication_receipt.reference_id,
+      project_id: item.publication_receipt.project_reference.project_id,
+      publication_id: item.publication_receipt.project_reference.publication_id,
+    };
+    for (const name of ["run_subagent", "start_run", "schedule_run"] as const) {
+      const response = await client.callTool({
+        name,
+        arguments: {
+          cwd: projectDir,
+          prompt: "FAST",
+          skill_name: skillName,
+          skill_snapshot_binding,
+          ...(name === "run_subagent" ? { run_kind: "quick_noninteractive" } : {}),
+          ...(name === "schedule_run" ? { wait_ms: 2_000 } : {}),
+        },
+      });
+      assert.notEqual(response.isError, true, name);
+      const view = response.structuredContent as RunSubagentMetadata & { skill_snapshot_activation_receipt?: { snapshot_id?: string } };
+      if (view.status === "working") {
+        const terminal = await waitForTerminalRun(client, view.run_id) as RunSubagentMetadata & {
+          skill_snapshot_activation_receipt?: { snapshot_id?: string };
+        };
+        assert.equal(terminal.skill_snapshot_activation_receipt?.snapshot_id, item.snapshot_identity.snapshot_id, name);
+      } else {
+        assert.equal(view.skill_snapshot_activation_receipt?.snapshot_id, item.snapshot_identity.snapshot_id, name);
+      }
+    }
+    assert.equal((await readJsonl(fakeLogPath)).length, 3);
+    const recursive = await client.callTool({
+      name: "schedule_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "RECURSIVE_DELEGATE_FAST",
+        skill_name: skillName,
+        skill_snapshot_binding,
+        recursive_delegation: "enabled",
+        wait_ms: 2_000,
+      },
+    });
+    const recursiveView = recursive.structuredContent as RunSubagentMetadata & { descendant_run_ids?: string[] };
+    assert.equal(recursiveView.status, "completed");
+    assert.equal(recursiveView.descendant_run_ids?.length, 1);
+    const recursiveLogs = await readJsonl<{ request: { skillSnapshotBinding?: unknown } }>(fakeLogPath);
+    assert.equal(recursiveLogs.length, 5);
+    assert.deepEqual(recursiveLogs.slice(3).map((entry) => entry.request.skillSnapshotBinding), [
+      skill_snapshot_binding,
+      skill_snapshot_binding,
+    ]);
+
+    const closed = await client.callTool({
+      name: "close_skill_snapshot_references",
+      arguments: {
+        contract_version: 1,
+        project_id: "project-surfaces",
+        publication_id: "route-command-001",
+        snapshot_ids: [item.snapshot_identity.snapshot_id],
+      },
+    });
+    assert.notEqual(closed.isError, true);
+    const rejected = await client.callTool({
+      name: "start_run",
+      arguments: { cwd: projectDir, prompt: "MUST NOT START", skill_name: skillName, skill_snapshot_binding },
+    });
+    const rejectedView = rejected.structuredContent as RunSubagentMetadata;
+    assert.equal(rejectedView.kind, "preflight_rejected");
+    assert.equal(rejectedView.reason_code, "skill_snapshot_reference_closed");
+    assert.equal(rejectedView.child_started, false);
+    assert.equal((await readJsonl(fakeLogPath)).length, 5);
+  }, {
+    env: {
+      SUBAGENT007_PI_SKILL_PATHS: skillsRoot,
+      SUBAGENT007_SKILL_SNAPSHOTS_DIR: snapshotsRoot,
+      SUBAGENT007_MAX_ACTIVE_CHILDREN: "0",
+    },
+  });
 });
 
 test("verify_skill_bindings is canonical, all-or-nothing, and writes no operational state", async () => {
@@ -1068,6 +1181,27 @@ test("verify_skill_bindings does not replace the launch-time skill digest rechec
   }, { env: { SUBAGENT007_PI_SKILL_PATHS: skillsRoot } });
 });
 
+test("resolve_skill_bindings exposes strict canonical schema and typed all-or-nothing rejection", async () => {
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    const malformed = await client.callTool({
+      name: "resolve_skill_bindings",
+      arguments: { contract_version: 1, cwd: projectDir, skill_names: ["zeta", "alpha"] },
+    });
+    assert.equal(malformed.isError, true);
+    const unknown = await client.callTool({
+      name: "resolve_skill_bindings",
+      arguments: { contract_version: 1, cwd: projectDir, skill_names: ["missing-skill"] },
+    });
+    assert.notEqual(unknown.isError, true);
+    const result = unknown.structuredContent as Record<string, unknown>;
+    assert.equal(result.kind, "skill_binding_resolution_rejected");
+    assert.equal(result.reason_code, "skill_not_found");
+    assert.equal(result.child_started, false);
+    assert.equal(result.model_invoked, false);
+    assert.equal(await fs.stat(fakeLogPath).then(() => true, () => false), false);
+  });
+});
+
 test("runSubagent creates and resumes raw Pi session files", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-session-"));
   const projectDir = path.join(tmp, "project");
@@ -1102,6 +1236,7 @@ test("runSubagent creates and resumes raw Pi session files", async () => {
           prompt: "FAST",
           model_class: "C",
           continuity: { mode: "resume", session_id: created.session_id! },
+          recursive_delegation: "disabled",
         },
         { runsDir },
       );
@@ -1138,6 +1273,7 @@ test("runSubagent rejects missing resume session files before invoking Pi child"
             prompt: "FAST",
             model_class: "C",
             continuity: { mode: "resume", session_id: missingSession },
+            recursive_delegation: "disabled",
           },
           { runsDir },
         ),
@@ -1254,6 +1390,7 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
   await connectFakeClient(async (client) => {
     const response = await client.listTools();
     const names = response.tools.map((tool) => tool.name);
+    assert.equal(names.length, 20);
     assert.deepEqual(
       [
         "start_run",
@@ -1272,6 +1409,16 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.equal(names.includes("get_run_contract"), true);
     assert.equal(names.includes("get_runtime_readiness"), true);
     assert.equal(names.includes("verify_skill_bindings"), true);
+    assert.equal(names.includes("resolve_skill_bindings"), true);
+    assert.equal(names.includes("resolve_skill_runtime_bundles"), true);
+    assert.equal(names.includes("validate_skill_runtime_bundle"), true);
+    assert.equal(names.includes("publish_skill_snapshots"), true);
+    assert.equal(names.includes("close_skill_snapshot_references"), true);
+    const exactBundleTool = response.tools.find((tool) => tool.name === "validate_skill_runtime_bundle");
+    assert.ok(exactBundleTool);
+    assert.equal(exactBundleTool.inputSchema.additionalProperties, false);
+    assert.deepEqual(exactBundleTool.inputSchema.required, ["contract_version", "bundle_root", "expected_skill_name"]);
+    assert.match(exactBundleTool.description ?? "", /settled staging or canonical source/i);
     const verifySkillBindingsTool = response.tools.find((tool) => tool.name === "verify_skill_bindings");
     assert.ok(verifySkillBindingsTool);
     assert.equal(verifySkillBindingsTool.title, "Verify Skill Bindings");
@@ -1325,6 +1472,7 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       const properties = tool.inputSchema.properties as Record<string, unknown>;
       assert.equal(Object.hasOwn(properties, "effect_profile"), true);
       assert.equal(Object.hasOwn(properties, "expected_skill_sha256"), true);
+      assert.equal(Object.hasOwn(properties, "skill_snapshot_binding"), true);
     }
     const getRunTool = response.tools.find((tool) => tool.name === "get_run");
     assert.ok(getRunTool);
@@ -1346,6 +1494,7 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       const properties = tool.inputSchema.properties as Record<string, unknown>;
       assert.equal(Object.hasOwn(properties, "effect_profile"), false);
       assert.equal(Object.hasOwn(properties, "expected_skill_sha256"), false);
+      assert.equal(Object.hasOwn(properties, "skill_snapshot_binding"), false);
     }
     for (const toolName of [
       "start_run",
@@ -1431,6 +1580,11 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.equal(contract.capabilities?.includes("bounded_local_admission_queue"), true);
     assert.equal(contract.capabilities?.includes("workspace_read_only_effect_profile"), true);
     assert.equal(contract.capabilities?.includes("batch_skill_binding_verification"), true);
+    assert.equal(contract.capabilities?.includes("batch_skill_binding_resolution"), true);
+    assert.equal(contract.capabilities?.includes("explicit_recursive_delegation"), true);
+    assert.equal(contract.capabilities?.includes("terminal_recursive_subtree_closure"), true);
+    assert.equal(contract.capabilities?.includes("exact_root_runtime_bundle_validation"), true);
+    assert.equal(contract.capabilities?.includes("snapshot_bound_launch"), true);
     assert.deepEqual(contract.skill_binding_verification, {
       tool: "verify_skill_bindings",
       contract_name: "subagent007.skill_binding_verification",
@@ -2293,6 +2447,7 @@ test("MCP schedule_run lets a child delegate a root-visible recursive run", asyn
       arguments: {
         cwd: projectDir,
         prompt: "RECURSIVE_DELEGATE_FAST",
+        recursive_delegation: "enabled",
         wait_ms: 1000,
       },
     });
@@ -2307,7 +2462,7 @@ test("MCP schedule_run lets a child delegate a root-visible recursive run", asyn
       delegated: RunSubagentMetadata;
     };
     const delegated = output.delegated;
-    assert.equal(delegated.status, "completed");
+    assert.equal(delegated.status, "completed", JSON.stringify(delegated));
     assert.equal(delegated.success, true);
     assert.equal(delegated.parent_run_id, root.run_id);
     assert.equal(delegated.root_run_id, root.run_id);
@@ -2344,6 +2499,70 @@ test("MCP schedule_run lets a child delegate a root-visible recursive run", asyn
   });
 });
 
+test("recursive delegation defaults disabled and is confirmed before prompt", async () => {
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    const response = await client.callTool({
+      name: "schedule_run",
+      arguments: { cwd: projectDir, prompt: "FAST", wait_ms: 1000 },
+    });
+    assert.notEqual(response.isError, true);
+    const result = response.structuredContent as RunSubagentMetadata & {
+      resolved_recursive_delegation?: string;
+      recursive_delegation_receipt?: Record<string, unknown>;
+    };
+    assert.equal(result.resolved_recursive_delegation, "disabled");
+    assert.deepEqual(result.recursive_delegation_receipt, {
+      schema_version: 1,
+      confirmed_before_prompt: true,
+      requested_recursive_delegation: null,
+      resolved_recursive_delegation: "disabled",
+      delegate_tool_active: false,
+    });
+    const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
+    assert.equal(Object.hasOwn(logs[0].request, "recursiveControl"), false);
+  });
+});
+
+test("parent terminal publication waits for its recursive subtree and exposes exact descendant status", async () => {
+  await connectFakeClient(async (client, { projectDir }) => {
+    const response = await client.callTool({
+      name: "schedule_run",
+      arguments: { cwd: projectDir, prompt: "RECURSIVE_DELEGATE_WAIT", recursive_delegation: "enabled", wait_ms: 50 },
+    });
+    const initial = response.structuredContent as RunSubagentMetadata & { descendant_run_ids?: string[] };
+    assert.equal(initial.status, "working");
+    let view = initial as typeof initial & { descendant_terminal_statuses?: Record<string, string> };
+    for (let index = 0; index < 40 && view.status === "working"; index += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const polled = await client.callTool({ name: "get_run", arguments: { run_id: initial.run_id } });
+      view = polled.structuredContent as typeof view;
+    }
+    assert.equal(view.status, "completed");
+    assert.equal(view.descendant_run_ids?.length, 1);
+    assert.equal(view.descendant_terminal_statuses?.[view.descendant_run_ids![0]], "completed");
+  });
+});
+
+test("workspace_read_only rejects recursive enable and raw resume requires explicit reauthorization", async () => {
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    const conflict = await client.callTool({
+      name: "start_run",
+      arguments: { cwd: projectDir, prompt: "FAST", effect_profile: "workspace_read_only", recursive_delegation: "enabled" },
+    });
+    assert.equal((conflict.structuredContent as RunSubagentMetadata).reason_code, "recursive_delegation_effect_conflict");
+    assert.equal((conflict.structuredContent as RunSubagentMetadata).child_started, false);
+    const rawSession = path.join(projectDir, "raw-session.jsonl");
+    await fs.writeFile(rawSession, "{}\n");
+    const resume = await client.callTool({
+      name: "start_run",
+      arguments: { cwd: projectDir, prompt: "FAST", continuity: { mode: "resume", session_id: rawSession } },
+    });
+    assert.equal((resume.structuredContent as RunSubagentMetadata).reason_code, "recursive_delegation_reauthorization_required");
+    assert.equal((resume.structuredContent as RunSubagentMetadata).child_started, false);
+    assert.equal(await fs.stat(fakeLogPath).then(() => true, () => false), false);
+  });
+});
+
 test("MCP recursive delegate rejects at max depth before launching a descendant", async () => {
   await connectFakeClient(
     async (client, { projectDir, fakeLogPath }) => {
@@ -2352,6 +2571,7 @@ test("MCP recursive delegate rejects at max depth before launching a descendant"
         arguments: {
           cwd: projectDir,
           prompt: "RECURSIVE_DELEGATE_DEPTH_LIMIT",
+          recursive_delegation: "enabled",
           wait_ms: 1000,
         },
       });
@@ -2394,6 +2614,7 @@ test("MCP recursive delegate rejects forged caller lineage before launching a de
       arguments: {
         cwd: projectDir,
         prompt: "RECURSIVE_DELEGATE_FORGED_PARENT",
+        recursive_delegation: "enabled",
         wait_ms: 1000,
       },
     });
@@ -3570,6 +3791,47 @@ test("get_run persists stale active restart drift as terminal failed snapshot", 
   } finally {
     await client.close();
   }
+});
+
+test("restart reconciliation settles descendants before publishing the parent terminal snapshot", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-stale-tree-"));
+  const runTasksDir = path.join(tmp, "run-tasks");
+  const inputRequestsDir = path.join(tmp, "input-requests");
+  const rootRunId = "stale-tree-root";
+  const childRunId = "stale-tree-child";
+  await fs.mkdir(runTasksDir, { recursive: true });
+  for (const runId of [rootRunId, childRunId]) {
+    const inputDir = path.join(inputRequestsDir, runId);
+    await fs.mkdir(inputDir, { recursive: true });
+    await fs.writeFile(path.join(runTasksDir, `${runId}.json`), `${JSON.stringify({
+      run_id: runId,
+      task_id: runId,
+      task_kind: "run",
+      ...(runId === childRunId ? { parent_run_id: rootRunId } : {}),
+      root_run_id: rootRunId,
+      recursion_depth: runId === childRunId ? 1 : 0,
+      child_run_ids: runId === rootRunId ? [childRunId] : [],
+      descendant_run_ids: runId === rootRunId ? [childRunId] : [],
+      descendant_terminal_statuses: {},
+      status: "working",
+      started_at: "2026-06-19T00:00:00.000Z",
+      input_requests_dir: inputDir,
+      input_requests: [],
+      active_phase: "running_silent",
+      last_phase_at: "2026-06-19T00:00:01.000Z",
+    }, null, 2)}\n`);
+  }
+  await withEnv({
+    SUBAGENT007_RUN_TASKS_DIR: runTasksDir,
+    SUBAGENT007_INPUT_REQUESTS_DIR: inputRequestsDir,
+    SUBAGENT007_FAILURE_LOG: "off",
+  }, async () => {
+    const parent = await getRunTask(rootRunId);
+    assert.equal(parent.status, "failed");
+    assert.deepEqual(parent.descendant_run_ids, [childRunId]);
+    assert.deepEqual(parent.descendant_terminal_statuses, { [childRunId]: "failed" });
+    assert.equal((await getRunTask(childRunId)).status, "failed");
+  });
 });
 
 test("cancel_run closes pending input requests and rejects late answers", async () => {

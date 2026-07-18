@@ -139,7 +139,10 @@ function eventObjectFromJsonLine(line: string): Record<string, unknown> | null {
 }
 
 function eventControlsTranscriptMode(event: Record<string, unknown>): boolean {
-  return event.type !== "subagent007.lifecycle" && event.type !== "subagent007.session";
+  return event.type !== "subagent007.lifecycle" &&
+    event.type !== "subagent007.session" &&
+    event.type !== "subagent007.activation_confirmed" &&
+    event.type !== "subagent007.recursive_delegation_confirmed";
 }
 
 export function provenancePublicLines(promptProvenance?: PromptProvenance): PublicOutputLine[] {

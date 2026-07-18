@@ -192,6 +192,28 @@ test("named-session MCP schemas reject effect_profile before handler invocation"
   });
 });
 
+test("named-session APIs reject recursive_delegation instead of widening", async () => {
+  const fixture = await createSessionFixture();
+  await assert.rejects(
+    runSubagentSession({
+      cwd: fixture.projectDir,
+      prompt: "FAST",
+      session_key: "recursive:unsupported",
+      recursive_delegation: "enabled",
+    } as Parameters<typeof runSubagentSession>[0] & { recursive_delegation: string }, { sessionsDir: fixture.sessionsDir }),
+    /recursive_delegation is not supported/,
+  );
+  await withMcpSessionClient(async (client, mcpFixture) => {
+    for (const name of ["start_session_run", "run_subagent_session"] as const) {
+      const response = await client.callTool({
+        name,
+        arguments: { cwd: mcpFixture.projectDir, prompt: "FAST", session_key: `recursive:${name}`, recursive_delegation: "enabled" },
+      });
+      assert.equal(response.isError, true);
+    }
+  });
+});
+
 test("run_subagent_session rejects invalid resume mode and packet policy", async () => {
   const fixture = await createSessionFixture();
   await withEnv(

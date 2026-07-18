@@ -58,6 +58,12 @@ export type FailureReasonCode =
   | "skill_binding_unsupported"
   | "effect_profile_activation_failed"
   | "skill_content_mismatch"
+  | "invalid_skill_snapshot_binding"
+  | "skill_snapshot_not_found"
+  | "skill_snapshot_altered"
+  | "skill_snapshot_reference_mismatch"
+  | "skill_snapshot_reference_closed"
+  | "skill_snapshot_activation_failed"
   | "invalid_timeout_ms"
   | "invalid_wait_ms"
   | "local_capacity_exhausted"
@@ -97,6 +103,10 @@ export type FailureReasonCode =
   | "timeout"
   | "usage_limit_reached"
   | "process_signal_terminated"
+  | "recursive_delegation_reauthorization_required"
+  | "recursive_delegation_effect_conflict"
+  | "recursive_delegation_activation_failed"
+  | "recursive_delegation_unsupported"
   | "unknown_error"
   | "unknown_validation_error";
 
@@ -121,7 +131,12 @@ export interface RunSubagentRequest extends SubagentRequestBase {
   run_kind?: RunKind;
   effect_profile?: EffectProfile;
   expected_skill_sha256?: string;
+  skill_snapshot_binding?: SkillSnapshotLaunchBinding;
+  recursive_delegation?: RecursiveDelegation;
 }
+
+export const RECURSIVE_DELEGATIONS = ["disabled", "enabled"] as const;
+export type RecursiveDelegation = (typeof RECURSIVE_DELEGATIONS)[number];
 
 export interface RunnerConfig {
   default_model_class?: ModelClass;
@@ -138,6 +153,9 @@ export interface ResolvedRunSubagentRequest {
   skill?: string;
   effectProfile?: EffectProfile;
   expectedSkillSha256?: string;
+  skillSnapshotBinding?: SkillSnapshotLaunchBinding;
+  recursiveDelegation: RecursiveDelegation;
+  requestedRecursiveDelegation: RecursiveDelegation | null;
   outputMode: OutputMode;
 }
 
@@ -152,6 +170,31 @@ export interface ActivationSkillBinding {
   path: string;
   content_sha256: string;
   expected_content_sha256: string | null;
+}
+
+export interface SkillSnapshotLaunchBinding {
+  contract_version: 1;
+  snapshot_id: string;
+  metadata_sha256: string;
+  publication_receipt_sha256: string;
+  reference_id: string;
+  project_id: string;
+  publication_id: string;
+}
+
+export interface SkillSnapshotActivationReceipt {
+  schema_version: 1;
+  confirmed_before_prompt: true;
+  skill_name: string;
+  snapshot_id: string;
+  metadata_sha256: string;
+  bundle_sha256: string;
+  publication_receipt_sha256: string;
+  reference_id: string;
+  project_id: string;
+  publication_id: string;
+  resolved_skill_path: string;
+  runtime_closure_sha256: string;
 }
 
 export interface SkillBindingVerificationEntry {
@@ -235,6 +278,72 @@ export type SkillBindingVerificationResult =
   | SkillBindingsVerifiedResult
   | SkillBindingVerificationRejectedResult;
 
+export interface SkillBindingResolutionRequest {
+  contract_version: 1;
+  cwd: string;
+  skill_names: string[];
+}
+
+export interface SkillBindingResolutionRequestBinding {
+  cwd: string;
+  count: number;
+  canonical_request_sha256: string;
+}
+
+export type SkillBindingResolutionCwdReasonCode = SkillBindingVerificationCwdReasonCode;
+export type SkillBindingResolutionSkillReasonCode = Exclude<
+  SkillBindingVerificationSkillReasonCode,
+  "skill_content_mismatch"
+>;
+export type SkillBindingResolutionReasonCode =
+  | SkillBindingResolutionCwdReasonCode
+  | SkillBindingResolutionSkillReasonCode;
+
+interface SkillBindingResolutionResultBase {
+  contract_name: "subagent007.skill_binding_resolution";
+  contract_version: 1;
+  success: boolean;
+  resolved: boolean;
+  child_started: false;
+  model_invoked: false;
+  request_binding: SkillBindingResolutionRequestBinding;
+}
+
+export interface ResolvedSkillBindingResultEntry {
+  skill_name: string;
+  resolved_skill_path: string;
+  resolved_skill_sha256: string;
+}
+
+export interface SkillBindingsResolvedResult extends SkillBindingResolutionResultBase {
+  kind: "skill_bindings_resolved";
+  success: true;
+  resolved: true;
+  bindings: ResolvedSkillBindingResultEntry[];
+}
+
+interface SkillBindingResolutionRejectedResultBase extends SkillBindingResolutionResultBase {
+  kind: "skill_binding_resolution_rejected";
+  success: false;
+  resolved: false;
+  message: string;
+}
+
+export interface SkillBindingResolutionCwdRejectedResult extends SkillBindingResolutionRejectedResultBase {
+  reason_code: SkillBindingResolutionCwdReasonCode;
+  failed_skill?: never;
+}
+
+export interface SkillBindingResolutionSkillRejectedResult extends SkillBindingResolutionRejectedResultBase {
+  reason_code: SkillBindingResolutionSkillReasonCode;
+  failed_skill: { index: number; skill_name: string };
+}
+
+export type SkillBindingResolutionResult =
+  | SkillBindingsResolvedResult
+  | SkillBindingResolutionCwdRejectedResult
+  | SkillBindingResolutionSkillRejectedResult;
+
 export interface ActivationReceipt {
   schema_version: 1;
   confirmed_before_prompt: true;
@@ -244,6 +353,14 @@ export interface ActivationReceipt {
   tool_bindings: ActivationToolBinding[];
   toolset_sha256: string | null;
   skill_binding: ActivationSkillBinding | null;
+}
+
+export interface RecursiveDelegationReceipt {
+  schema_version: 1;
+  confirmed_before_prompt: true;
+  requested_recursive_delegation: RecursiveDelegation | null;
+  resolved_recursive_delegation: RecursiveDelegation;
+  delegate_tool_active: boolean;
 }
 
 export interface PromptProvenance {
@@ -283,6 +400,11 @@ interface SubagentRunResultBase {
   requested_effect_profile?: EffectProfile;
   resolved_effect_profile?: EffectProfile;
   activation_receipt?: ActivationReceipt;
+  skill_snapshot_binding?: SkillSnapshotLaunchBinding;
+  skill_snapshot_activation_receipt?: SkillSnapshotActivationReceipt;
+  requested_recursive_delegation?: RecursiveDelegation;
+  resolved_recursive_delegation?: RecursiveDelegation;
+  recursive_delegation_receipt?: RecursiveDelegationReceipt;
   requested_output_mode: OutputMode;
   written_output_mode: OutputMode;
   stop_reason: RunStopReason;
@@ -461,6 +583,8 @@ export type RunPublicEventName =
   | "child_bridge_started"
   | "child_session_established"
   | "activation_confirmed"
+  | "skill_snapshot_activation_confirmed"
+  | "recursive_delegation_confirmed"
   | "child_prompt_submitted"
   | "recursive_child_started"
   | "recursive_child_finished"

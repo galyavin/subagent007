@@ -23,6 +23,7 @@ test("activates every registered session tool", () => {
     { name: "web_search" },
     { name: "web_read" },
     { name: "extension_tool" },
+    { name: "delegate" },
   ];
   let activeNames: string[] = [];
 
@@ -32,7 +33,7 @@ test("activates every registered session tool", () => {
       activeNames = toolNames;
     },
     getActiveToolNames: () => activeNames,
-  });
+  }, "enabled");
 
   assert.deepEqual(activeNames, allTools.map((tool) => tool.name));
 });
@@ -44,9 +45,22 @@ test("requires Pi web search tools", () => {
         getAllTools: () => [{ name: "read" }, { name: "web_search" }],
         setActiveToolsByName: () => {},
         getActiveToolNames: () => ["read", "web_search"],
-      }),
+      }, "disabled"),
     /required Pi web search tools unavailable: web_read/,
   );
+});
+
+test("disabled recursive delegation excludes every registered delegate tool", () => {
+  let activeNames: string[] = [];
+  activateAllRegisteredTools({
+    getAllTools: () => [
+      { name: "read" }, { name: "web_search" }, { name: "web_read" },
+      { name: "delegate" }, { name: "extension_tool" },
+    ],
+    setActiveToolsByName: (names) => { activeNames = names; },
+    getActiveToolNames: () => activeNames,
+  }, "disabled");
+  assert.deepEqual(activeNames, ["read", "web_search", "web_read", "extension_tool"]);
 });
 
 test("workspace_read_only activates only the exact construction-time allowlist", () => {

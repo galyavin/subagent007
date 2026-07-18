@@ -33,9 +33,12 @@ import type {
   FailureReasonCode,
   OutputMode,
   PromptProvenance,
+  SkillSnapshotActivationReceipt,
+  SkillSnapshotLaunchBinding,
   ThinkingLevel,
 } from "./types.js";
 import type { RecursiveControlChildConfig } from "./recursiveControl.js";
+import { resolveSkillSnapshotLaunchBinding } from "./skillSnapshot.js";
 
 interface PiChildRequest {
   prompt: string;
@@ -54,9 +57,13 @@ interface PiChildRequest {
   sessionFile?: string;
   sessionDir?: string;
   recursiveControl?: RecursiveControlChildConfig;
+  recursiveDelegation: "disabled" | "enabled";
+  requestedRecursiveDelegation: "disabled" | "enabled" | null;
   effectProfile?: EffectProfile;
   expectedSkillSha256?: string;
   skillBinding?: ActivationSkillBinding;
+  skillSnapshotBinding?: SkillSnapshotLaunchBinding;
+  expectedSkillSnapshotActivationReceipt?: SkillSnapshotActivationReceipt;
 }
 
 class ChildContractError extends Error {
@@ -337,6 +344,30 @@ async function main(): Promise<void> {
   const request = await readRequest();
   const inputControl = createInputControl(request.runId);
   writeEvent({ type: "subagent007.lifecycle", event: "child_bridge_started" });
+  let expectedSnapshotReceipt: SkillSnapshotActivationReceipt | null = null;
+  if (request.skillSnapshotBinding) {
+    if (!request.skill) {
+      throw new ChildContractError("skill snapshot binding requires canonical skill name", "skill_snapshot_activation_failed");
+    }
+    try {
+      const resolved = await resolveSkillSnapshotLaunchBinding({
+        skill_name: request.skill,
+        binding: request.skillSnapshotBinding,
+      });
+      if (request.skillFilePath !== resolved.receipt.resolved_skill_path) {
+        throw new Error("skill snapshot path does not match owner-derived activation path");
+      }
+      expectedSnapshotReceipt = resolved.receipt;
+      if (
+        !request.expectedSkillSnapshotActivationReceipt ||
+        JSON.stringify(request.expectedSkillSnapshotActivationReceipt) !== JSON.stringify(expectedSnapshotReceipt)
+      ) {
+        throw new Error("skill snapshot parent activation receipt does not match child revalidation");
+      }
+    } catch (error) {
+      throw asChildContractError(error, "skill_snapshot_activation_failed");
+    }
+  }
   const agentDir = resolvePiAgentDir();
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const webProvider = request.effectProfile
@@ -380,7 +411,7 @@ async function main(): Promise<void> {
   });
   const skillBinding = await verifiedSkillBinding(request);
   const customTools: ToolDefinition<any>[] = [createRequestInputTool(request, inputControl)];
-  if (!request.effectProfile) {
+  if (!request.effectProfile && request.recursiveDelegation === "enabled") {
     const recursiveDelegateTool = createRecursiveDelegateTool({
       cwd: request.cwd,
       recursiveControl: request.recursiveControl,
@@ -409,8 +440,19 @@ async function main(): Promise<void> {
       throw asChildContractError(error, "effect_profile_activation_failed");
     }
   } else {
-    activateAllRegisteredTools(session);
+    activateAllRegisteredTools(session, request.recursiveDelegation);
   }
+  const delegateToolActive = session.getActiveToolNames().includes("delegate");
+  writeEvent({
+    type: "subagent007.recursive_delegation_confirmed",
+    receipt: {
+      schema_version: 1,
+      confirmed_before_prompt: true,
+      requested_recursive_delegation: request.requestedRecursiveDelegation,
+      resolved_recursive_delegation: request.recursiveDelegation,
+      delegate_tool_active: delegateToolActive,
+    },
+  });
   if (modelFallbackMessage) {
     writeEvent({ type: "subagent007.warning", message: modelFallbackMessage });
   }
@@ -440,6 +482,22 @@ async function main(): Promise<void> {
       type: "subagent007.activation_confirmed",
       receipt: skillOnlyActivationReceipt(skillBinding),
     });
+  }
+
+  if (request.skillSnapshotBinding && expectedSnapshotReceipt && request.skill) {
+    let confirmed: SkillSnapshotActivationReceipt;
+    try {
+      confirmed = (await resolveSkillSnapshotLaunchBinding({
+        skill_name: request.skill,
+        binding: request.skillSnapshotBinding,
+      })).receipt;
+    } catch (error) {
+      throw asChildContractError(error, "skill_snapshot_activation_failed");
+    }
+    if (JSON.stringify(confirmed) !== JSON.stringify(expectedSnapshotReceipt)) {
+      throw new ChildContractError("skill snapshot changed during child activation", "skill_snapshot_activation_failed");
+    }
+    writeEvent({ type: "subagent007.skill_snapshot_activation_confirmed", receipt: confirmed });
   }
 
   const unsubscribe = session.subscribe((event) => writeEvent(event));

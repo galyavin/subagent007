@@ -34,6 +34,7 @@ import {
 import type { FailureReasonCode, RunStopReason } from "./types.js";
 import type {
   ActivationReceipt,
+  RecursiveDelegationReceipt,
   ActivationSkillBinding,
   OutputMode,
   PromptProvenance,
@@ -41,6 +42,8 @@ import type {
   RunContinuity,
   RunSubagentRequest,
   RunSubagentResult,
+  SkillSnapshotActivationReceipt,
+  SkillSnapshotLaunchBinding,
 } from "./types.js";
 import { ValidationError } from "./types.js";
 import { validateAndResolveRequest } from "./validate.js";
@@ -49,6 +52,7 @@ import {
   type RecursiveControlChildConfig,
 } from "./recursiveControl.js";
 import { validatedActivationReceipt } from "./toolProfile.js";
+import { resolveSkillSnapshotLaunchBinding, SkillSnapshotLaunchError } from "./skillSnapshot.js";
 
 const DEFAULT_RUN_SUBAGENT_TIMEOUT_MS = 110_000;
 export const RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT =
@@ -96,9 +100,13 @@ interface PiChildRequestFile {
   sessionFile?: string;
   sessionDir?: string;
   recursiveControl?: RecursiveControlChildConfig;
+  recursiveDelegation: ResolvedRunSubagentRequest["recursiveDelegation"];
+  requestedRecursiveDelegation: RunSubagentRequest["recursive_delegation"] | null;
   effectProfile?: ResolvedRunSubagentRequest["effectProfile"];
   expectedSkillSha256?: string;
   skillBinding?: ActivationSkillBinding;
+  skillSnapshotBinding?: SkillSnapshotLaunchBinding;
+  expectedSkillSnapshotActivationReceipt?: SkillSnapshotActivationReceipt;
 }
 
 export interface ChildInputResponseAccepted {
@@ -198,7 +206,7 @@ async function writeChildRequestFile(request: PiChildRequestFile): Promise<{
   const dir = await createOwnedTemporaryDir("subagent007-pi-child-");
   const requestPath = path.join(dir, `${randomBytes(6).toString("hex")}.json`);
   let persistedRequest = request;
-  if (request.skillBinding && request.skillFilePath) {
+  if (request.skillBinding && request.skillFilePath && !request.skillSnapshotBinding) {
     const skillSnapshotDir = path.join(dir, "skill-snapshot");
     const skillSnapshotPath = path.join(skillSnapshotDir, "SKILL.md");
     await fs.mkdir(skillSnapshotDir, { recursive: true });
@@ -470,6 +478,28 @@ function launchSkillContentError(error: unknown): ValidationError {
   );
 }
 
+function launchSkillSnapshotError(error: unknown): ValidationError {
+  const message = error instanceof Error ? error.message : String(error);
+  return new ValidationError(
+    `skill snapshot activation rejected before child launch: ${message}`,
+    error instanceof SkillSnapshotLaunchError ? error.reasonCode : "skill_snapshot_altered",
+  );
+}
+
+export async function assertSkillSnapshotBinding(
+  resolved: Pick<ResolvedRunSubagentRequest, "skill" | "skillSnapshotBinding">,
+): Promise<Awaited<ReturnType<typeof resolveSkillSnapshotLaunchBinding>> | null> {
+  if (!resolved.skillSnapshotBinding || !resolved.skill) return null;
+  try {
+    return await resolveSkillSnapshotLaunchBinding({
+      skill_name: resolved.skill,
+      binding: resolved.skillSnapshotBinding,
+    });
+  } catch (error) {
+    throw launchSkillSnapshotError(error);
+  }
+}
+
 export async function assertExpectedSkillBinding(
   resolved: Pick<ResolvedRunSubagentRequest, "skill" | "expectedSkillSha256">,
   skillFilePath: string | undefined,
@@ -505,6 +535,46 @@ function activationReceiptFromLine(input: {
   }
 }
 
+function skillSnapshotActivationReceiptFromLine(
+  line: string,
+  expected: SkillSnapshotActivationReceipt | null,
+): SkillSnapshotActivationReceipt | undefined {
+  if (!expected) return undefined;
+  try {
+    const event = JSON.parse(line) as { type?: unknown; receipt?: unknown };
+    if (event.type !== "subagent007.skill_snapshot_activation_confirmed") return undefined;
+    return JSON.stringify(event.receipt) === JSON.stringify(expected) ? expected : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function recursiveDelegationReceiptFromLine(
+  line: string,
+  resolved: ResolvedRunSubagentRequest,
+): RecursiveDelegationReceipt | undefined {
+  try {
+    const event = JSON.parse(line) as { type?: unknown; receipt?: Partial<RecursiveDelegationReceipt> };
+    const receipt = event.receipt;
+    if (event.type !== "subagent007.recursive_delegation_confirmed" || !receipt) return undefined;
+    if (Object.keys(receipt).sort().join("\0") !== [
+      "confirmed_before_prompt",
+      "delegate_tool_active",
+      "requested_recursive_delegation",
+      "resolved_recursive_delegation",
+      "schema_version",
+    ].sort().join("\0")) return undefined;
+    const expectedActive = resolved.recursiveDelegation === "enabled";
+    if (
+      receipt.schema_version !== 1 || receipt.confirmed_before_prompt !== true ||
+      receipt.requested_recursive_delegation !== (resolved.requestedRecursiveDelegation ?? null) ||
+      receipt.resolved_recursive_delegation !== resolved.recursiveDelegation ||
+      receipt.delegate_tool_active !== expectedActive
+    ) return undefined;
+    return receipt as RecursiveDelegationReceipt;
+  } catch { return undefined; }
+}
+
 export async function runSubagentCore(
   request: RunSubagentRequest,
   options: {
@@ -526,6 +596,8 @@ export async function runSubagentCore(
     onTranscriptStaged?: (stagingPath: string) => void | Promise<void>;
     onChildSpawned?: () => void | Promise<void>;
     onActivationConfirmed?: (receipt: ActivationReceipt) => void | Promise<void>;
+    onSkillSnapshotActivationConfirmed?: (receipt: SkillSnapshotActivationReceipt) => void | Promise<void>;
+    onRecursiveDelegationConfirmed?: (receipt: RecursiveDelegationReceipt) => void | Promise<void>;
   } = {},
 ): Promise<RunSubagentResult> {
   if (!options.allowTimeout && request.timeout_ms !== undefined) {
@@ -536,7 +608,8 @@ export async function runSubagentCore(
   }
   const config = await loadConfig();
   const resolved = await validateAndResolveRequest(request, config);
-  const skillFilePath = options.skillFilePath ?? resolveSkillFilePathForRequest(resolved);
+  const snapshotActivation = await assertSkillSnapshotBinding(resolved);
+  const skillFilePath = snapshotActivation?.receipt.resolved_skill_path ?? options.skillFilePath ?? resolveSkillFilePathForRequest(resolved);
   let skillAudit: Awaited<ReturnType<typeof resolvedSkillAuditMetadata>>;
   try {
     skillAudit = await resolvedSkillAuditMetadata(resolved, skillFilePath);
@@ -578,7 +651,9 @@ export async function runSubagentCore(
       ownerId: runId,
     });
     await options.onTranscriptStaged?.(transcript.stagingPath);
-    const childSkillFilePath = resolved.skill ? skillAudit.resolvedSkillPath ?? skillFilePath : undefined;
+    const childSkillFilePath = resolved.skill
+      ? snapshotActivation?.receipt.resolved_skill_path ?? skillAudit.resolvedSkillPath ?? skillFilePath
+      : undefined;
     const childPayload: PiChildRequestFile = {
       prompt: promptProvenance.composed_child_prompt,
       cwd: resolved.cwd,
@@ -599,24 +674,33 @@ export async function runSubagentCore(
         : sessionMode.kind === "resume"
           ? path.dirname(sessionMode.sessionId)
           : undefined,
-      recursiveControl: recursiveControlConfigForChild({
-        runId,
-        rootRunId: options.rootRunId,
-        recursionDepth: options.recursionDepth,
-      }),
+      ...(resolved.recursiveDelegation === "enabled"
+        ? {
+            recursiveControl: recursiveControlConfigForChild({
+              runId,
+              rootRunId: options.rootRunId,
+              recursionDepth: options.recursionDepth,
+            }),
+          }
+        : {}),
+      recursiveDelegation: resolved.recursiveDelegation,
+      requestedRecursiveDelegation: request.recursive_delegation ?? null,
       ...(resolved.effectProfile ? { effectProfile: resolved.effectProfile } : {}),
       ...(resolved.expectedSkillSha256 ? { expectedSkillSha256: resolved.expectedSkillSha256 } : {}),
       ...((resolved.effectProfile || resolved.expectedSkillSha256) && skillBinding
         ? { skillBinding }
         : {}),
+      ...(resolved.skillSnapshotBinding ? { skillSnapshotBinding: resolved.skillSnapshotBinding } : {}),
+      ...(snapshotActivation
+        ? { expectedSkillSnapshotActivationReceipt: snapshotActivation.receipt }
+        : {}),
     };
-    if (resolved.effectProfile) {
-      delete childPayload.recursiveControl;
-    }
     childRequest = await writeChildRequestFile(childPayload);
     let parsedSessionId: string | null = null;
     let childFailure: ChildFailureMetadata = {};
     let activationReceipt: ActivationReceipt | undefined;
+    let skillSnapshotActivationReceipt: SkillSnapshotActivationReceipt | undefined;
+    let recursiveDelegationReceipt: RecursiveDelegationReceipt | undefined;
     const processResult = await runChildProcess({
       command: process.execPath,
       args: [childEntrypoint, childRequest.requestPath],
@@ -640,6 +724,19 @@ export async function runSubagentCore(
         if (!activationReceipt && lineActivationReceipt) {
           activationReceipt = lineActivationReceipt;
           await options.onActivationConfirmed?.(lineActivationReceipt);
+        }
+        const lineSnapshotReceipt = skillSnapshotActivationReceiptFromLine(
+          line,
+          snapshotActivation?.receipt ?? null,
+        );
+        if (!skillSnapshotActivationReceipt && lineSnapshotReceipt) {
+          skillSnapshotActivationReceipt = lineSnapshotReceipt;
+          await options.onSkillSnapshotActivationConfirmed?.(lineSnapshotReceipt);
+        }
+        const lineRecursiveReceipt = recursiveDelegationReceiptFromLine(line, resolved);
+        if (!recursiveDelegationReceipt && lineRecursiveReceipt) {
+          recursiveDelegationReceipt = lineRecursiveReceipt;
+          await options.onRecursiveDelegationConfirmed?.(lineRecursiveReceipt);
         }
         const lineFailure = childFailureMetadataFromLine(line);
         if (lineFailure.reasonCode || lineFailure.usageLimitMetadata) {
@@ -671,6 +768,8 @@ export async function runSubagentCore(
       !processResult.resourceExhausted;
     const activationRequired = Boolean(resolved.effectProfile || resolved.expectedSkillSha256);
     const activationConfirmed = !activationRequired || activationReceipt !== undefined;
+    const skillSnapshotActivationConfirmed = !resolved.skillSnapshotBinding || skillSnapshotActivationReceipt !== undefined;
+    const recursiveDelegationConfirmed = recursiveDelegationReceipt !== undefined;
     const sessionId = sessionMode.kind === "fresh"
       ? parsedSessionId
       : sessionMode.kind === "resume"
@@ -683,7 +782,7 @@ export async function runSubagentCore(
         : false;
     const missingFinalOutput = processSuccess && resolved.outputMode === "final" && !finalMessage;
     const success =
-      processSuccess && activationConfirmed && !missingFinalOutput && (sessionMode.kind !== "fresh" || sessionEstablished);
+      processSuccess && activationConfirmed && skillSnapshotActivationConfirmed && recursiveDelegationConfirmed && !missingFinalOutput && (sessionMode.kind !== "fresh" || sessionEstablished);
     const partialOutputAvailable = partialOutputAvailableForRun({
       timedOut: processResult.timedOut,
       resourceExhausted: processResult.resourceExhausted,
@@ -737,6 +836,13 @@ export async function runSubagentCore(
         ? { resolved_effect_profile: activationReceipt.resolved_effect_profile }
         : {}),
       ...(activationReceipt ? { activation_receipt: activationReceipt } : {}),
+      ...(resolved.skillSnapshotBinding ? { skill_snapshot_binding: resolved.skillSnapshotBinding } : {}),
+      ...(skillSnapshotActivationReceipt
+        ? { skill_snapshot_activation_receipt: skillSnapshotActivationReceipt }
+        : {}),
+      ...(request.recursive_delegation ? { requested_recursive_delegation: request.recursive_delegation } : {}),
+      resolved_recursive_delegation: resolved.recursiveDelegation,
+      ...(recursiveDelegationReceipt ? { recursive_delegation_receipt: recursiveDelegationReceipt } : {}),
       requested_output_mode: resolved.outputMode,
       written_output_mode: writtenOutputMode,
       stop_reason: processResult.stopReason,
@@ -752,9 +858,13 @@ export async function runSubagentCore(
         sessionEstablished,
         missingFinalOutput,
         resourceExhausted: processResult.resourceExhausted,
-        activationFailed: !activationConfirmed,
+        activationFailed: !activationConfirmed || !skillSnapshotActivationConfirmed || !recursiveDelegationConfirmed,
         childFailureReasonCode: childFailure.reasonCode ?? (
-          !activationConfirmed
+          !skillSnapshotActivationConfirmed
+            ? "skill_snapshot_activation_failed"
+            : !recursiveDelegationConfirmed
+            ? "recursive_delegation_activation_failed"
+            : !activationConfirmed
             ? resolved.effectProfile
               ? "effect_profile_activation_failed"
               : "skill_content_mismatch"

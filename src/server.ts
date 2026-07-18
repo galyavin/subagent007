@@ -49,6 +49,19 @@ import {
   MAX_SKILL_BINDING_VERIFICATION_ENTRIES,
   verifySkillBindingsRequest,
 } from "./skillVerification.js";
+import {
+  MAX_SKILL_BINDING_RESOLUTION_ENTRIES,
+  resolveSkillBindingsRequest,
+} from "./skillResolution.js";
+import {
+  closeSkillSnapshotReferencesRequest,
+  deleteSkillSnapshotRequest,
+  MAX_SKILL_RUNTIME_BUNDLE_RESOLUTION_ENTRIES,
+  planSkillSnapshotDeletionRequest,
+  publishSkillSnapshotsRequest,
+  resolveSkillRuntimeBundlesRequest,
+} from "./skillSnapshot.js";
+import { validateSkillRuntimeBundleRequest } from "./skillRuntimeBundleValidation.js";
 import { SERVER_VERSION } from "./runtimeMetadata.js";
 import {
   type FailureReasonCode,
@@ -58,6 +71,7 @@ import {
   type OperationRejectedResult,
   type PreflightRejectedResult,
   RESUME_MODES,
+  RECURSIVE_DELEGATIONS,
   RUN_KINDS,
   SESSION_PACKET_POLICIES,
   TOOL_PROFILES,
@@ -322,7 +336,7 @@ const baseRunInputSchema = {
   tool_profile: z
     .enum(TOOL_PROFILES)
     .optional()
-    .describe("Legacy compatibility field; accepted values are validated and ignored; all registered child tools are active."),
+    .describe("Legacy compatibility field; accepted values are validated and ignored; it does not authorize recursive delegation."),
 };
 
 const constrainedRunInputSchema = {
@@ -330,12 +344,26 @@ const constrainedRunInputSchema = {
   effect_profile: z
     .enum(EFFECT_PROFILES)
     .optional()
-    .describe("Opt-in enforced Pi construction-time effect ceiling. Omitted preserves the legacy all-tools behavior."),
+    .describe("Opt-in enforced Pi construction-time effect ceiling. Omitted preserves ambient registered tools; recursive delegation remains separately authorized."),
   expected_skill_sha256: z
     .string()
     .regex(/^[0-9a-f]{64}$/, "expected_skill_sha256 must be a lowercase 64-character SHA-256 hex digest")
     .optional()
     .describe("Optional pre-prompt skill-content pin; requires canonical skill_name."),
+  skill_snapshot_binding: z.strictObject({
+    contract_version: z.literal(1),
+    snapshot_id: z.string().regex(/^[0-9a-f]{64}$/),
+    metadata_sha256: z.string().regex(/^[0-9a-f]{64}$/),
+    publication_receipt_sha256: z.string().regex(/^[0-9a-f]{64}$/),
+    reference_id: z.string().regex(/^[0-9a-f]{64}$/),
+    project_id: z.string().min(1),
+    publication_id: z.string().min(1).max(200).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/),
+  }).optional().describe(
+    "Owner-issued immutable full-runtime snapshot binding. Requires canonical skill_name and is revalidated before prompt submission.",
+  ),
+  recursive_delegation: z.enum(RECURSIVE_DELEGATIONS).optional().describe(
+    "Explicit recursive delegate authorization. Omission resolves disabled; raw resume requires this field on every turn.",
+  ),
 };
 
 const runInputSchema = z.strictObject({
@@ -444,6 +472,79 @@ const verifySkillBindingsInputSchema = z.strictObject({
     ),
 });
 
+const resolveSkillBindingsInputSchema = z.strictObject({
+  contract_version: z.literal(1),
+  cwd: z.string().trim().min(1),
+  skill_names: z.array(z.string().regex(SKILL_NAME_PATTERN, "skill_name must be a canonical bare skill name"))
+    .min(1)
+    .max(MAX_SKILL_BINDING_RESOLUTION_ENTRIES)
+    .refine(
+      (names) => names.every((name, index) => index === 0 || names[index - 1]! < name),
+      "skill_names must be unique and strictly ASCII-sorted",
+    ),
+});
+
+const resolveSkillRuntimeBundlesInputSchema = z.strictObject({
+  contract_version: z.literal(1),
+  cwd: z.string().trim().min(1),
+  skill_names: z.array(z.string().regex(SKILL_NAME_PATTERN, "skill_name must be a canonical bare skill name"))
+    .min(1)
+    .max(MAX_SKILL_RUNTIME_BUNDLE_RESOLUTION_ENTRIES)
+    .refine(
+      (names) => names.every((name, index) => index === 0 || names[index - 1]! < name),
+      "skill_names must be unique and strictly ASCII-sorted",
+    ),
+});
+
+const validateSkillRuntimeBundleInputSchema = z.strictObject({
+  contract_version: z.literal(1),
+  bundle_root: z.string().min(1),
+  expected_skill_name: z.string().regex(SKILL_NAME_PATTERN, "expected_skill_name must be canonical"),
+});
+
+const projectReferenceSchema = z.strictObject({
+  project_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/, "project_id must be a stable canonical identifier"),
+  publication_id: z.string().min(1).max(200).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/),
+  lifecycle: z.literal("active"),
+});
+
+const publishSkillSnapshotsInputSchema = z.strictObject({
+  contract_version: z.literal(1),
+  cwd: z.string().trim().min(1),
+  project_reference: projectReferenceSchema,
+  bindings: z.array(z.strictObject({
+    skill_name: z.string().regex(SKILL_NAME_PATTERN, "skill_name must be a canonical bare skill name"),
+    expected_bundle_sha256: z.string().regex(LOWERCASE_SHA256_PATTERN, "expected_bundle_sha256 must be lowercase SHA-256"),
+  })).min(1).max(MAX_SKILL_RUNTIME_BUNDLE_RESOLUTION_ENTRIES).refine(
+    (bindings) => bindings.every((binding, index) => index === 0 || bindings[index - 1]!.skill_name < binding.skill_name),
+    "bindings must be unique and strictly ASCII-sorted by skill_name",
+  ),
+});
+
+const planSkillSnapshotDeletionInputSchema = z.strictObject({
+  contract_version: z.literal(1),
+  snapshot_id: z.string().regex(LOWERCASE_SHA256_PATTERN, "snapshot_id must be lowercase SHA-256"),
+});
+
+const deleteSkillSnapshotInputSchema = z.strictObject({
+  contract_version: z.literal(1),
+  snapshot_id: z.string().regex(LOWERCASE_SHA256_PATTERN, "snapshot_id must be lowercase SHA-256"),
+  confirm_impact_sha256: z.string().regex(LOWERCASE_SHA256_PATTERN, "confirm_impact_sha256 must be lowercase SHA-256"),
+});
+
+const closeSkillSnapshotReferencesInputSchema = z.strictObject({
+  contract_version: z.literal(1),
+  project_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/, "project_id must be a stable canonical identifier"),
+  publication_id: z.string().min(1).max(200).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/),
+  snapshot_ids: z.array(z.string().regex(LOWERCASE_SHA256_PATTERN, "snapshot_id must be lowercase SHA-256"))
+    .min(1)
+    .max(MAX_SKILL_RUNTIME_BUNDLE_RESOLUTION_ENTRIES)
+    .refine(
+      (ids) => ids.every((id, index) => index === 0 || ids[index - 1]! < id),
+      "snapshot_ids must be unique and strictly ASCII-sorted",
+    ),
+});
+
 async function listModelClassesResult(): Promise<ReturnType<typeof jsonToolResult<Record<string, unknown>>>> {
   const configRecord = await loadConfigRecord();
   const config = normalizeConfigRecord(configRecord);
@@ -522,6 +623,76 @@ server.registerTool(
     inputSchema: verifySkillBindingsInputSchema,
   },
   async (request) => jsonObjectToolResult(await verifySkillBindingsRequest(request)),
+);
+
+server.registerTool(
+  "resolve_skill_bindings",
+  {
+    title: "Resolve Skill Bindings",
+    description: "Resolve one canonical bounded skill-name set to exact paths and content hashes without invoking a model or creating operational state. Results are point-in-time; launches recheck content.",
+    inputSchema: resolveSkillBindingsInputSchema,
+  },
+  async (request) => jsonObjectToolResult(await resolveSkillBindingsRequest(request)),
+);
+
+server.registerTool(
+  "resolve_skill_runtime_bundles",
+  {
+    title: "Resolve Skill Runtime Bundles",
+    description: "Resolve one canonical bounded skill-name set and compute owner-issued source identity plus the complete deterministic runtime-bundle digest over admitted files. This operation is read-only and point-in-time; it does not create launch snapshots.",
+    inputSchema: resolveSkillRuntimeBundlesInputSchema,
+  },
+  async (request) => jsonObjectToolResult(await resolveSkillRuntimeBundlesRequest(request)),
+);
+
+server.registerTool(
+  "validate_skill_runtime_bundle",
+  {
+    title: "Validate Skill Runtime Bundle",
+    description: "Validate and digest one exact absolute runtime-bundle root using the canonical full-closure algorithm. The root may be settled staging or canonical source; this performs no catalog resolution, installation, model/child work, or writes.",
+    inputSchema: validateSkillRuntimeBundleInputSchema,
+  },
+  async (request) => jsonObjectToolResult(await validateSkillRuntimeBundleRequest(request)),
+);
+
+server.registerTool(
+  "publish_skill_snapshots",
+  {
+    title: "Publish Skill Snapshots",
+    description: "Resolve and compare a canonical bounded skill set, materialize immutable content-addressed complete-runtime snapshots, and retain exact active/closed project references. All bindings are validated before durable publication begins.",
+    inputSchema: publishSkillSnapshotsInputSchema,
+  },
+  async (request) => jsonObjectToolResult(await publishSkillSnapshotsRequest(request)),
+);
+
+server.registerTool(
+  "plan_skill_snapshot_deletion",
+  {
+    title: "Plan Skill Snapshot Deletion",
+    description: "Read the complete retained project-reference impact for one immutable snapshot and return the exact impact digest required by the explicit deletion operation. This tool never deletes.",
+    inputSchema: planSkillSnapshotDeletionInputSchema,
+  },
+  async (request) => jsonObjectToolResult(await planSkillSnapshotDeletionRequest(request)),
+);
+
+server.registerTool(
+  "close_skill_snapshot_references",
+  {
+    title: "Close Skill Snapshot References",
+    description: "Idempotently transition one exact project's sorted snapshot-reference set from active to closed without changing snapshot or reference identity. Closed references remain retained and continue to block unconfirmed deletion.",
+    inputSchema: closeSkillSnapshotReferencesInputSchema,
+  },
+  async (request) => jsonObjectToolResult(await closeSkillSnapshotReferencesRequest(request)),
+);
+
+server.registerTool(
+  "delete_skill_snapshot",
+  {
+    title: "Delete Skill Snapshot",
+    description: "Explicitly delete one immutable snapshot only when confirm_impact_sha256 exactly matches a freshly recomputed complete affected-project report. Automatic garbage collection never invokes this operation.",
+    inputSchema: deleteSkillSnapshotInputSchema,
+  },
+  async (request) => jsonObjectToolResult(await deleteSkillSnapshotRequest(request)),
 );
 
 server.registerTool(
@@ -678,15 +849,42 @@ server.registerTool(
 );
 
 await startRecursiveControlServer(async ({ caller, params }) => {
+  let parent;
+  try {
+    parent = await getRunTask(caller.parent_run_id);
+  } catch {
+    throw new ValidationError("recursive caller parent is not an active owned run", "recursive_control_invalid");
+  }
+  const inheritedSnapshotBinding = parent.skill_snapshot_binding;
+  const inheritedSkillName = parent.skill_snapshot_activation_receipt?.skill_name;
+  if (inheritedSnapshotBinding && !inheritedSkillName) {
+    throw new ValidationError(
+      "snapshot-bound recursive delegation requires a confirmed ancestor snapshot receipt",
+      "skill_snapshot_activation_failed",
+    );
+  }
+  if (
+    inheritedSnapshotBinding &&
+    params.skill_name !== undefined &&
+    params.skill_name !== inheritedSkillName
+  ) {
+    throw new ValidationError(
+      "snapshot-bound recursive delegation cannot widen to a different skill binding",
+      "invalid_skill_snapshot_binding",
+    );
+  }
   const view = await scheduleRunTask(
     {
       prompt: params.prompt,
       cwd: params.cwd,
       ...(params.model_class ? { model_class: params.model_class } : {}),
-      ...(params.skill_name !== undefined ? { skill_name: params.skill_name } : {}),
+      ...(inheritedSnapshotBinding
+        ? { skill_name: inheritedSkillName, skill_snapshot_binding: inheritedSnapshotBinding }
+        : params.skill_name !== undefined ? { skill_name: params.skill_name } : {}),
       ...(params.output_mode ? { output_mode: params.output_mode } : {}),
       ...(params.timeout_ms !== undefined ? { timeout_ms: params.timeout_ms } : {}),
       ...(params.wait_ms !== undefined ? { wait_ms: params.wait_ms } : {}),
+      recursive_delegation: "enabled",
     },
     {
       lineage: lineageForRecursiveDelegate({
