@@ -332,8 +332,8 @@ export async function validateAndResolveRequest(
   if (request.continuity?.mode === "resume" && request.recursive_delegation === undefined) {
     throw new ValidationError("raw resume requires explicit recursive_delegation reauthorization", "recursive_delegation_reauthorization_required");
   }
-  if (effectProfile === "workspace_read_only" && recursiveDelegation === "enabled") {
-    throw new ValidationError("workspace_read_only excludes recursive delegation", "recursive_delegation_effect_conflict");
+  if (effectProfile && recursiveDelegation === "enabled") {
+    throw new ValidationError(`${effectProfile} excludes recursive delegation`, "recursive_delegation_effect_conflict");
   }
   const expectedSkillSha256 = trimOptional(request.expected_skill_sha256, "expected_skill_sha256");
   const skillSnapshotBinding = request.skill_snapshot_binding;

@@ -41,6 +41,21 @@ export const MODEL_CLASS_CALIBRATIONS: Record<ModelClass, {
     thinkingLevel: "high",
     description: "E",
   },
+  Z1: {
+    model: "openrouter/moonshotai/kimi-k3",
+    thinkingLevel: "xhigh",
+    description: "Z1",
+  },
+  Z2: {
+    model: "openrouter/anthropic/claude-opus-4.8",
+    thinkingLevel: "xhigh",
+    description: "Z2",
+  },
+  Z3: {
+    model: "openrouter/z-ai/glm-5.2",
+    thinkingLevel: "xhigh",
+    description: "Z3",
+  },
 };
 `;
 
@@ -55,6 +70,9 @@ function fixtureReadme(envKeys: string[]): string {
 | \`C\` | C |
 | \`D\` | D |
 | \`E\` | E |
+| \`Z1\` | Z1 |
+| \`Z2\` | Z2 |
+| \`Z3\` | Z3 |
 
 Environment overrides:
 

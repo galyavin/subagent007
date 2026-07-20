@@ -306,7 +306,7 @@ const continuitySchema = z.discriminatedUnion("mode", [
 const modelClassSchema = z
   .enum(MODEL_CLASSES)
   .optional()
-  .describe("Capability class A-E. A is simplest; E is highest-abstraction/deepest technical work.");
+  .describe("Capability class A-E, or external expert class Z1-Z3 for maximum-difficulty work. A is simplest; E is highest-abstraction/deepest technical work.");
 
 const skillNameInputSchema = z
   .string()

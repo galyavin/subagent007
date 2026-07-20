@@ -12,12 +12,12 @@ const MODEL_CLASSES = new Set(MODEL_CLASS_CHOICES);
 
 function usage() {
   return [
-    "usage: node scripts/probe-model-health.mjs --model-class <A-E> [--cwd <path>] [options]",
+    "usage: node scripts/probe-model-health.mjs --model-class <A-E|Z1-Z3> [--cwd <path>] [options]",
     "",
     "Records one-shot model-class health for Subagent007.",
     "",
     "Options:",
-    "  --model-class <A-E>        Model class to probe or record.",
+    "  --model-class <A-E|Z1-Z3>  Model class to probe or record.",
     "  --cwd <path>               Absolute cwd for a real one-shot smoke probe.",
     "  --prompt <text>            Smoke prompt. Default asks for SUBAGENT007_HEALTH_OK.",
     "  --record-status <status>   Record healthy or unhealthy without running a child.",

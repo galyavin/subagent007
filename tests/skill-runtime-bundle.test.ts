@@ -21,6 +21,7 @@ import { runSubagentCore } from "../src/runSubagent.js";
 import { createFakePiChild } from "./helpers/fakePiChild.js";
 import { validateSkillRuntimeBundleRequest } from "../src/skillRuntimeBundleValidation.js";
 import { claimSkillSnapshotPublication, materializeSkillSnapshot } from "../src/skillSnapshotStore.js";
+import { createTaskRootAuthoringTools } from "../src/taskRootAuthoringTools.js";
 
 async function withTempDir(run: (dir: string) => Promise<void>): Promise<void> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-skill-bundle-test-"));
@@ -47,7 +48,7 @@ async function writeBundle(root: string, skillName = "alpha"): Promise<void> {
   await fs.mkdir(path.join(root, "assets"), { recursive: true });
   await fs.mkdir(path.join(root, "templates"), { recursive: true });
   await fs.mkdir(path.join(root, "agents"), { recursive: true });
-  await fs.writeFile(path.join(root, "SKILL.md"), `---\nname: ${skillName}\ndescription: Test skill.\n---\n# ${skillName}\n`);
+  await fs.writeFile(path.join(root, "SKILL.md"), `---\nname: ${skillName}\ndescription: Test skill.\n---\n# ${skillName}\nRead references/guide.md before authoring.\n`);
   await fs.writeFile(path.join(root, "scripts", "run.sh"), "#!/bin/sh\necho alpha\n", { mode: 0o755 });
   await fs.writeFile(path.join(root, "references", "guide.md"), "guide\n");
   await fs.writeFile(path.join(root, "assets", "input.bin"), Buffer.from([0, 1, 2, 255]));
@@ -78,6 +79,22 @@ test("runtime bundle digest covers every admitted exact byte in canonical path o
     await fs.writeFile(path.join(root, "references", "guide.md"), "guide\n");
     await fs.chmod(path.join(root, "scripts", "run.sh"), 0o644);
     assert.notEqual((await validateSkillRuntimeBundle(root)).bundle_sha256, originalDigest);
+  });
+});
+
+test("runtime bundle admits and digests root license text without admitting arbitrary root files", async () => {
+  await withTempDir(async (root) => {
+    await writeBundle(root);
+    await fs.writeFile(path.join(root, "license.txt"), "platform license\n");
+
+    const initial = await validateSkillRuntimeBundle(root);
+    assert.ok(initial.files.some((file) => file.relative_path === "license.txt"));
+    await fs.writeFile(path.join(root, "license.txt"), "changed platform license\n");
+    assert.notEqual((await validateSkillRuntimeBundle(root)).bundle_sha256, initial.bundle_sha256);
+
+    await fs.rm(path.join(root, "license.txt"));
+    await fs.writeFile(path.join(root, "runtime-helper.md"), "unadmitted runtime candidate\n");
+    await assert.rejects(validateSkillRuntimeBundle(root), /unadmitted runtime bundle path/);
   });
 });
 
@@ -553,6 +570,41 @@ test("snapshot-bound launch uses immutable closure, receipts before prompt, and 
       assert.ok(
         observedLines.findIndex((line) => line.includes("skill_snapshot_activation_confirmed")) <
         observedLines.findIndex((line) => line.includes("child_prompt_submitted")),
+      );
+      const firstChildRequest = JSON.parse((await fs.readFile(fake.logPath, "utf8")).trim().split("\n")[0]!) as {
+        request: { skillFilePath?: string };
+      };
+      assert.equal(firstChildRequest.request.skillFilePath, activation.receipt.resolved_skill_path);
+      const runtimeRoot = path.dirname(firstChildRequest.request.skillFilePath!);
+      assert.equal(await fs.readFile(path.join(runtimeRoot, "references", "guide.md"), "utf8"), "guide\n");
+      assert.equal(await fs.readFile(path.join(runtimeRoot, "scripts", "run.sh"), "utf8"), "#!/bin/sh\necho alpha\n");
+
+      // An isolated task root can still follow the immutable SKILL.md sidecar
+      // reference, but its authoring tools cannot mutate or escape that bundle.
+      const authoringTools = createTaskRootAuthoringTools(cwd, activation.receipt.resolved_skill_path);
+      const authoringRead = authoringTools.find((tool) => tool.name === "read")!;
+      const authoringLs = authoringTools.find((tool) => tool.name === "ls")!;
+      const authoringWrite = authoringTools.find((tool) => tool.name === "write")!;
+      const authoringEdit = authoringTools.find((tool) => tool.name === "edit")!;
+      const toolContext = undefined as never;
+      const guide = await authoringRead.execute("read-guide", { path: "references/guide.md" }, undefined, undefined, toolContext);
+      assert.match(JSON.stringify(guide.content), /guide/);
+      const guideListing = await authoringLs.execute("list-guide", { path: "references" }, undefined, undefined, toolContext);
+      assert.match(JSON.stringify(guideListing.content), /guide\.md/);
+      const snapshotGuide = path.join(runtimeRoot, "references", "guide.md");
+      await assert.rejects(
+        authoringWrite.execute("write-guide", { path: snapshotGuide, content: "changed\n" }, undefined, undefined, toolContext),
+        /task root/,
+      );
+      await assert.rejects(
+        authoringEdit.execute("edit-guide", { path: snapshotGuide, edits: [{ oldText: "guide", newText: "changed" }] }, undefined, undefined, toolContext),
+        /task root/,
+      );
+      const unrelatedOutside = path.join(tmp, "unrelated.md");
+      await fs.writeFile(unrelatedOutside, "outside\n");
+      await assert.rejects(
+        authoringRead.execute("read-outside", { path: unrelatedOutside }, undefined, undefined, toolContext),
+        /task root/,
       );
       const fresh = await runSubagentCore({
         cwd,

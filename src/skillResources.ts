@@ -66,13 +66,23 @@ function ambiguousSkillError(skillName: string): SkillResolutionError {
   );
 }
 
+function configuredSkillLookupPaths(paths: readonly string[]): string[] {
+  return paths.flatMap((lookupPath) => {
+    const systemPath = path.join(lookupPath, ".system");
+    return fsSync.existsSync(systemPath) ? [lookupPath, systemPath] : [lookupPath];
+  });
+}
+
 export function loadSkillCatalog(
   options: Pick<SkillResourceOptions, "cwd" | "agentDir" | "lookupPaths">,
 ): LoadedSkillCatalog {
   return loadSkills({
     cwd: options.cwd,
     agentDir: options.agentDir,
-    skillPaths: options.lookupPaths ?? defaultSkillLookupPaths(),
+    // Pi intentionally skips dot-directories during recursive discovery. Platform
+    // skills live under configured roots/.system, so add that root explicitly and
+    // retain loadSkills' normal collision diagnostics and canonical bare-name lookup.
+    skillPaths: configuredSkillLookupPaths(options.lookupPaths ?? defaultSkillLookupPaths()),
     includeDefaults: true,
   });
 }

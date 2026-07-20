@@ -1,12 +1,12 @@
 export const THINKING_LEVELS = ["low", "medium", "high", "xhigh"] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
-export const MODEL_CLASSES = ["A", "B", "C", "D", "E"] as const;
+export const MODEL_CLASSES = ["A", "B", "C", "D", "E", "Z1", "Z2", "Z3"] as const;
 export type ModelClass = (typeof MODEL_CLASSES)[number];
 export const OUTPUT_MODES = ["final", "transcript"] as const;
 export type OutputMode = (typeof OUTPUT_MODES)[number];
 export const TOOL_PROFILES = ["all", "inspect", "web_search", "shell", "workspace_write"] as const;
 export type ToolProfile = (typeof TOOL_PROFILES)[number];
-export const EFFECT_PROFILES = ["workspace_read_only"] as const;
+export const EFFECT_PROFILES = ["workspace_read_only", "skill_creator_authoring_v1"] as const;
 export type EffectProfile = (typeof EFFECT_PROFILES)[number];
 export const NON_TERMINAL_RUN_STATUSES = ["working", "input_required"] as const;
 export const TERMINAL_RUN_STATUSES = ["completed", "failed", "cancelled", "timed_out"] as const;

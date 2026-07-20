@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SCRIPT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const MODEL_CLASSES = ["A", "B", "C", "D", "E"];
+const MODEL_CLASSES = ["A", "B", "C", "D", "E", "Z1", "Z2", "Z3"];
 const DOC_ENV_KEY_PATTERN = /\b(?:SUBAGENT007_[A-Z0-9_]+|PI_CODING_AGENT_DIR|GIT_COMMIT)\b/g;
 const PROCESS_ENV_DOT_PATTERN = /\bprocess\.env\.([A-Z][A-Z0-9_]*)\b/g;
 const PROCESS_ENV_INDEX_PATTERN = /\bprocess\.env\[\s*["']([A-Z][A-Z0-9_]*)["']\s*\]/g;

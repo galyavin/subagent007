@@ -54,7 +54,7 @@ test("config:migrate does not rewrite unsupported legacy model pairs", async () 
   assert.equal(result.json.status, "unrepairable_model_class");
   assert.equal(result.json.default_model, "anthropic/claude-sonnet-4.5");
   assert.equal(result.json.default_thinking_level, "medium");
-  assert.equal(result.json.allowed_model_classes, "A, B, C, D, E");
+  assert.equal(result.json.allowed_model_classes, "A, B, C, D, E, Z1, Z2, Z3");
   assert.equal(await fs.readFile(configPath, "utf8"), original);
 });
 

@@ -229,6 +229,16 @@ test("runtime readiness returns a ready snapshot for a clean current build", asy
     snapshot.contract.effect_profiles.workspace_read_only.supported_tools,
     ["read", "grep", "find", "ls", "web_search", "web_read", "request_input"],
   );
+  assert.deepEqual(
+    snapshot.contract.effect_profiles.skill_creator_authoring_v1.supported_tools,
+    ["read", "grep", "find", "ls", "write", "edit"],
+  );
+  assert.equal(snapshot.contract.effect_profiles.skill_creator_authoring_v1.task_root, "exact_run_cwd");
+  assert.equal(snapshot.contract.effect_profiles.skill_creator_authoring_v1.task_root_write_scope, "exact_real_run_cwd");
+  assert.equal(
+    snapshot.contract.effect_profiles.skill_creator_authoring_v1.snapshot_runtime_read_scope,
+    "active_validated_snapshot_runtime_root_or_none",
+  );
 });
 
 test("runtime readiness blocks incompatible durable-run contract expectations", async () => {

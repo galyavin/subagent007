@@ -18,15 +18,18 @@ import { terminateOwnedProcessGroupOnControlLoss } from "./controlChannel.js";
 import { resolvePiAgentDir } from "./piAgentDir.js";
 import { createRecursiveDelegateTool } from "./recursiveDelegateTool.js";
 import { createSkillScopedResourceLoader } from "./skillResources.js";
+import { createTaskRootAuthoringTools } from "./taskRootAuthoringTools.js";
 import {
-  WORKSPACE_READ_ONLY_TOOL_NAMES,
   activateAllRegisteredTools,
-  activateWorkspaceReadOnlyTools,
+  activateEffectProfileTools,
+  effectProfileToolNames,
   requestInputImplementationSha256,
   resolveWorkspaceReadOnlyWebProvider,
+  skillCreatorAuthoringV1ActivationReceipt,
   skillOnlyActivationReceipt,
   workspaceReadOnlyActivationReceipt,
 } from "./toolProfile.js";
+import { MODEL_RUNTIME_FALLBACKS } from "./modelAllowlist.js";
 import type {
   ActivationSkillBinding,
   EffectProfile,
@@ -249,6 +252,23 @@ function resolveRequestedModel(modelRef: string, registry: ModelRegistry): Model
     );
   }
 
+  const fallback = MODEL_RUNTIME_FALLBACKS[normalized as keyof typeof MODEL_RUNTIME_FALLBACKS];
+  if (fallback) {
+    const templateRef = fallback.template.toLowerCase();
+    const template = available.find((model) =>
+      `${model.provider}/${model.id}`.toLowerCase() === templateRef,
+    );
+    if (template) {
+      return {
+        ...template,
+        id: normalized.slice("openrouter/".length),
+        name: fallback.name,
+        contextWindow: fallback.contextWindow,
+        maxTokens: fallback.maxTokens,
+      };
+    }
+  }
+
   const examples = available.slice(0, 8).map((model) => `${model.provider}/${model.id}`);
   throw new Error(
     `unknown Pi model ${JSON.stringify(modelRef)}${
@@ -370,7 +390,8 @@ async function main(): Promise<void> {
   }
   const agentDir = resolvePiAgentDir();
   process.env.PI_CODING_AGENT_DIR = agentDir;
-  const webProvider = request.effectProfile
+  const isWorkspaceReadOnly = request.effectProfile === "workspace_read_only";
+  const webProvider = isWorkspaceReadOnly
     ? await resolveWorkspaceReadOnlyWebProvider(agentDir).catch((error) => {
         throw asChildContractError(error, "effect_profile_activation_failed");
       })
@@ -383,7 +404,7 @@ async function main(): Promise<void> {
     ...(request.effectProfile
       ? {
           noAmbientExtensions: true,
-          explicitExtensionPaths: [webProvider!.extensionPath],
+          ...(isWorkspaceReadOnly ? { explicitExtensionPaths: [webProvider!.extensionPath] } : {}),
         }
       : {}),
   });
@@ -410,7 +431,12 @@ async function main(): Promise<void> {
     );
   });
   const skillBinding = await verifiedSkillBinding(request);
-  const customTools: ToolDefinition<any>[] = [createRequestInputTool(request, inputControl)];
+  const customTools: ToolDefinition<any>[] = [
+    createRequestInputTool(request, inputControl),
+    ...(request.effectProfile === "skill_creator_authoring_v1"
+      ? createTaskRootAuthoringTools(request.cwd, expectedSnapshotReceipt?.resolved_skill_path)
+      : []),
+  ];
   if (!request.effectProfile && request.recursiveDelegation === "enabled") {
     const recursiveDelegateTool = createRecursiveDelegateTool({
       cwd: request.cwd,
@@ -431,11 +457,11 @@ async function main(): Promise<void> {
     sessionManager,
     resourceLoader,
     customTools,
-    ...(request.effectProfile ? { tools: [...WORKSPACE_READ_ONLY_TOOL_NAMES] } : {}),
+    ...(request.effectProfile ? { tools: [...effectProfileToolNames(request.effectProfile)] } : {}),
   });
   if (request.effectProfile) {
     try {
-      activateWorkspaceReadOnlyTools(session);
+      activateEffectProfileTools(session, request.effectProfile);
     } catch (error) {
       throw asChildContractError(error, "effect_profile_activation_failed");
     }
@@ -465,7 +491,7 @@ async function main(): Promise<void> {
     pi_session_id: session.sessionId,
   });
 
-  if (request.effectProfile) {
+  if (request.effectProfile === "workspace_read_only") {
     let receipt;
     try {
       receipt = workspaceReadOnlyActivationReceipt({
@@ -477,6 +503,8 @@ async function main(): Promise<void> {
       throw asChildContractError(error, "effect_profile_activation_failed");
     }
     writeEvent({ type: "subagent007.activation_confirmed", receipt });
+  } else if (request.effectProfile === "skill_creator_authoring_v1") {
+    writeEvent({ type: "subagent007.activation_confirmed", receipt: skillCreatorAuthoringV1ActivationReceipt(skillBinding) });
   } else if (request.expectedSkillSha256 && skillBinding) {
     writeEvent({
       type: "subagent007.activation_confirmed",

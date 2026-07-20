@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
   CURATED_EXACT_MODEL_REFS,
+  MODEL_RUNTIME_FALLBACKS,
   MODEL_CLASS_CALIBRATIONS,
   OPENAI_CODEX_GPT54_PLUS_REF,
   isOpenAICodexGpt54OrNewerModelId,
@@ -129,7 +130,9 @@ for (const modelRef of CURATED_EXACT_MODEL_REFS) {
     throw new Error(`curated model ref must be provider-qualified: ${modelRef}`);
   }
 
-  const piPresent = piRefs.has(modelRef);
+  const fallback = MODEL_RUNTIME_FALLBACKS[modelRef];
+  const fallbackTemplatePresent = fallback ? piRefs.has(fallback.template) : false;
+  const piPresent = piRefs.has(modelRef) || fallbackTemplatePresent;
   let sourceVerified = false;
   let sourcePresent = false;
   let sourceError;
@@ -147,7 +150,9 @@ for (const modelRef of CURATED_EXACT_MODEL_REFS) {
     modelRef,
     piStatus: presentStatus(piResult.ok, piPresent, piResult.error),
     sourceStatus: presentStatus(sourceVerified, sourcePresent, sourceError),
-    details: "Exact curated model.",
+    details: fallback && fallbackTemplatePresent
+      ? `Exact curated model; runtime fallback uses ${fallback.template}.`
+      : "Exact curated model.",
     drift: (piResult.ok && !piPresent) || (sourceVerified && !sourcePresent),
     unverified: !piResult.ok || !sourceVerified,
   });

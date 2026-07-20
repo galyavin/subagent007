@@ -157,7 +157,7 @@ test("rejects unsupported config model classes", async () => {
     JSON.stringify({ default_model_class: "Z" }),
   );
 
-  await assert.rejects(loadConfig(configPath), /default_model_class must be one of: A, B, C, D, E/);
+  await assert.rejects(loadConfig(configPath), /default_model_class must be one of: A, B, C, D, E, Z1, Z2, Z3/);
 });
 
 test("missing config file is allowed until defaults are needed", async () => {
@@ -478,6 +478,9 @@ test("resolves model classes to calibrated model and thinking level", async () =
     ["C", "openai-codex/gpt-5.6-luna", "xhigh"],
     ["D", "openai-codex/gpt-5.6-terra", "high"],
     ["E", "openai-codex/gpt-5.6-sol", "high"],
+    ["Z1", "openrouter/moonshotai/kimi-k3", "xhigh"],
+    ["Z2", "openrouter/anthropic/claude-opus-4.8", "xhigh"],
+    ["Z3", "openrouter/z-ai/glm-5.2", "xhigh"],
   ] as const) {
     const resolved = await validateAndResolveRequest(
       { prompt: "x", cwd, model_class: modelClass },
@@ -496,7 +499,7 @@ test("rejects invalid model class and old public model fields", async () => {
       { prompt: "x", cwd, model_class: "Z" as never },
       {},
     ),
-    /model_class must be one of: A, B, C, D, E/,
+    /model_class must be one of: A, B, C, D, E, Z1, Z2, Z3/,
   );
   await assert.rejects(
     validateAndResolveRequest(
@@ -537,7 +540,7 @@ test("rejects invalid preflight input before any child spawn is possible", async
       { prompt: "x", cwd, model_class: "minimal" as never },
       {},
     ),
-    /model_class must be one of: A, B, C, D, E/,
+    /model_class must be one of: A, B, C, D, E, Z1, Z2, Z3/,
   );
 
   await withEnv(

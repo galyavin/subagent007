@@ -12,7 +12,7 @@ edges:
     condition: when the reasoning behind a tech choice is needed
   - target: context/conventions.md
     condition: when understanding how to use a technology in this codebase
-last_updated: 2026-07-13
+last_updated: 2026-07-19
 ---
 
 # Stack
@@ -35,9 +35,9 @@ last_updated: 2026-07-13
 - No database/ORM/cache layer; local JSON/JSONL files are the persistence boundary.
 - No database-backed or remote job queue; only top-level durable `start_run` and `schedule_run` use the bounded local metadata queue. One-shot, named-session, and recursive launches still reject at capacity.
 - No separate lint tool; use `npm run typecheck`, `npm run docs:check`, and tests.
-- No concrete public model ids; public callers use model classes `A` through `E`.
+- No concrete public model ids; public callers use model classes `A` through `E` or external expert classes `Z1` through `Z3`.
 
 ## Version Constraints
 - Node must satisfy `>=22.19.0`.
 - Build output in `dist/` must be fresh after `src/` edits before MCP/runtime readiness checks.
-- The bundled Pi coding-agent registry must contain every concrete model behind classes A-E; a newer global `pi` executable does not make an older project-local runtime compatible.
+- The bundled Pi coding-agent registry must natively contain, or have an explicit source-verified runtime transport fallback for, every concrete model behind classes A-E and Z1-Z3; a newer global `pi` executable does not make an older project-local runtime compatible.

@@ -80,13 +80,13 @@ type RunSubagentMetadata = {
   queued_at?: string;
   child_started_at?: string;
   queue_wait_ms?: number;
-  requested_effect_profile?: "workspace_read_only";
-  resolved_effect_profile?: "workspace_read_only";
+  requested_effect_profile?: "workspace_read_only" | "skill_creator_authoring_v1";
+  resolved_effect_profile?: "workspace_read_only" | "skill_creator_authoring_v1";
   activation_receipt?: {
     schema_version: 1;
     confirmed_before_prompt: true;
-    requested_effect_profile: "workspace_read_only" | null;
-    resolved_effect_profile: "workspace_read_only" | null;
+    requested_effect_profile: "workspace_read_only" | "skill_creator_authoring_v1" | null;
+    resolved_effect_profile: "workspace_read_only" | "skill_creator_authoring_v1" | null;
     active_tool_names: string[];
     tool_bindings: Array<{ tool_name: string; provider_id: string; implementation_sha256: string }>;
     toolset_sha256: string | null;
@@ -670,6 +670,54 @@ test("workspace_read_only requires an exact pre-prompt activation receipt", asyn
       assert.equal(conflicting.reason_code, "effect_profile_activation_failed");
     },
   );
+});
+
+test("skill_creator_authoring_v1 exposes only task-root authoring tools with a pre-prompt receipt", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-skill-creator-authoring-"));
+  const projectDir = path.join(tmp, "project");
+  const runsDir = path.join(tmp, "runs");
+  const fake = await createFakePiChild();
+  await fs.mkdir(projectDir, { recursive: true });
+
+  await withEnv({
+    SUBAGENT007_PI_CHILD_PATH: fake.childPath,
+    FAKE_PI_LOG_PATH: fake.logPath,
+    SUBAGENT007_FAILURE_LOG: "off",
+  }, async () => {
+    const result = await runSubagent(
+      { cwd: projectDir, prompt: "FAST", effect_profile: "skill_creator_authoring_v1" as never },
+      { runsDir },
+    );
+    assert.equal(result.success, true);
+    assert.equal(result.requested_effect_profile, "skill_creator_authoring_v1");
+    assert.equal(result.resolved_effect_profile, "skill_creator_authoring_v1");
+    assert.deepEqual(result.activation_receipt?.active_tool_names, [
+      "read", "grep", "find", "ls", "write", "edit",
+    ]);
+    assert.deepEqual(result.activation_receipt?.tool_bindings, []);
+    const logs = await readJsonl<{ request: Record<string, unknown> }>(fake.logPath);
+    assert.equal(logs[0].request.effectProfile, "skill_creator_authoring_v1");
+    assert.equal(Object.hasOwn(logs[0].request, "recursiveControl"), false);
+
+    const fresh = await runSubagent(
+      { cwd: projectDir, prompt: "FAST", continuity: { mode: "fresh" }, effect_profile: "skill_creator_authoring_v1" as never },
+      { runsDir },
+    );
+    assert.equal(fresh.success, true);
+    assert.ok(fresh.session_id);
+    const resumed = await runSubagent(
+      {
+        cwd: projectDir,
+        prompt: "FAST",
+        continuity: { mode: "resume", session_id: fresh.session_id! },
+        recursive_delegation: "disabled",
+        effect_profile: "skill_creator_authoring_v1" as never,
+      },
+      { runsDir },
+    );
+    assert.equal(resumed.success, true);
+    assert.equal(resumed.session_id, fresh.session_id);
+  });
 });
 
 test("durable constrained runs persist activation before prompt for start_run and schedule_run", async () => {
@@ -1471,6 +1519,9 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       assert.ok(tool, toolName);
       const properties = tool.inputSchema.properties as Record<string, unknown>;
       assert.equal(Object.hasOwn(properties, "effect_profile"), true);
+      assert.deepEqual((properties.effect_profile as { enum?: string[] }).enum, [
+        "workspace_read_only", "skill_creator_authoring_v1",
+      ]);
       assert.equal(Object.hasOwn(properties, "expected_skill_sha256"), true);
       assert.equal(Object.hasOwn(properties, "skill_snapshot_binding"), true);
     }
@@ -1562,6 +1613,16 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
           recursive_delegate?: string;
           activation_receipt?: { event_type?: string; required_before_prompt?: boolean };
         };
+        skill_creator_authoring_v1?: {
+          supported_tools?: string[];
+          task_root?: string;
+          task_root_write_scope?: string;
+          snapshot_runtime_read_scope?: string;
+          ambient_extensions?: string;
+          enforcement_boundary?: string;
+          claim_ceiling?: string;
+          activation_receipt?: { event_type?: string; required_before_prompt?: boolean };
+        };
       };
     };
     assert.equal(contract.contract_name, "subagent007.durable_run");
@@ -1579,6 +1640,7 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.equal(contract.capabilities?.includes("disk_reserve_fail_closed"), true);
     assert.equal(contract.capabilities?.includes("bounded_local_admission_queue"), true);
     assert.equal(contract.capabilities?.includes("workspace_read_only_effect_profile"), true);
+    assert.equal(contract.capabilities?.includes("skill_creator_authoring_v1_effect_profile"), true);
     assert.equal(contract.capabilities?.includes("batch_skill_binding_verification"), true);
     assert.equal(contract.capabilities?.includes("batch_skill_binding_resolution"), true);
     assert.equal(contract.capabilities?.includes("explicit_recursive_delegation"), true);
@@ -1613,6 +1675,28 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     );
     assert.equal(
       contract.effect_profiles?.workspace_read_only?.activation_receipt?.required_before_prompt,
+      true,
+    );
+    assert.deepEqual(contract.effect_profiles?.skill_creator_authoring_v1?.supported_tools, [
+      "read", "grep", "find", "ls", "write", "edit",
+    ]);
+    assert.equal(contract.effect_profiles?.skill_creator_authoring_v1?.task_root, "exact_run_cwd");
+    assert.equal(contract.effect_profiles?.skill_creator_authoring_v1?.task_root_write_scope, "exact_real_run_cwd");
+    assert.equal(
+      contract.effect_profiles?.skill_creator_authoring_v1?.snapshot_runtime_read_scope,
+      "active_validated_snapshot_runtime_root_or_none",
+    );
+    assert.equal(contract.effect_profiles?.skill_creator_authoring_v1?.ambient_extensions, "disabled");
+    assert.equal(
+      contract.effect_profiles?.skill_creator_authoring_v1?.enforcement_boundary,
+      "pi_create_agent_session_tools_allowlist_and_task_root_path_guards",
+    );
+    assert.equal(
+      contract.effect_profiles?.skill_creator_authoring_v1?.claim_ceiling,
+      "pi_tool_dispatch_and_path_guards_not_os_sandbox",
+    );
+    assert.equal(
+      contract.effect_profiles?.skill_creator_authoring_v1?.activation_receipt?.required_before_prompt,
       true,
     );
     assert.equal(
@@ -1849,7 +1933,7 @@ test("MCP list_model_classes exposes curated model classes", async () => {
       model_health_probe_command: string;
     };
     assertNoPublicCalibrationFields(metadata);
-    assert.deepEqual(metadata.model_classes.map((entry) => entry.class), ["A", "B", "C", "D", "E"]);
+    assert.deepEqual(metadata.model_classes.map((entry) => entry.class), ["A", "B", "C", "D", "E", "Z1", "Z2", "Z3"]);
     assert.equal(metadata.model_classes.every((entry) => entry.description.length > 0), true);
     assert.equal(
       metadata.model_classes.every((entry) =>

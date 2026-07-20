@@ -17,6 +17,7 @@ const RESIDUE_DIRECTORIES = new Set([
   "test",
   "tests",
 ]);
+const ROOT_RUNTIME_FILES = new Set(["license.txt"]);
 const ROOT_RESIDUE_FILES = new Set([".DS_Store"]);
 const RESIDUE_FILE_PATTERNS = [
   /^test[_-]/i,
@@ -118,6 +119,16 @@ async function collectAdmittedPaths(sourceRoot: string): Promise<string[]> {
         );
       }
       paths.push("SKILL.md");
+      continue;
+    }
+    if (ROOT_RUNTIME_FILES.has(entry.name)) {
+      if (!entry.isFile()) {
+        throw new RuntimeBundleValidationError(
+          "runtime_bundle_unsafe_path",
+          `runtime bundle path ${JSON.stringify(entry.name)} must be a regular file and cannot be a symbolic link`,
+        );
+      }
+      paths.push(entry.name);
       continue;
     }
     if (ROOT_RESIDUE_FILES.has(entry.name) || isResidueDirectory(entry.name)) continue;

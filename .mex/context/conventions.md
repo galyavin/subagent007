@@ -11,7 +11,7 @@ triggers:
 edges:
   - target: context/architecture.md
     condition: when a convention depends on understanding the system structure
-last_updated: 2026-07-16
+last_updated: 2026-07-19
 ---
 
 # Conventions
@@ -21,7 +21,7 @@ last_updated: 2026-07-16
 - Public JSON fields and reason codes use snake_case, for example `reason_code`, `child_started`, and `local_capacity_exhausted`.
 - Environment variables use the `SUBAGENT007_*` prefix except Pi-native compatibility names such as `PI_CODING_AGENT_DIR`.
 - Durable run identity is `run_id`; mailbox identity is `run_id` plus `request_id`.
-- Public model tiers are named model classes `A`, `B`, `C`, `D`, and `E`.
+- Public model tiers are named model classes `A`, `B`, `C`, `D`, `E`, plus external expert classes `Z1`, `Z2`, and `Z3`.
 
 ## Structure
 - `src/server.ts` owns MCP registration and handler-level result shaping.
@@ -41,7 +41,7 @@ last_updated: 2026-07-16
 - Public event views and transcripts must stay sanitized; never expose raw thinking, private tool payloads, caller prompt text, full composed prompts, or answer values. Use the shared public prompt projection marker instead of writing `request.prompt` into public events or transcript provenance.
 - Public MCP result projection must also omit backend Pi session identifiers and internal mailbox filesystem paths; callers act through durable IDs and documented output references.
 - Recursive parent public events are part of the caller contract: descendant registration/finalization should project through sanitized `recursive_child_started` and `recursive_child_finished` events whose child ids match the direct `child_run_ids`/delegated run id and whose metadata contains only lineage/status/success fields.
-- Public model calibration must stay class-level on caller surfaces: expose `model_class`/`resolved_model_class` and health/migration actions, not concrete model IDs or thinking-level calibration values in MCP results, failure logs, session ledgers, observed campaign summaries, or README.
+- Public model calibration must stay class-level on caller surfaces: expose `model_class`/`resolved_model_class` and health/migration actions, not concrete model IDs or thinking-level calibration values in MCP results, failure logs, session ledgers, observed campaign summaries, or README. Z1-Z3 are external expert classes, not aliases for A-E.
 - Required named-session packet failures use distinct reason codes: missing packet -> `packet_required_missing`, malformed packet -> `packet_required_invalid`, parse-valid not-ready packet -> `packet_required_not_ready`.
 - Session terminal failures logged after durable task creation must preserve caller context: `tool` matches the public entrypoint (`start_session_run` or `run_subagent_session`), `run_id` matches the public durable run, and `task_kind` is `session`.
 - Requested `final` output must not silently degrade to successful transcript output. A clean child exit without a captured final message is a typed `missing_final_output` terminal failure; keep run result metadata, session projection, failure logs, README, and tests synchronized.
@@ -49,7 +49,7 @@ last_updated: 2026-07-16
 - When changing child execution, verify timeout/cancel/disk-reserve/parent-exit cleanup because fake child descendants can otherwise outlive the test run or exhaust host storage.
 - Compatibility aliases such as `list_allowed_models`, legacy `skill`, and legacy `tool_profile` are intentional unless a migration explicitly removes them.
 - Legacy `tool_profile` is boundary-only compatibility: validate accepted values, but do not add `toolProfile`, `resolved_tool_profile`, or failure-log profile fields downstream.
-- New effect ceilings use a separate `effect_profile`, must filter Pi tools at construction before prompt, must disable ambient extension loading separately, and must project only child receipts that the parent structurally validates.
+- New effect ceilings use a separate `effect_profile`, must filter Pi tools at construction before prompt, must disable ambient extension loading separately, and must project only child receipts that the parent structurally validates. Filesystem-authoring ceilings must also guard every model-dispatched path against lexical and resolved escapes: writes stay at the exact run cwd, while an explicit snapshot binding may add only its validated complete runtime-bundle root to read tools. Never substitute an ambient shell profile for a controller-owned capability.
 - Skill content pins must attest the bytes Pi actually expands. Use a run-owned snapshot; do not certify a source-path hash while Pi can reread different bytes later.
 - Read-only verification operations that promise no operational state must return expected semantic failures directly and must not use child-entrypoint preflight, run/session registration, admission, temporary artifacts, or failure-logging wrappers.
 - `ValidationError.reasonCode` is the semantic authority for failure reason mapping. Do not infer public reason codes from English message text.

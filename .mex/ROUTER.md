@@ -14,7 +14,7 @@ edges:
     condition: when setting up the dev environment or running the project for the first time
   - target: patterns/INDEX.md
     condition: when starting a task — check the pattern index for a matching pattern file
-last_updated: 2026-07-17
+last_updated: 2026-07-19
 ---
 
 # Session Bootstrap
@@ -25,11 +25,11 @@ Then read this file fully before doing anything else in this session.
 
 ## Current Project State
 **Working:**
-- Opt-in `effect_profile:"workspace_read_only"` constructs Pi with exactly seven read/input/web tools, disables ambient extension discovery and recursive delegation, requires a validated pre-prompt activation receipt, and preserves omitted/legacy `tool_profile` behavior. Constrained runs support ephemeral, fresh, and raw resume continuity; named-session schemas reject the profile.
+- Opt-in `effect_profile:"workspace_read_only"` constructs Pi with exactly seven read/input/web tools, disables ambient extension discovery and recursive delegation, requires a validated pre-prompt activation receipt, and preserves omitted/legacy `tool_profile` behavior. `effect_profile:"skill_creator_authoring_v1"` is the versioned Skill Creator packaging ceiling: exactly bounded `read`/`grep`/`find`/`ls` plus `write`/`edit`, with construction-time allowlisting and ambient-extension exclusion. Its writes/edits remain at the exact real task root; its read tools additionally admit only the exact real validated complete snapshot runtime-bundle root when a binding is active. It has no shell/delegate/web/input and emits a pre-prompt receipt. Both support ephemeral, fresh, and raw resume; named-session schemas reject them.
 - Optional `expected_skill_sha256` on run start surfaces pins canonical `skill_name` content before launch. Pi reads a run-owned read-only snapshot of the verified bytes, and the activation receipt preserves the canonical source path/name/SHA-256.
 - Public `verify_skill_bindings` contract version 1 validates a canonical batch of 1–64 name/digest pairs against the launch resolver without model, child, durable state, caches, temporary artifacts, or failure telemetry. Its all-or-nothing point-in-time response binds the complete cwd/request set by count and canonical SHA-256; launch still rechecks for drift.
 - Public `resolve_skill_bindings` contract version 1 resolves a canonical batch of 1–64 strictly sorted skill names through the same catalog/read/hash authority. It returns one request-bound all-or-nothing name/path/SHA set without model, child, runtime-readiness dependency, or operational writes; launch still rechecks.
-- Canonical complete runtime-bundle digesting covers the exact admitted primary skill instructions, scripts, references, assets, templates, and agent metadata. `validate_skill_runtime_bundle` applies it to an exact staging or canonical-source root without catalog lookup; `resolve_skill_runtime_bundles` applies it through one canonical catalog resolution.
+- Canonical complete runtime-bundle digesting covers the exact admitted primary skill instructions, root `license.txt`, scripts, references, assets, templates, and agent metadata. `validate_skill_runtime_bundle` applies it to an exact staging or canonical-source root without catalog lookup; `resolve_skill_runtime_bundles` applies it through one canonical catalog resolution.
 - `publish_skill_snapshots` materializes immutable content-addressed complete bundles, registers stable `project_id` + pre-existing `publication_id` references, and returns owner source/snapshot/closure/publication receipts. Active references close idempotently without changing identity; active and closed references remain deletion-visible and automatic GC is disabled.
 - `skill_snapshot_binding` launches ephemeral, fresh, and raw-resume workers from the recorded snapshot. Parent preflight and Pi child both revalidate before prompt; named sessions reject the binding, and recursive descendants inherit the confirmed binding without widening.
 - Durable runs expose one version-2 acknowledged-input contract: every answer has a response ID, a receipt is created only after the child waiter accepts that response, exact live retries replay safely, and raw answer text remains only on the private live control path/Pi context.
@@ -39,7 +39,8 @@ Then read this file fully before doing anything else in this session.
 - Child output streams directly into complete sanitized public transcripts with backpressure; no normal raw process-output spool exists. A 5 GiB default disk reserve, 24-child execution ceiling, and bounded metadata-only top-level admission queue protect the host while retaining burst demand; owner-based reconciliation removes only provably abandoned runtime artifacts.
 - Builds publish versioned releases through an atomic `dist/current` switch; stable entrypoints remain available and live server release leases prevent cleanup races.
 - Model classes, config migration, model-health probes, observed campaign/probe tooling, and bounded raw failure telemetry with retained compact archive summaries are implemented.
-- Internal model-class calibration uses the current Pi registry, and the bundled Pi coding-agent dependency is kept new enough to resolve every calibrated class model during child execution.
+- Model classes A-E remain the primary capability tiers; external expert classes Z1-Z3 are available as separate maximum-difficulty OpenRouter-backed choices.
+- Internal model-class calibration uses the current Pi registry; each calibrated model has either a native registry definition or an explicit, source-verified runtime transport fallback for child execution.
 - Observed campaign tool-listing asserts the exact 20-tool public MCP surface and `skill_name` vs legacy `skill` schema guidance instead of treating `listTools()` as liveness-only.
 - Observed campaign coverage is keyed by caller-visible `surfaces` and `result_classes`; retired descriptive `lifecycle_phases` metadata is not part of the coverage contract.
 - Observed `full-current` coverage includes single- and two-hop recursive delegate lineage, depth-limit rejection both before launch and after one valid hop, forged-lineage rejection, and private recursive-control leakage checks.
@@ -63,8 +64,9 @@ Then read this file fully before doing anything else in this session.
 - Admission queueing is limited to top-level `start_run` and `schedule_run`; one-shot, named-session, and recursive launches remain fail-fast at capacity.
 - There is no database or remote job manager; state is local filesystem-backed.
 - Named-session effect profiles or snapshot bindings are not built; named-session tools reject `effect_profile`, `expected_skill_sha256`, and `skill_snapshot_binding`.
-- `workspace_read_only` is a Pi callable-tool ceiling, not an OS sandbox or hostile-runtime containment boundary.
+- Effect profiles are Pi callable-tool ceilings, not OS sandboxes or hostile-runtime containment boundaries. `skill_creator_authoring_v1` additionally enforces dispatched filesystem paths beneath the exact run cwd.
 - Recursive delegation currently provides one child-facing `delegate` tool and direct lineage metadata only; full descendant-tree management and cascade cancel are not built.
+- A general Researcher shell profile is intentionally not built in this slice: Researcher needs an exact controller-owned capability, not ambient shell authority.
 
 **Known Issues:**
 - Local focused test commands that bypass `npm test` do not rebuild `dist/`; run `npm run build` first after source edits.

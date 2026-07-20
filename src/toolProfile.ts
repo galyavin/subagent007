@@ -18,7 +18,25 @@ export const WORKSPACE_READ_ONLY_TOOL_NAMES = [
   "web_read",
   "request_input",
 ] as const;
+export const SKILL_CREATOR_AUTHORING_V1_TOOL_NAMES = [
+  "read",
+  "grep",
+  "find",
+  "ls",
+  "write",
+  "edit",
+] as const;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+
+export function effectProfileToolNames(effectProfile: EffectProfile): readonly string[] {
+  return effectProfile === "workspace_read_only"
+    ? WORKSPACE_READ_ONLY_TOOL_NAMES
+    : SKILL_CREATOR_AUTHORING_V1_TOOL_NAMES;
+}
+
+function effectProfileBindingNames(effectProfile: EffectProfile): readonly ActivationToolBinding["tool_name"][] {
+  return effectProfile === "workspace_read_only" ? ["request_input", "web_read", "web_search"] : [];
+}
 
 export interface SessionToolRegistry {
   getAllTools(): Array<{ name: string }>;
@@ -51,22 +69,28 @@ export function activateAllRegisteredTools(
   }
 }
 
-export function activateWorkspaceReadOnlyTools(session: SessionToolRegistry): void {
+export function activateEffectProfileTools(session: SessionToolRegistry, effectProfile: EffectProfile): void {
+  const expected = effectProfileToolNames(effectProfile);
   const registered = new Set(session.getAllTools().map((tool) => tool.name));
-  const unavailable = WORKSPACE_READ_ONLY_TOOL_NAMES.filter((name) => !registered.has(name));
+  const unavailable = expected.filter((name) => !registered.has(name));
   if (unavailable.length > 0) {
-    throw new Error(`workspace_read_only tools unavailable: ${unavailable.join(", ")}`);
+    throw new Error(`${effectProfile} tools unavailable: ${unavailable.join(", ")}`);
   }
-  session.setActiveToolsByName([...WORKSPACE_READ_ONLY_TOOL_NAMES]);
+  session.setActiveToolsByName([...expected]);
   const active = session.getActiveToolNames();
   if (
-    active.length !== WORKSPACE_READ_ONLY_TOOL_NAMES.length ||
-    active.some((name, index) => name !== WORKSPACE_READ_ONLY_TOOL_NAMES[index])
+    active.length !== expected.length ||
+    active.some((name, index) => name !== expected[index])
   ) {
     throw new Error(
-      `workspace_read_only activation mismatch: expected ${WORKSPACE_READ_ONLY_TOOL_NAMES.join(", ")}; got ${active.join(", ")}`,
+      `${effectProfile} activation mismatch: expected ${expected.join(", ")}; got ${active.join(", ")}`,
     );
   }
+}
+
+/** Compatibility helper retained for existing workspace-read-only callers/tests. */
+export function activateWorkspaceReadOnlyTools(session: SessionToolRegistry): void {
+  activateEffectProfileTools(session, "workspace_read_only");
 }
 
 async function implementationTreeFiles(
@@ -203,7 +227,7 @@ export function validatedActivationReceipt(input: {
   if (!Array.isArray(activeToolNames) || !Array.isArray(rawBindings)) {
     return undefined;
   }
-  const expectedActive = input.effectProfile ? [...WORKSPACE_READ_ONLY_TOOL_NAMES] : [];
+  const expectedActive = input.effectProfile ? [...effectProfileToolNames(input.effectProfile)] : [];
   if (
     activeToolNames.length !== expectedActive.length ||
     activeToolNames.some((name, index) => name !== expectedActive[index])
@@ -225,14 +249,14 @@ export function validatedActivationReceipt(input: {
     }
     toolBindings.push(binding as unknown as ActivationToolBinding);
   }
-  const expectedBindingNames = input.effectProfile ? ["request_input", "web_read", "web_search"] : [];
+  const expectedBindingNames = input.effectProfile ? effectProfileBindingNames(input.effectProfile) : [];
   if (
     toolBindings.length !== expectedBindingNames.length ||
     toolBindings.some((binding, index) => binding.tool_name !== expectedBindingNames[index])
   ) {
     return undefined;
   }
-  if (input.effectProfile) {
+  if (input.effectProfile === "workspace_read_only") {
     const [requestInput, webRead, webSearch] = toolBindings;
     if (
       requestInput.provider_id !== "subagent007-pi/request_input" ||
@@ -314,6 +338,24 @@ export function workspaceReadOnlyActivationReceipt(input: {
       bindings: toolBindings,
     }),
     skill_binding: input.skillBinding,
+  };
+}
+
+export function skillCreatorAuthoringV1ActivationReceipt(skillBinding: ActivationSkillBinding | null): ActivationReceipt {
+  const activeToolNames = [...SKILL_CREATOR_AUTHORING_V1_TOOL_NAMES];
+  return {
+    schema_version: 1,
+    confirmed_before_prompt: true,
+    requested_effect_profile: "skill_creator_authoring_v1",
+    resolved_effect_profile: "skill_creator_authoring_v1",
+    active_tool_names: activeToolNames,
+    tool_bindings: [],
+    toolset_sha256: canonicalToolsetDigest({
+      profile: "skill_creator_authoring_v1",
+      activeToolNames,
+      bindings: [],
+    }),
+    skill_binding: skillBinding,
   };
 }
 

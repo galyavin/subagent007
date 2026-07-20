@@ -88,6 +88,24 @@ test("requested skill resolution fails fast for unknown or ambiguous skills", as
   );
 });
 
+test("platform-owned .system skills resolve by bare name and remain ambiguous on configured collisions", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-platform-system-skills-"));
+  const cwd = path.join(tmp, "project");
+  const agentDir = path.join(tmp, "agent");
+  const skillsRoot = path.join(tmp, "skills");
+  const systemSkillPath = await writeSkill(path.join(skillsRoot, ".system"), "skill-creator", "skill-creator");
+  await fs.mkdir(cwd, { recursive: true });
+
+  const resolved = resolveRequestedSkill("skill-creator", { cwd, agentDir, lookupPaths: [skillsRoot] });
+  assert.equal(resolved.filePath, systemSkillPath);
+
+  await writeSkill(skillsRoot, "duplicate", "skill-creator");
+  assert.throws(
+    () => resolveRequestedSkill("skill-creator", { cwd, agentDir, lookupPaths: [skillsRoot] }),
+    /ambiguous/,
+  );
+});
+
 test("workspace_read_only resource loading excludes ambient extensions and binds only explicit providers", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-skill-resources-extensions-"));
   const cwd = path.join(tmp, "project");
