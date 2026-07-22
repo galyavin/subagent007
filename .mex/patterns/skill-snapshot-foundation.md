@@ -1,7 +1,7 @@
 ---
 name: skill-snapshot-foundation
 description: Verification path for complete skill bundle and immutable snapshot contract changes.
-last_updated: 2026-07-19
+last_updated: 2026-07-21
 ---
 
 # Skill Snapshot Foundation
@@ -11,5 +11,6 @@ last_updated: 2026-07-19
 3. Capture current source once, compare freshness, and materialize captured bytes. Revalidate the recorded snapshot and exact reference before returning receipts.
 4. Validate snapshot identity/reference in the parent before run registration and again at execution; Pi child repeats complete validation before `child_prompt_submitted`.
 5. Closing references is idempotent and identity-preserving. Both active and closed references block automatic reclamation and appear in explicit deletion impact.
-6. Test admitted root-file (including `license.txt`) and referenced-file/executable-bit drift, source swaps, missing/altered snapshots, future-source edits, concurrent versions, stable retry, close retry, exact deletion impact, all start surfaces, fresh/raw resume, descendant inheritance, and no child/prompt on rejection.
-7. Synchronize strict MCP schemas, durable/readiness capabilities, README receipt fields, observed tool inventory, and `.mex` memory. Build before runtime probes.
+6. A public retained-snapshot source resolver must derive the private store path from exact owner identity, validate committed reference/publication membership and complete immutable runtime bytes, and return only the existing owner-controlled content-addressed source identity. It accepts no caller-selected filesystem path and performs no copy, staging, lock, cache, or snapshot/reference mutation. Internal content-addressed bundle materialization remains publication-owned; the former caller-path rollback staging operation is retired. Consumers copy and revalidate resolved bytes under their own transaction. Never grow a generic export framework.
+7. Test admitted root-file (including `license.txt`) and referenced-file/executable-bit drift, source swaps, missing/altered snapshots, future-source edits, concurrent versions, stable retry, close retry, exact deletion impact, all start surfaces, fresh/raw resume, descendant inheritance, and no child/prompt on rejection.
+8. Synchronize strict MCP schemas, durable/readiness capabilities, README receipt fields, observed tool inventory, and `.mex` memory. Build before runtime probes.

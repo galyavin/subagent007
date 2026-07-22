@@ -1,7 +1,7 @@
 ---
 name: runtime-artifact-ownership
 description: Prevent disk and build garbage by assigning every runtime artifact an observable owner, successor, and cleanup condition.
-last_updated: 2026-07-12
+last_updated: 2026-07-19
 ---
 
 # Runtime Artifact Ownership
@@ -23,4 +23,4 @@ Use this pattern when adding or changing child output, temporary directories, so
 2. Prove structured projection cannot expose private/raw prefixes.
 3. Prove low-disk preflight rejects before child launch and active low-disk detection settles one run without crashing the server.
 4. Prove cleanup preserves live-owned and unowned legacy paths while removing stale owned paths.
-5. Prove runtime entrypoints remain present during build publication and readiness resolves through the published release.
+5. Prove runtime entrypoints remain present during build publication, readiness exposes the lease-owned loaded release and `dist/current` release identities, and an older loaded release is blocked rather than accepted from stable launcher bytes.

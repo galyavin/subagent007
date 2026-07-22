@@ -30,6 +30,7 @@ import {
   cancelRunTask,
   getRunTask,
   lineageForRecursiveDelegate,
+  waitForObservedSkillSnapshotActivation,
   resolveRunOperationContext,
   runSubagentSessionTaskAndWait,
   scheduleRunTask,
@@ -59,10 +60,12 @@ import {
   MAX_SKILL_RUNTIME_BUNDLE_RESOLUTION_ENTRIES,
   planSkillSnapshotDeletionRequest,
   publishSkillSnapshotsRequest,
+  resolveRetainedSkillSnapshotSourceRequest,
   resolveSkillRuntimeBundlesRequest,
 } from "./skillSnapshot.js";
 import { validateSkillRuntimeBundleRequest } from "./skillRuntimeBundleValidation.js";
 import { SERVER_VERSION } from "./runtimeMetadata.js";
+import { MAX_ALLOWED_OUTPUT_PATHS } from "./authoringEffectScope.js";
 import {
   type FailureReasonCode,
   EFFECT_PROFILES,
@@ -78,7 +81,7 @@ import {
   ValidationError,
 } from "./types.js";
 
-acquireBuildReleaseLease(import.meta.url);
+const loadedBuildRelease = acquireBuildReleaseLease(import.meta.url);
 void reconcileOwnedTemporaryArtifacts().catch((error: unknown) => {
   console.error(
     `[subagent007 temp reconciliation warning] ${error instanceof Error ? error.message : String(error)}`,
@@ -364,6 +367,11 @@ const constrainedRunInputSchema = {
   recursive_delegation: z.enum(RECURSIVE_DELEGATIONS).optional().describe(
     "Explicit recursive delegate authorization. Omission resolves disabled; raw resume requires this field on every turn.",
   ),
+  allowed_output_paths: z
+    .array(z.string().min(1))
+    .max(MAX_ALLOWED_OUTPUT_PATHS)
+    .optional()
+    .describe("Exact canonical new file paths writable by task_root_authoring_v1; every listed file is required at terminal closure."),
 };
 
 const runInputSchema = z.strictObject({
@@ -420,7 +428,16 @@ function rawSessionIdSchemaError(
   );
 }
 
-const startRunInputSchema = z.strictObject(timedRunInputSchema, {
+const startRunInputSchema = z.strictObject({
+  ...timedRunInputSchema,
+  client_start_id: z
+    .string()
+    .min(1)
+    .max(200)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/)
+    .optional()
+    .describe("Optional caller idempotency key. Exact replay returns the same run; reuse with a changed validated request is rejected."),
+}, {
   error: (issue) => rawSessionIdSchemaError("start_run", issue),
 });
 
@@ -515,10 +532,27 @@ const publishSkillSnapshotsInputSchema = z.strictObject({
   bindings: z.array(z.strictObject({
     skill_name: z.string().regex(SKILL_NAME_PATTERN, "skill_name must be a canonical bare skill name"),
     expected_bundle_sha256: z.string().regex(LOWERCASE_SHA256_PATTERN, "expected_bundle_sha256 must be lowercase SHA-256"),
+    source_root: z.string().min(1).optional().describe(
+      "Optional exact real runtime-bundle root under cwd; omission preserves canonical catalogue resolution.",
+    ),
   })).min(1).max(MAX_SKILL_RUNTIME_BUNDLE_RESOLUTION_ENTRIES).refine(
     (bindings) => bindings.every((binding, index) => index === 0 || bindings[index - 1]!.skill_name < binding.skill_name),
     "bindings must be unique and strictly ASCII-sorted by skill_name",
   ),
+});
+
+const resolveRetainedSkillSnapshotSourceInputSchema = z.strictObject({
+  contract_version: z.literal(1),
+  skill_name: z.string().regex(SKILL_NAME_PATTERN, "skill_name must be a canonical bare skill name"),
+  snapshot_binding: z.strictObject({
+    contract_version: z.literal(1),
+    snapshot_id: z.string().regex(LOWERCASE_SHA256_PATTERN),
+    metadata_sha256: z.string().regex(LOWERCASE_SHA256_PATTERN),
+    publication_receipt_sha256: z.string().regex(LOWERCASE_SHA256_PATTERN),
+    reference_id: z.string().regex(LOWERCASE_SHA256_PATTERN),
+    project_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/),
+    publication_id: z.string().min(1).max(200).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/),
+  }),
 });
 
 const planSkillSnapshotDeletionInputSchema = z.strictObject({
@@ -666,6 +700,16 @@ server.registerTool(
 );
 
 server.registerTool(
+  "resolve_retained_skill_snapshot_source",
+  {
+    title: "Resolve Retained Skill Snapshot Source",
+    description: "Resolve one exact active or closed retained immutable snapshot to its owner-controlled content-addressed read-only runtime source. This point-in-time operation validates exact bytes and publication identity without copying, staging, locking, or writing state; consumers must copy and revalidate within their own transaction.",
+    inputSchema: resolveRetainedSkillSnapshotSourceInputSchema,
+  },
+  async (request) => jsonObjectToolResult(await resolveRetainedSkillSnapshotSourceRequest(request)),
+);
+
+server.registerTool(
   "plan_skill_snapshot_deletion",
   {
     title: "Plan Skill Snapshot Deletion",
@@ -719,7 +763,7 @@ server.registerTool(
         .describe("How strictly to gate git source state. Defaults to require_clean."),
     },
   },
-  async (request) => jsonObjectToolResult(await runtimeReadinessSnapshot(request)),
+  async (request) => jsonObjectToolResult(await runtimeReadinessSnapshot(request, { loadedBuildRelease })),
 );
 
 server.registerTool(
@@ -743,9 +787,21 @@ server.registerTool(
       "Create one durable Pi-backed run and return immediately; top-level work may report active_phase queued until local child capacity is available. Omit timeout_ms for long work unless the child must be stopped by a hard post-launch deadline.",
     inputSchema: startRunInputSchema,
   },
-  withChildEntrypointPreflight("start_run", async (request, extra) =>
-    startRunTask(request, taskHeartbeatOptions(extra)),
-  ),
+  withChildEntrypointPreflight("start_run", async (request, extra) => {
+    const view = await startRunTask(request, taskHeartbeatOptions(extra));
+    if (
+      request.client_start_id &&
+      process.env.SUBAGENT007_TEST_EXIT_AFTER_CLIENT_START_ADMISSION === request.client_start_id
+    ) {
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const current = await getRunTask(view.run_id);
+        if (current.child_started && current.recent_events?.some((event) => event.event === "child_spawned")) process.exit(86);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      process.exit(87);
+    }
+    return view;
+  }),
 );
 
 server.registerTool(
@@ -856,7 +912,13 @@ await startRecursiveControlServer(async ({ caller, params }) => {
     throw new ValidationError("recursive caller parent is not an active owned run", "recursive_control_invalid");
   }
   const inheritedSnapshotBinding = parent.skill_snapshot_binding;
-  const inheritedSkillName = parent.skill_snapshot_activation_receipt?.skill_name;
+  let inheritedSkillName = parent.skill_snapshot_activation_receipt?.skill_name;
+  if (inheritedSnapshotBinding && !inheritedSkillName) {
+    // The child can open the recursive-control socket immediately after it
+    // writes its activation receipt.  Wait for that already-owned observation
+    // boundary rather than treating cross-channel delivery order as failure.
+    inheritedSkillName = (await waitForObservedSkillSnapshotActivation(caller.parent_run_id))?.skill_name;
+  }
   if (inheritedSnapshotBinding && !inheritedSkillName) {
     throw new ValidationError(
       "snapshot-bound recursive delegation requires a confirmed ancestor snapshot receipt",

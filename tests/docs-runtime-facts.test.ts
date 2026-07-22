@@ -135,6 +135,16 @@ test("docs runtime fact guard ignores env-shaped sentinel strings", async () => 
   assert.equal(result.stderr, "");
 });
 
+test("docs runtime fact guard ignores explicitly test-only environment hooks", async () => {
+  const root = await createFixture({
+    readmeEnvKeys: [],
+    sourceText: "const value = process.env.SUBAGENT007_TEST_DECISIVE_CRASH; void value;\n",
+  });
+  const result = await runDocsCheck(["--root", root]);
+  assert.equal(result.code, 0);
+  assert.equal(result.stderr, "");
+});
+
 test("docs runtime fact guard fails when source env key is missing from README", async () => {
   const root = await createFixture({
     readmeEnvKeys: [],
@@ -171,4 +181,34 @@ test("docs runtime fact guard fails when README publishes internal model calibra
   assert.equal(result.code, 1);
   assert.match(result.stderr, /README publishes internal model calibration values/);
   assert.match(result.stderr, /openai-codex\/gpt-5\.6-luna/);
+});
+
+test("docs runtime fact guard rejects retired public snapshot contract terms", async () => {
+  const root = await createFixture({
+    readmeEnvKeys: [],
+    sourceText: "\n",
+  });
+  await fs.appendFile(
+    path.join(root, "README.md"),
+    "\nmaterialize_retained_skill_snapshot\n",
+    "utf8",
+  );
+  const result = await runDocsCheck(["--root", root]);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /Current documentation names retired public snapshot terms/);
+  assert.match(result.stderr, /materialize_retained_skill_snapshot/);
+});
+
+test("docs runtime fact guard requires current authoring effect-scope contract facts", async () => {
+  const root = await createFixture({
+    readmeEnvKeys: [],
+    sourceText: "\n",
+  });
+  await fs.writeFile(path.join(root, "src", "authoringEffectScope.ts"), "export {};\n", "utf8");
+  await fs.writeFile(path.join(root, "src", "durableRunContract.ts"), "export {};\n", "utf8");
+  const result = await runDocsCheck(["--root", root]);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /README is missing current authoring effect-scope contract facts/);
+  assert.match(result.stderr, /allowed_output_paths/);
+  assert.match(result.stderr, /authoring_effect_scope_binding/);
 });

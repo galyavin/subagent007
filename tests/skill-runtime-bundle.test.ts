@@ -278,6 +278,90 @@ test("snapshot publication freezes exact bytes and later source edits create onl
   });
 });
 
+test("snapshot publication admits one exact staged root through the existing immutable flow", async () => {
+  await withTempDir(async (tmp) => {
+    const realTmp = await fs.realpath(tmp);
+    const cwd = path.join(realTmp, "cwd");
+    const root = path.join(cwd, ".work", "candidate", "alpha");
+    const snapshotsRoot = path.join(tmp, "snapshots");
+    await fs.mkdir(root, { recursive: true });
+    await writeBundle(root);
+    const digest = (await validateSkillRuntimeBundle(root)).bundle_sha256;
+
+    const result = await publishSkillSnapshotsRequest({
+      contract_version: 1,
+      cwd,
+      project_reference: {
+        project_id: "project-exact-root",
+        publication_id: "publication-exact-root",
+        lifecycle: "active",
+      },
+      bindings: [{
+        skill_name: "alpha",
+        expected_bundle_sha256: digest,
+        source_root: root,
+      }],
+    }, { lookupPaths: [], agentDir: path.join(tmp, "agent"), snapshotsRoot });
+
+    assert.equal(result.kind, "skill_snapshots_published");
+    if (result.kind !== "skill_snapshots_published") throw new Error("expected publication");
+    assert.equal(result.bindings[0]?.bundle_sha256, digest);
+    assert.equal(result.bindings[0]?.source_identity.source_root_path, root);
+    assert.equal(result.bindings[0]?.snapshot_identity.snapshot_id, digest);
+    assert.equal(result.bindings[0]?.publication_receipt.project_reference.project_id, "project-exact-root");
+    await validateRecordedSkillSnapshot(result.bindings[0]!.snapshot_identity, { snapshotsRoot });
+  });
+});
+
+test("snapshot publication rejects staged-root symlink, escape, name drift, and digest drift before writes", async () => {
+  await withTempDir(async (tmp) => {
+    const realTmp = await fs.realpath(tmp);
+    const cwd = path.join(realTmp, "cwd");
+    const inside = path.join(cwd, "candidate");
+    const outside = path.join(realTmp, "outside");
+    const symlink = path.join(cwd, "candidate-link");
+    await fs.mkdir(cwd);
+    await fs.mkdir(inside);
+    await fs.mkdir(outside);
+    await writeBundle(inside);
+    await writeBundle(outside);
+    await fs.symlink(inside, symlink);
+    const digest = (await validateSkillRuntimeBundle(inside)).bundle_sha256;
+    const cases = [
+      { source_root: symlink, skill_name: "alpha", digest, reason: "runtime_bundle_unsafe_path" },
+      { source_root: outside, skill_name: "alpha", digest: (await validateSkillRuntimeBundle(outside)).bundle_sha256, reason: "runtime_bundle_unsafe_path" },
+      { source_root: inside, skill_name: "beta", digest, reason: "skill_runtime_bundle_name_mismatch" },
+      { source_root: inside, skill_name: "alpha", digest: "0".repeat(64), reason: "runtime_bundle_content_mismatch" },
+    ] as const;
+
+    try {
+      for (const [index, item] of cases.entries()) {
+        const snapshotsRoot = path.join(tmp, `snapshots-${index}`);
+        const result = await publishSkillSnapshotsRequest({
+          contract_version: 1,
+          cwd,
+          project_reference: {
+            project_id: `project-exact-root-reject-${index}`,
+            publication_id: `publication-exact-root-reject-${index}`,
+            lifecycle: "active",
+          },
+          bindings: [{
+            skill_name: item.skill_name,
+            expected_bundle_sha256: item.digest,
+            source_root: item.source_root,
+          }],
+        }, { lookupPaths: [], agentDir: path.join(tmp, "agent"), snapshotsRoot });
+        assert.equal(result.kind, "skill_snapshot_publication_rejected");
+        if (result.kind !== "skill_snapshot_publication_rejected") throw new Error("expected rejection");
+        assert.equal(result.reason_code, item.reason);
+        await assert.rejects(fs.access(path.join(snapshotsRoot, "bundles")), /ENOENT/);
+      }
+    } finally {
+      await fs.unlink(symlink).catch(() => undefined);
+    }
+  });
+});
+
 test("pending publication claim resumes after source loss without splitting publication identity", async () => {
   await withTempDir(async (tmp) => {
     const cwd = path.join(tmp, "cwd");

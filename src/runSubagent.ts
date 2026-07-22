@@ -32,8 +32,15 @@ import {
   verifySkillFileBinding,
 } from "./skillVerification.js";
 import type { FailureReasonCode, RunStopReason } from "./types.js";
+import {
+  assertResolvedBoundedControllerPython,
+  resolveBoundedControllerPython,
+  type ResolvedBoundedControllerPython,
+} from "./boundedController.js";
 import type {
   ActivationReceipt,
+  ActivationToolBinding,
+  AuthoringEffectScopeBinding,
   RecursiveDelegationReceipt,
   ActivationSkillBinding,
   OutputMode,
@@ -51,8 +58,23 @@ import {
   recursiveControlConfigForChild,
   type RecursiveControlChildConfig,
 } from "./recursiveControl.js";
-import { validatedActivationReceipt } from "./toolProfile.js";
-import { resolveSkillSnapshotLaunchBinding, SkillSnapshotLaunchError } from "./skillSnapshot.js";
+import {
+  boundedControllerActivationBindings,
+  isBoundedEffectProfile,
+  resolveWorkspaceReadOnlyWebProvider,
+  validatedActivationReceipt,
+} from "./toolProfile.js";
+import {
+  resolveSkillSnapshotLaunchBinding,
+  SkillSnapshotLaunchError,
+  validatedSkillSnapshotActivationReceipt,
+} from "./skillSnapshot.js";
+import {
+  assertAuthoringEffectScopeTerminal,
+  captureAuthoringEffectScope,
+  isEffectScopedAuthoringProfile,
+  type CapturedAuthoringEffectScope,
+} from "./authoringEffectScope.js";
 
 const DEFAULT_RUN_SUBAGENT_TIMEOUT_MS = 110_000;
 export const RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT =
@@ -105,8 +127,11 @@ interface PiChildRequestFile {
   effectProfile?: ResolvedRunSubagentRequest["effectProfile"];
   expectedSkillSha256?: string;
   skillBinding?: ActivationSkillBinding;
+  expectedActivationToolBindings?: ActivationToolBinding[];
+  controllerPython?: ResolvedBoundedControllerPython;
   skillSnapshotBinding?: SkillSnapshotLaunchBinding;
   expectedSkillSnapshotActivationReceipt?: SkillSnapshotActivationReceipt;
+  expectedEffectScopeBinding?: AuthoringEffectScopeBinding;
 }
 
 export interface ChildInputResponseAccepted {
@@ -514,22 +539,86 @@ export async function assertExpectedSkillBinding(
   }
 }
 
+export async function captureAuthoringEffectScopeForRequest(
+  resolved: ResolvedRunSubagentRequest,
+): Promise<CapturedAuthoringEffectScope | null> {
+  if (!isEffectScopedAuthoringProfile(resolved.effectProfile)) return null;
+  return captureAuthoringEffectScope({
+    taskRoot: resolved.cwd,
+    effectProfile: resolved.effectProfile,
+    recursiveDelegation: resolved.recursiveDelegation,
+    ...(resolved.effectProfile === "task_root_authoring_v1"
+      ? { allowedOutputPaths: resolved.allowedOutputPaths ?? [] }
+      : {}),
+  });
+}
+
+export interface BoundedActivationExpectation {
+  effectProfile: Extract<NonNullable<ResolvedRunSubagentRequest["effectProfile"]>, "researcher_bounded_v1" | "assumption_audit_bounded_v1">;
+  toolBindings: ActivationToolBinding[];
+  controllerPython: ResolvedBoundedControllerPython;
+}
+
+export async function expectedBoundedActivationToolBindings(input: {
+  resolved: Pick<ResolvedRunSubagentRequest, "effectProfile" | "skill" | "skillSnapshotBinding">;
+  snapshotActivation: Awaited<ReturnType<typeof resolveSkillSnapshotLaunchBinding>> | null;
+  childEntrypoint: string;
+}): Promise<BoundedActivationExpectation | undefined> {
+  if (!isBoundedEffectProfile(input.resolved.effectProfile)) {
+    return undefined;
+  }
+  if (!input.resolved.skill || !input.snapshotActivation) {
+    throw new ValidationError(
+      `${input.resolved.effectProfile} requires an exact canonical skill snapshot binding`,
+      "invalid_skill_snapshot_binding",
+    );
+  }
+  try {
+    const [webProvider, controllerPython] = await Promise.all([
+      resolveWorkspaceReadOnlyWebProvider(resolvePiAgentDir()),
+      resolveBoundedControllerPython(input.resolved.effectProfile),
+    ]);
+    return {
+      effectProfile: input.resolved.effectProfile,
+      toolBindings: await boundedControllerActivationBindings({
+        effectProfile: input.resolved.effectProfile,
+        skillName: input.resolved.skill,
+        snapshotSkillFilePath: input.snapshotActivation.receipt.resolved_skill_path,
+        childEntrypoint: input.childEntrypoint,
+        webProvider,
+        controllerPython,
+      }),
+      controllerPython,
+    };
+  } catch (error) {
+    throw new ValidationError(
+      `bounded effect profile activation could not bind its provider/controller: ${error instanceof Error ? error.message : String(error)}`,
+      "effect_profile_activation_failed",
+    );
+  }
+}
+
 function activationReceiptFromLine(input: {
   line: string;
   resolved: ResolvedRunSubagentRequest;
   skillBinding: ActivationSkillBinding | null;
+  expectedToolBindings?: readonly ActivationToolBinding[];
+  expectedEffectScopeBinding?: AuthoringEffectScopeBinding;
 }): ActivationReceipt | undefined {
   try {
     const event = JSON.parse(input.line) as { type?: unknown; receipt?: unknown };
     if (event.type !== "subagent007.activation_confirmed") {
       return undefined;
     }
-    return validatedActivationReceipt({
+    const validated = validatedActivationReceipt({
       value: event.receipt,
       effectProfile: input.resolved.effectProfile,
       skillBinding: input.skillBinding,
       expectedSkillSha256: input.resolved.expectedSkillSha256,
+      expectedToolBindings: input.expectedToolBindings,
+      expectedEffectScopeBinding: input.expectedEffectScopeBinding,
     });
+    return validated;
   } catch {
     return undefined;
   }
@@ -538,15 +627,42 @@ function activationReceiptFromLine(input: {
 function skillSnapshotActivationReceiptFromLine(
   line: string,
   expected: SkillSnapshotActivationReceipt | null,
+  binding: SkillSnapshotLaunchBinding | undefined,
 ): SkillSnapshotActivationReceipt | undefined {
-  if (!expected) return undefined;
+  if (!expected || !binding) return undefined;
   try {
     const event = JSON.parse(line) as { type?: unknown; receipt?: unknown };
     if (event.type !== "subagent007.skill_snapshot_activation_confirmed") return undefined;
-    return JSON.stringify(event.receipt) === JSON.stringify(expected) ? expected : undefined;
+    const validated = validatedSkillSnapshotActivationReceipt({ value: event.receipt, binding });
+    return validated && JSON.stringify(validated) === JSON.stringify(expected) ? expected : undefined;
   } catch {
     return undefined;
   }
+}
+
+export function validatedRecursiveDelegationReceipt(input: {
+  value: unknown;
+  requestedRecursiveDelegation: ResolvedRunSubagentRequest["requestedRecursiveDelegation"];
+  resolvedRecursiveDelegation: ResolvedRunSubagentRequest["recursiveDelegation"];
+}): RecursiveDelegationReceipt | undefined {
+  const receipt = input.value !== null && typeof input.value === "object" && !Array.isArray(input.value)
+    ? input.value as Record<string, unknown>
+    : undefined;
+  if (!receipt || Object.keys(receipt).sort().join("\0") !== [
+    "confirmed_before_prompt",
+    "delegate_tool_active",
+    "requested_recursive_delegation",
+    "resolved_recursive_delegation",
+    "schema_version",
+  ].sort().join("\0")) return undefined;
+  const expectedActive = input.resolvedRecursiveDelegation === "enabled";
+  if (
+    receipt.schema_version !== 1 || receipt.confirmed_before_prompt !== true ||
+    receipt.requested_recursive_delegation !== input.requestedRecursiveDelegation ||
+    receipt.resolved_recursive_delegation !== input.resolvedRecursiveDelegation ||
+    receipt.delegate_tool_active !== expectedActive
+  ) return undefined;
+  return receipt as unknown as RecursiveDelegationReceipt;
 }
 
 function recursiveDelegationReceiptFromLine(
@@ -554,24 +670,13 @@ function recursiveDelegationReceiptFromLine(
   resolved: ResolvedRunSubagentRequest,
 ): RecursiveDelegationReceipt | undefined {
   try {
-    const event = JSON.parse(line) as { type?: unknown; receipt?: Partial<RecursiveDelegationReceipt> };
-    const receipt = event.receipt;
-    if (event.type !== "subagent007.recursive_delegation_confirmed" || !receipt) return undefined;
-    if (Object.keys(receipt).sort().join("\0") !== [
-      "confirmed_before_prompt",
-      "delegate_tool_active",
-      "requested_recursive_delegation",
-      "resolved_recursive_delegation",
-      "schema_version",
-    ].sort().join("\0")) return undefined;
-    const expectedActive = resolved.recursiveDelegation === "enabled";
-    if (
-      receipt.schema_version !== 1 || receipt.confirmed_before_prompt !== true ||
-      receipt.requested_recursive_delegation !== (resolved.requestedRecursiveDelegation ?? null) ||
-      receipt.resolved_recursive_delegation !== resolved.recursiveDelegation ||
-      receipt.delegate_tool_active !== expectedActive
-    ) return undefined;
-    return receipt as RecursiveDelegationReceipt;
+    const event = JSON.parse(line) as { type?: unknown; receipt?: unknown };
+    if (event.type !== "subagent007.recursive_delegation_confirmed") return undefined;
+    return validatedRecursiveDelegationReceipt({
+      value: event.receipt,
+      requestedRecursiveDelegation: resolved.requestedRecursiveDelegation,
+      resolvedRecursiveDelegation: resolved.recursiveDelegation,
+    });
   } catch { return undefined; }
 }
 
@@ -598,6 +703,22 @@ export async function runSubagentCore(
     onActivationConfirmed?: (receipt: ActivationReceipt) => void | Promise<void>;
     onSkillSnapshotActivationConfirmed?: (receipt: SkillSnapshotActivationReceipt) => void | Promise<void>;
     onRecursiveDelegationConfirmed?: (receipt: RecursiveDelegationReceipt) => void | Promise<void>;
+    /**
+     * The durable-run owner receives this once, after all mutable preflights
+     * and immediately before the child request is written.  It persists the
+     * exact expectations that later receipts must satisfy.
+     */
+    onOwnerLaunchObservation?: (observation: {
+      authoringEffectScope?: CapturedAuthoringEffectScope;
+      requestedEffectProfile?: ResolvedRunSubagentRequest["effectProfile"];
+      expectedSkillSha256?: string;
+      skillBinding: ActivationSkillBinding | null;
+      expectedToolBindings: readonly ActivationToolBinding[];
+      skillSnapshotBinding?: SkillSnapshotLaunchBinding;
+      skillSnapshotActivationReceipt?: SkillSnapshotActivationReceipt;
+      requestedRecursiveDelegation: ResolvedRunSubagentRequest["requestedRecursiveDelegation"];
+      resolvedRecursiveDelegation: ResolvedRunSubagentRequest["recursiveDelegation"];
+    }) => void | Promise<void>;
   } = {},
 ): Promise<RunSubagentResult> {
   if (!options.allowTimeout && request.timeout_ms !== undefined) {
@@ -637,6 +758,12 @@ export async function runSubagentCore(
   let transcript: StreamingRunTranscript | undefined;
   try {
     const childEntrypoint = await assertPiChildEntrypointAvailable();
+    const boundedActivation = await expectedBoundedActivationToolBindings({
+      resolved,
+      snapshotActivation,
+      childEntrypoint,
+    });
+    const expectedActivationToolBindings = boundedActivation?.toolBindings;
     const diskReserve = await assertDiskReserveAvailable(options.runsDir);
     const timeoutBudget = computeTimeoutBudget(
       resolved.timeoutMs ?? (options.allowTimeout ? undefined : defaultRunSubagentTimeoutMs()),
@@ -651,6 +778,21 @@ export async function runSubagentCore(
       ownerId: runId,
     });
     await options.onTranscriptStaged?.(transcript.stagingPath);
+    // Capture only at the launch seam.  A queued run therefore binds the
+    // tree that exists when it actually receives capacity, rather than an
+    // earlier stale pre-admission observation.
+    const authoringEffectScope = await captureAuthoringEffectScopeForRequest(resolved);
+    await options.onOwnerLaunchObservation?.({
+      ...(authoringEffectScope ? { authoringEffectScope } : {}),
+      ...(resolved.effectProfile ? { requestedEffectProfile: resolved.effectProfile } : {}),
+      ...(resolved.expectedSkillSha256 ? { expectedSkillSha256: resolved.expectedSkillSha256 } : {}),
+      skillBinding,
+      expectedToolBindings: expectedActivationToolBindings ?? [],
+      ...(resolved.skillSnapshotBinding ? { skillSnapshotBinding: resolved.skillSnapshotBinding } : {}),
+      ...(snapshotActivation ? { skillSnapshotActivationReceipt: snapshotActivation.receipt } : {}),
+      requestedRecursiveDelegation: resolved.requestedRecursiveDelegation,
+      resolvedRecursiveDelegation: resolved.recursiveDelegation,
+    });
     const childSkillFilePath = resolved.skill
       ? snapshotActivation?.receipt.resolved_skill_path ?? skillAudit.resolvedSkillPath ?? skillFilePath
       : undefined;
@@ -690,12 +832,29 @@ export async function runSubagentCore(
       ...((resolved.effectProfile || resolved.expectedSkillSha256) && skillBinding
         ? { skillBinding }
         : {}),
+      ...(expectedActivationToolBindings
+        ? { expectedActivationToolBindings: [...expectedActivationToolBindings] }
+        : {}),
+      ...(boundedActivation ? { controllerPython: boundedActivation.controllerPython } : {}),
       ...(resolved.skillSnapshotBinding ? { skillSnapshotBinding: resolved.skillSnapshotBinding } : {}),
       ...(snapshotActivation
         ? { expectedSkillSnapshotActivationReceipt: snapshotActivation.receipt }
         : {}),
+      ...(authoringEffectScope
+        ? { expectedEffectScopeBinding: authoringEffectScope.binding }
+        : {}),
     };
     childRequest = await writeChildRequestFile(childPayload);
+    if (boundedActivation) {
+      try {
+        await assertResolvedBoundedControllerPython(boundedActivation.controllerPython, boundedActivation.effectProfile);
+      } catch (error) {
+        throw new ValidationError(
+          `bounded controller interpreter changed before child launch: ${error instanceof Error ? error.message : String(error)}`,
+          "effect_profile_activation_failed",
+        );
+      }
+    }
     let parsedSessionId: string | null = null;
     let childFailure: ChildFailureMetadata = {};
     let activationReceipt: ActivationReceipt | undefined;
@@ -720,7 +879,13 @@ export async function runSubagentCore(
       onOutputLine: async (line) => {
         await transcript?.appendProcessLine(line);
         parsedSessionId ??= extractSubagentSessionId(line);
-        const lineActivationReceipt = activationReceiptFromLine({ line, resolved, skillBinding });
+        const lineActivationReceipt = activationReceiptFromLine({
+          line,
+          resolved,
+          skillBinding,
+          expectedToolBindings: expectedActivationToolBindings,
+          expectedEffectScopeBinding: authoringEffectScope?.binding,
+        });
         if (!activationReceipt && lineActivationReceipt) {
           activationReceipt = lineActivationReceipt;
           await options.onActivationConfirmed?.(lineActivationReceipt);
@@ -728,6 +893,7 @@ export async function runSubagentCore(
         const lineSnapshotReceipt = skillSnapshotActivationReceiptFromLine(
           line,
           snapshotActivation?.receipt ?? null,
+          resolved.skillSnapshotBinding,
         );
         if (!skillSnapshotActivationReceipt && lineSnapshotReceipt) {
           skillSnapshotActivationReceipt = lineSnapshotReceipt;
@@ -753,6 +919,25 @@ export async function runSubagentCore(
         }
       },
     });
+    let terminalEffectScopeError: ValidationError | undefined;
+    if (authoringEffectScope) {
+      try {
+        await assertAuthoringEffectScopeTerminal(authoringEffectScope);
+        if (snapshotActivation) {
+          const terminalSnapshot = await assertSkillSnapshotBinding(resolved);
+          if (!terminalSnapshot || JSON.stringify(terminalSnapshot.receipt) !== JSON.stringify(snapshotActivation.receipt)) {
+            throw new Error("immutable skill snapshot identity changed before terminalization");
+          }
+        }
+      } catch (error) {
+        terminalEffectScopeError = error instanceof ValidationError && error.reasonCode === "authoring_effect_scope_drift"
+          ? error
+          : new ValidationError(
+              `authoring effect scope terminal reinspection failed: ${error instanceof Error ? error.message : String(error)}`,
+              "authoring_effect_scope_drift",
+            );
+      }
+    }
     const finalMessage = await readFinalMessage(finalMessageTarget.outputLastMessagePath);
     const writtenOutputMode: OutputMode = finalMessage ? "final" : "transcript";
     const output = finalMessage
@@ -782,7 +967,7 @@ export async function runSubagentCore(
         : false;
     const missingFinalOutput = processSuccess && resolved.outputMode === "final" && !finalMessage;
     const success =
-      processSuccess && activationConfirmed && skillSnapshotActivationConfirmed && recursiveDelegationConfirmed && !missingFinalOutput && (sessionMode.kind !== "fresh" || sessionEstablished);
+      processSuccess && !terminalEffectScopeError && activationConfirmed && skillSnapshotActivationConfirmed && recursiveDelegationConfirmed && !missingFinalOutput && (sessionMode.kind !== "fresh" || sessionEstablished);
     const partialOutputAvailable = partialOutputAvailableForRun({
       timedOut: processResult.timedOut,
       resourceExhausted: processResult.resourceExhausted,
@@ -847,7 +1032,10 @@ export async function runSubagentCore(
       written_output_mode: writtenOutputMode,
       stop_reason: processResult.stopReason,
       stop_signal: processResult.stopSignal,
-      ...runErrorTaxonomy({
+      ...(terminalEffectScopeError ? {
+        error_class: "authoring_effect_scope_drift",
+        reason_code: "authoring_effect_scope_drift" as const,
+      } : runErrorTaxonomy({
         success,
         cancelled: processResult.cancelled,
         timedOut: processResult.timedOut,
@@ -870,7 +1058,7 @@ export async function runSubagentCore(
               : "skill_content_mismatch"
             : undefined
         ),
-      }),
+      })),
       ...(childFailure.usageLimitMetadata ?? {}),
       ...(timeoutRecoveryHint ? { timeout_recovery_hint: timeoutRecoveryHint } : {}),
       session_id: sessionId,

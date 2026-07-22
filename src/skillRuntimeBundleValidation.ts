@@ -18,7 +18,7 @@ export interface SkillRuntimeBundleValidationRequest {
   expected_skill_name: string;
 }
 
-function declaredSkillName(skillBytes: Buffer): string {
+export function declaredSkillName(skillBytes: Buffer): string {
   const text = new TextDecoder("utf-8", { fatal: true }).decode(skillBytes);
   if (!text.startsWith("---\n")) throw new Error("SKILL.md requires YAML frontmatter");
   const end = text.indexOf("\n---\n", 4);

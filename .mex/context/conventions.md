@@ -11,7 +11,7 @@ triggers:
 edges:
   - target: context/architecture.md
     condition: when a convention depends on understanding the system structure
-last_updated: 2026-07-19
+last_updated: 2026-07-21
 ---
 
 # Conventions
@@ -49,7 +49,7 @@ last_updated: 2026-07-19
 - When changing child execution, verify timeout/cancel/disk-reserve/parent-exit cleanup because fake child descendants can otherwise outlive the test run or exhaust host storage.
 - Compatibility aliases such as `list_allowed_models`, legacy `skill`, and legacy `tool_profile` are intentional unless a migration explicitly removes them.
 - Legacy `tool_profile` is boundary-only compatibility: validate accepted values, but do not add `toolProfile`, `resolved_tool_profile`, or failure-log profile fields downstream.
-- New effect ceilings use a separate `effect_profile`, must filter Pi tools at construction before prompt, must disable ambient extension loading separately, and must project only child receipts that the parent structurally validates. Filesystem-authoring ceilings must also guard every model-dispatched path against lexical and resolved escapes: writes stay at the exact run cwd, while an explicit snapshot binding may add only its validated complete runtime-bundle root to read tools. Never substitute an ambient shell profile for a controller-owned capability.
+- New effect ceilings use a separate `effect_profile`, must filter Pi tools at construction before prompt, must disable ambient extension loading separately, and must project only child receipts that the parent structurally validates. Filesystem-authoring ceilings bind the exact task-root identity and a bounded initial immutable-tree digest in receipt v2, reject sparse/multi-link inputs, guard every mutation-bearing direct/controller path, separately bound writable files, and reinspect after every settled child outcome. Neutral builders write only exact canonical new required outputs and admit no extras; bounded Researcher/AJ profiles require a fresh absent profile state root and mutate only that fixed subtree while preserving everything initially outside it. Snapshot reads remain separately bound. Never substitute an ambient shell profile for a controller-owned capability. Bounded controllers must still bind the parent-selected exact Python/script/import identity through `execFile`. State only the Pi dispatch/path/controller/terminal-reinspection ceiling; do not imply an OS sandbox. URLs are data only where the argument is not an owned path.
 - Skill content pins must attest the bytes Pi actually expands. Use a run-owned snapshot; do not certify a source-path hash while Pi can reread different bytes later.
 - Read-only verification operations that promise no operational state must return expected semantic failures directly and must not use child-entrypoint preflight, run/session registration, admission, temporary artifacts, or failure-logging wrappers.
 - `ValidationError.reasonCode` is the semantic authority for failure reason mapping. Do not infer public reason codes from English message text.
@@ -68,3 +68,4 @@ Before presenting code changes:
 - [ ] Operation-only semantic failures return `operation_rejected` instead of forcing callers to parse MCP error text.
 - [ ] Failure logs and public result metadata remain synchronized when reason codes or provider fields change.
 - [ ] Final-output behavior is asserted generically; do not add skill-specific branches for a missing final message.
+- [ ] Bounded controller tests cover exact tool order/bindings, preflight no-child failures, allowed/denied/path/symlink/URL/output/timeout seams, and snapshot/controller drift.

@@ -186,6 +186,20 @@ async function acquireSnapshotLock(root: string, snapshotId: string): Promise<()
   throw new Error(`skill snapshot ${snapshotId} is locked`);
 }
 
+export async function withSkillSnapshotLock<T>(
+  snapshotId: string,
+  operation: (root: string) => Promise<T>,
+  options: { snapshotsRoot?: string } = {},
+): Promise<T> {
+  const root = path.resolve(options.snapshotsRoot ?? defaultSkillSnapshotsRoot());
+  const release = await acquireSnapshotLock(root, snapshotId);
+  try {
+    return await operation(root);
+  } finally {
+    await release();
+  }
+}
+
 async function chmodSnapshotTree(root: string, relativeDirectory = "runtime"): Promise<void> {
   const absoluteDirectory = path.join(root, relativeDirectory);
   const entries = await fs.readdir(absoluteDirectory, { withFileTypes: true });

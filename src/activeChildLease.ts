@@ -10,6 +10,7 @@ const MAX_ACTIVE_CHILDREN_ENV = "SUBAGENT007_MAX_ACTIVE_CHILDREN";
 const ACTIVE_CHILDREN_DIR_ENV = "SUBAGENT007_ACTIVE_CHILDREN_DIR";
 const MAX_QUEUED_RUNS_ENV = "SUBAGENT007_MAX_QUEUED_RUNS";
 const QUEUED_RUNS_DIR_ENV = "SUBAGENT007_QUEUED_RUNS_DIR";
+const TEST_ACTIVE_LEASE_SCAN_DELAY_ENV = "SUBAGENT007_TEST_ACTIVE_LEASE_SCAN_DELAY_MS";
 export const DEFAULT_MAX_ACTIVE_CHILDREN = 24;
 export const DEFAULT_MAX_QUEUED_RUNS = 96;
 const LOCK_STALE_MS = 5_000;
@@ -141,6 +142,8 @@ async function listLeasePaths(dir: string): Promise<string[]> {
 }
 
 async function pruneStaleLeases(dir: string): Promise<Array<ActiveChildLeaseRecord | null>> {
+  const testDelayMs = safeIntegerFromEnv(TEST_ACTIVE_LEASE_SCAN_DELAY_ENV, 0, 0);
+  if (testDelayMs > 0) await sleep(testDelayMs);
   const active: Array<ActiveChildLeaseRecord | null> = [];
   for (const leasePath of await listLeasePaths(dir)) {
     const lease = await readLease(leasePath);

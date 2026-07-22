@@ -34,6 +34,7 @@ type RunSubagentMetadata = {
   success: boolean;
   exit_code: number | null;
   timed_out: boolean;
+  stop_reason?: "completed" | "failed" | "cancelled" | "timeout";
   requested_timeout_ms: number | null;
   resolved_timeout_ms: number | null;
   effective_timeout_ms: number | null;
@@ -58,7 +59,13 @@ type RunSubagentMetadata = {
   first_public_output_at?: string;
   no_public_output_elapsed_ms?: number;
   finished_at?: string;
-  recent_events?: Array<{ kind: string; event?: string; text: string; occurred_at: string }>;
+  recent_events?: Array<{
+    kind: string;
+    event?: string;
+    text: string;
+    occurred_at: string;
+    metadata?: Record<string, unknown>;
+  }>;
   last_public_output_excerpt?: string;
   requested_wait_ms?: number;
   effective_wait_ms?: number;
@@ -80,17 +87,29 @@ type RunSubagentMetadata = {
   queued_at?: string;
   child_started_at?: string;
   queue_wait_ms?: number;
-  requested_effect_profile?: "workspace_read_only" | "skill_creator_authoring_v1";
-  resolved_effect_profile?: "workspace_read_only" | "skill_creator_authoring_v1";
+  requested_effect_profile?: "workspace_read_only" | "task_root_authoring_v1" | "skill_creator_authoring_v1" | "researcher_bounded_v1" | "assumption_audit_bounded_v1";
+  resolved_effect_profile?: "workspace_read_only" | "task_root_authoring_v1" | "skill_creator_authoring_v1" | "researcher_bounded_v1" | "assumption_audit_bounded_v1";
   activation_receipt?: {
-    schema_version: 1;
+    schema_version: 1 | 2;
     confirmed_before_prompt: true;
-    requested_effect_profile: "workspace_read_only" | "skill_creator_authoring_v1" | null;
-    resolved_effect_profile: "workspace_read_only" | "skill_creator_authoring_v1" | null;
+    requested_effect_profile: "workspace_read_only" | "task_root_authoring_v1" | "skill_creator_authoring_v1" | "researcher_bounded_v1" | "assumption_audit_bounded_v1" | null;
+    resolved_effect_profile: "workspace_read_only" | "task_root_authoring_v1" | "skill_creator_authoring_v1" | "researcher_bounded_v1" | "assumption_audit_bounded_v1" | null;
     active_tool_names: string[];
     tool_bindings: Array<{ tool_name: string; provider_id: string; implementation_sha256: string }>;
     toolset_sha256: string | null;
     skill_binding: { name: string; path: string; content_sha256: string; expected_content_sha256: string | null } | null;
+    effect_scope_binding?: {
+      schema_version: 1;
+      effect_profile: "task_root_authoring_v1" | "researcher_bounded_v1" | "assumption_audit_bounded_v1";
+      task_root: string;
+      task_root_device: string;
+      task_root_inode: string;
+      recursive_delegation: "disabled";
+      immutable_tree_sha256: string;
+      writable_scope: { kind: "exact_output_files" | "fixed_state_subtree"; paths: string[] };
+      terminal_reinspection_required: true;
+      claim_ceiling: string;
+    };
   };
   kind?: string;
   retry_guidance?: string;
@@ -102,6 +121,13 @@ type RunSubagentMetadata = {
   recursion_depth?: number;
   child_run_ids?: string[];
 };
+
+function persistedDurableRunView(value: unknown): RunSubagentMetadata {
+  if (value && typeof value === "object" && "public_view" in value) {
+    return (value as { public_view: RunSubagentMetadata }).public_view;
+  }
+  return value as RunSubagentMetadata;
+}
 
 const FORBIDDEN_PUBLIC_CALIBRATION_FIELDS = new Set([
   "resolved_model",
@@ -524,7 +550,39 @@ test("top-level start_run and schedule_run share bounded queue promotion", async
       const cancelledBeforeLaunch = await waitForTerminalRun(client, cancelledQueued.run_id);
       assert.equal(cancelledBeforeLaunch.status, "cancelled");
       assert.equal(cancelledBeforeLaunch.child_started, false);
+      assert.equal(cancelledBeforeLaunch.active_phase, "cancelled");
+      assert.equal(cancelledBeforeLaunch.success, false);
+      assert.equal(cancelledBeforeLaunch.exit_code, null);
+      assert.equal(cancelledBeforeLaunch.timed_out, false);
+      assert.equal(cancelledBeforeLaunch.resume_possible, false);
+      assert.equal(cancelledBeforeLaunch.requested_timeout_ms, null);
+      assert.equal(cancelledBeforeLaunch.resolved_timeout_ms, null);
+      assert.equal(cancelledBeforeLaunch.effective_timeout_ms, null);
+      assert.deepEqual(cancelledBeforeLaunch.input_requests.filter((request) => request.status === "pending"), []);
       assert.equal(cancelledBeforeLaunch.reason_code, undefined);
+      const settledEvent = cancelledBeforeLaunch.recent_events?.find((event) => event.event === "cancellation_settled");
+      assert.ok(settledEvent);
+      assert.deepEqual(settledEvent.metadata, {});
+      const persistedBeforeLaunch = persistedDurableRunView(JSON.parse(await fs.readFile(
+        path.join(stateRoot, "run-tasks", `${cancelledQueued.run_id}.json`),
+        "utf8",
+      )) as unknown);
+      assert.equal(persistedBeforeLaunch.status, "cancelled");
+      assert.equal(persistedBeforeLaunch.child_started, false);
+      assert.equal(persistedBeforeLaunch.active_phase, "cancelled");
+      assert.equal(persistedBeforeLaunch.stop_reason, undefined);
+      assert.equal(persistedBeforeLaunch.exit_code, null);
+      assert.equal(persistedBeforeLaunch.timed_out, false);
+      const readbackBeforeLaunch = (await client.callTool({
+        name: "get_run",
+        arguments: { run_id: cancelledQueued.run_id },
+      })).structuredContent as RunSubagentMetadata;
+      const cancelledAgain = (await client.callTool({
+        name: "cancel_run",
+        arguments: { run_id: cancelledQueued.run_id },
+      })).structuredContent as RunSubagentMetadata;
+      assert.equal(readbackBeforeLaunch.status, "cancelled");
+      assert.equal(cancelledAgain.status, "cancelled");
 
       const queuedResponse = await client.callTool({
         name: "schedule_run",
@@ -553,7 +611,10 @@ test("top-level start_run and schedule_run share bounded queue promotion", async
       assert.match(overflow.retry_guidance ?? "", /queued work advances/);
 
       await client.callTool({ name: "cancel_run", arguments: { run_id: first.run_id } });
-      await waitForTerminalRun(client, first.run_id);
+      const cancelledAfterLaunch = await waitForTerminalRun(client, first.run_id);
+      assert.equal(cancelledAfterLaunch.status, "cancelled");
+      assert.equal(cancelledAfterLaunch.child_started, true);
+      assert.equal(cancelledAfterLaunch.stop_reason, "cancelled");
       const completed = await waitForTerminalRun(client, queued.run_id);
       assert.equal(completed.status, "completed");
       assert.equal(completed.child_started, true);
@@ -566,6 +627,7 @@ test("top-level start_run and schedule_run share bounded queue promotion", async
         SUBAGENT007_MAX_QUEUED_RUNS: "1",
         SUBAGENT007_ACTIVE_CHILDREN_DIR: path.join(stateRoot, "active"),
         SUBAGENT007_QUEUED_RUNS_DIR: path.join(stateRoot, "queued"),
+        SUBAGENT007_RUN_TASKS_DIR: path.join(stateRoot, "run-tasks"),
       },
     },
   );
@@ -772,8 +834,26 @@ test("durable constrained runs persist activation before prompt for start_run an
       false,
     );
 
+    const missingStartResponse = await client.callTool({
+      name: "start_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "OMIT_ACTIVATION_RECEIPT",
+        effect_profile: "workspace_read_only",
+      },
+    });
+    const missingStart = missingStartResponse.structuredContent as RunSubagentMetadata;
+    const missingTerminal = await waitForTerminalRun(client, missingStart.run_id) as RunSubagentMetadata & {
+      stop_reason?: string;
+    };
+    assert.equal(missingTerminal.status, "failed");
+    assert.equal(missingTerminal.success, false);
+    assert.equal(missingTerminal.exit_code, 0);
+    assert.equal(missingTerminal.stop_reason, "completed");
+    assert.equal(missingTerminal.reason_code, "effect_profile_activation_failed");
+
     const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
-    assert.equal(logs.length, 3);
+    assert.equal(logs.length, 4);
     assert.equal(logs.every((entry) => entry.request.effectProfile === "workspace_read_only"), true);
     assert.equal(logs.every((entry) => !Object.hasOwn(entry.request, "recursiveControl")), true);
   });
@@ -901,6 +981,7 @@ test("all constrained start surfaces preflight-reject a mismatched skill digest"
 test("all constrained start surfaces launch from one owner snapshot and closed references fail pre-prompt", async () => {
   const skillsRoot = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-snapshot-surfaces-"));
   const snapshotsRoot = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-snapshot-store-"));
+  const durableStateRoot = path.join(snapshotsRoot, "durable-state");
   const skillName = "fixture-snapshot-skill";
   await writeSkillFixture(skillsRoot, skillName);
   await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
@@ -957,7 +1038,7 @@ test("all constrained start surfaces launch from one owner snapshot and closed r
         };
         assert.equal(terminal.skill_snapshot_activation_receipt?.snapshot_id, item.snapshot_identity.snapshot_id, name);
       } else {
-        assert.equal(view.skill_snapshot_activation_receipt?.snapshot_id, item.snapshot_identity.snapshot_id, name);
+        assert.equal(view.skill_snapshot_activation_receipt?.snapshot_id, item.snapshot_identity.snapshot_id, `${name}: ${JSON.stringify(view)}`);
       }
     }
     assert.equal((await readJsonl(fakeLogPath)).length, 3);
@@ -974,7 +1055,8 @@ test("all constrained start surfaces launch from one owner snapshot and closed r
     });
     const recursiveView = recursive.structuredContent as RunSubagentMetadata & { descendant_run_ids?: string[] };
     assert.equal(recursiveView.status, "completed");
-    assert.equal(recursiveView.descendant_run_ids?.length, 1);
+    const recursiveOutput = await fs.readFile(recursiveView.output_path, "utf8");
+    assert.equal(recursiveView.descendant_run_ids?.length, 1, JSON.stringify({ recursiveView, recursiveOutput }));
     const recursiveLogs = await readJsonl<{ request: { skillSnapshotBinding?: unknown } }>(fakeLogPath);
     assert.equal(recursiveLogs.length, 5);
     assert.deepEqual(recursiveLogs.slice(3).map((entry) => entry.request.skillSnapshotBinding), [
@@ -1005,6 +1087,13 @@ test("all constrained start surfaces launch from one owner snapshot and closed r
     env: {
       SUBAGENT007_PI_SKILL_PATHS: skillsRoot,
       SUBAGENT007_SKILL_SNAPSHOTS_DIR: snapshotsRoot,
+      SUBAGENT007_RUNS_DIR: path.join(durableStateRoot, "runs"),
+      SUBAGENT007_RUN_TASKS_DIR: path.join(durableStateRoot, "run-tasks"),
+      SUBAGENT007_INPUT_REQUESTS_DIR: path.join(durableStateRoot, "input-requests"),
+      SUBAGENT007_ACTIVE_CHILDREN_DIR: path.join(durableStateRoot, "active-children"),
+      SUBAGENT007_QUEUED_RUNS_DIR: path.join(durableStateRoot, "queued-runs"),
+      SUBAGENT007_SESSIONS_DIR: path.join(durableStateRoot, "sessions"),
+      SUBAGENT007_PI_RAW_SESSIONS_DIR: path.join(durableStateRoot, "pi-raw-sessions"),
       SUBAGENT007_MAX_ACTIVE_CHILDREN: "0",
     },
   });
@@ -1226,7 +1315,11 @@ test("verify_skill_bindings does not replace the launch-time skill digest rechec
     assert.equal(rejected.reason_code, "skill_content_mismatch");
     assert.equal(rejected.child_started, false);
     assert.deepEqual(await readJsonl(fakeLogPath).catch(() => []), []);
-  }, { env: { SUBAGENT007_PI_SKILL_PATHS: skillsRoot } });
+  }, {
+    env: {
+      SUBAGENT007_PI_SKILL_PATHS: skillsRoot,
+    },
+  });
 });
 
 test("resolve_skill_bindings exposes strict canonical schema and typed all-or-nothing rejection", async () => {
@@ -1438,7 +1531,7 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
   await connectFakeClient(async (client) => {
     const response = await client.listTools();
     const names = response.tools.map((tool) => tool.name);
-    assert.equal(names.length, 20);
+    assert.equal(names.length, 21);
     assert.deepEqual(
       [
         "start_run",
@@ -1461,12 +1554,32 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.equal(names.includes("resolve_skill_runtime_bundles"), true);
     assert.equal(names.includes("validate_skill_runtime_bundle"), true);
     assert.equal(names.includes("publish_skill_snapshots"), true);
+    assert.equal(names.includes("resolve_retained_skill_snapshot_source"), true);
+    assert.equal(names.includes("materialize_retained_skill_snapshot"), false);
     assert.equal(names.includes("close_skill_snapshot_references"), true);
     const exactBundleTool = response.tools.find((tool) => tool.name === "validate_skill_runtime_bundle");
     assert.ok(exactBundleTool);
     assert.equal(exactBundleTool.inputSchema.additionalProperties, false);
     assert.deepEqual(exactBundleTool.inputSchema.required, ["contract_version", "bundle_root", "expected_skill_name"]);
     assert.match(exactBundleTool.description ?? "", /settled staging or canonical source/i);
+    const publishSnapshotsTool = response.tools.find((tool) => tool.name === "publish_skill_snapshots");
+    assert.ok(publishSnapshotsTool);
+    const publicationSchema = publishSnapshotsTool.inputSchema as {
+      properties?: {
+        bindings?: {
+          items?: { additionalProperties?: boolean; required?: string[]; properties?: Record<string, unknown> };
+        };
+      };
+    };
+    assert.equal(publicationSchema.properties?.bindings?.items?.additionalProperties, false);
+    assert.deepEqual(
+      publicationSchema.properties?.bindings?.items?.required,
+      ["skill_name", "expected_bundle_sha256"],
+    );
+    assert.equal(
+      Object.hasOwn(publicationSchema.properties?.bindings?.items?.properties ?? {}, "source_root"),
+      true,
+    );
     const verifySkillBindingsTool = response.tools.find((tool) => tool.name === "verify_skill_bindings");
     assert.ok(verifySkillBindingsTool);
     assert.equal(verifySkillBindingsTool.title, "Verify Skill Bindings");
@@ -1520,10 +1633,11 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       const properties = tool.inputSchema.properties as Record<string, unknown>;
       assert.equal(Object.hasOwn(properties, "effect_profile"), true);
       assert.deepEqual((properties.effect_profile as { enum?: string[] }).enum, [
-        "workspace_read_only", "skill_creator_authoring_v1",
+        "workspace_read_only", "task_root_authoring_v1", "skill_creator_authoring_v1", "researcher_bounded_v1", "assumption_audit_bounded_v1",
       ]);
       assert.equal(Object.hasOwn(properties, "expected_skill_sha256"), true);
       assert.equal(Object.hasOwn(properties, "skill_snapshot_binding"), true);
+      assert.equal(Object.hasOwn(properties, "allowed_output_paths"), true);
     }
     const getRunTool = response.tools.find((tool) => tool.name === "get_run");
     assert.ok(getRunTool);
@@ -1546,6 +1660,7 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       assert.equal(Object.hasOwn(properties, "effect_profile"), false);
       assert.equal(Object.hasOwn(properties, "expected_skill_sha256"), false);
       assert.equal(Object.hasOwn(properties, "skill_snapshot_binding"), false);
+      assert.equal(Object.hasOwn(properties, "allowed_output_paths"), false);
     }
     for (const toolName of [
       "start_run",
@@ -1623,10 +1738,30 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
           claim_ceiling?: string;
           activation_receipt?: { event_type?: string; required_before_prompt?: boolean };
         };
+        researcher_bounded_v1?: {
+          supported_tools?: string[];
+          supported_continuity_modes?: string[];
+          named_sessions?: string;
+          recursive_delegate?: string;
+          controller_binding?: string;
+          state_scope?: string;
+          claim_ceiling?: string;
+          activation_receipt?: { event_type?: string; required_before_prompt?: boolean };
+        };
+        assumption_audit_bounded_v1?: {
+          supported_tools?: string[];
+          supported_continuity_modes?: string[];
+          named_sessions?: string;
+          recursive_delegate?: string;
+          controller_binding?: string;
+          state_scope?: string;
+          claim_ceiling?: string;
+          activation_receipt?: { event_type?: string; required_before_prompt?: boolean };
+        };
       };
     };
     assert.equal(contract.contract_name, "subagent007.durable_run");
-    assert.equal(contract.contract_version, 2);
+    assert.equal(contract.contract_version, 3);
     assert.deepEqual(contract.statuses?.terminal, ["completed", "failed", "cancelled", "timed_out"]);
     assert.deepEqual(contract.statuses?.non_terminal, ["working", "input_required"]);
     assert.equal(contract.capabilities?.includes("file_backed_output_references"), true);
@@ -1641,6 +1776,9 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.equal(contract.capabilities?.includes("bounded_local_admission_queue"), true);
     assert.equal(contract.capabilities?.includes("workspace_read_only_effect_profile"), true);
     assert.equal(contract.capabilities?.includes("skill_creator_authoring_v1_effect_profile"), true);
+    assert.equal(contract.capabilities?.includes("researcher_bounded_v1_effect_profile"), true);
+    assert.equal(contract.capabilities?.includes("assumption_audit_bounded_v1_effect_profile"), true);
+    assert.equal(contract.capabilities?.includes("authoring_effect_scope_binding"), true);
     assert.equal(contract.capabilities?.includes("batch_skill_binding_verification"), true);
     assert.equal(contract.capabilities?.includes("batch_skill_binding_resolution"), true);
     assert.equal(contract.capabilities?.includes("explicit_recursive_delegation"), true);
@@ -1699,6 +1837,24 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       contract.effect_profiles?.skill_creator_authoring_v1?.activation_receipt?.required_before_prompt,
       true,
     );
+    assert.deepEqual(contract.effect_profiles?.researcher_bounded_v1?.supported_tools, [
+      "read", "grep", "find", "ls", "write", "edit", "web_search", "web_read", "researchctl",
+    ]);
+    assert.deepEqual(contract.effect_profiles?.assumption_audit_bounded_v1?.supported_tools, [
+      "read", "grep", "find", "ls", "write", "edit", "web_search", "web_read", "aj_switchboard",
+    ]);
+    for (const [profile, stateScope] of [
+      [contract.effect_profiles?.researcher_bounded_v1, ".subagent007/researcher_bounded_v1"],
+      [contract.effect_profiles?.assumption_audit_bounded_v1, ".subagent007/assumption_audit_bounded_v1"],
+    ] as const) {
+      assert.deepEqual(profile?.supported_continuity_modes, ["ephemeral", "fresh"]);
+      assert.equal(profile?.named_sessions, "unsupported");
+      assert.equal(profile?.recursive_delegate, "excluded");
+      assert.equal(profile?.controller_binding, "fixed_wrapper_exact_snapshot_script_and_resolved_python_sha256");
+      assert.equal(profile?.claim_ceiling, "pi_tool_dispatch_path_controller_and_terminal_reinspection_not_os_sandbox");
+      assert.equal(profile?.state_scope, stateScope);
+      assert.equal(profile?.activation_receipt?.required_before_prompt, true);
+    }
     assert.equal(
       contract.output_reference?.transcript_size_policy,
       "unbounded_file",
@@ -1728,7 +1884,7 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       name: "get_runtime_readiness",
       arguments: {
         expected_contract_name: "subagent007.durable_run",
-        expected_contract_version: 2,
+        expected_contract_version: 3,
         source_state_policy: "allow_unknown",
       },
     });
@@ -2184,9 +2340,9 @@ test("MCP run_subagent auto-promotes skill-bound work without one-shot health ga
       assert.equal(logs[0].request.skillFilePath, skillPath);
       assert.equal(logs[0].request.model, "openai-codex/gpt-5.6-luna");
 
-      const persisted = JSON.parse(
+      const persisted = persistedDurableRunView(JSON.parse(
         await fs.readFile(path.join(runTasksDir, `${metadata.run_id}.json`), "utf8"),
-      ) as RunSubagentMetadata;
+      ) as unknown);
       assert.match(JSON.stringify(persisted.recent_events), /\[auto_promoted\] run_subagent -> durable_run/);
       await assert.rejects(
         fs.stat(path.join(runTasksDir, `${metadata.run_id}.events.jsonl`)),
@@ -2953,7 +3109,7 @@ test("MCP start_run/get_run completes asynchronously with the same child contrac
     assert.equal(terminal.success, true);
     assert.equal(await fs.readFile(terminal.output_path, "utf8"), "HEARTBEAT DONE");
     assert.equal(terminal.contract_name, "subagent007.durable_run");
-    assert.equal(terminal.contract_version, 2);
+    assert.equal(terminal.contract_version, 3);
     assert.equal(terminal.output_references?.length, 1);
     assert.equal(terminal.output_references?.[0].kind, "file");
     assert.equal(terminal.output_references?.[0].path, terminal.output_path);
@@ -3257,6 +3413,12 @@ test("MCP input waits for child acceptance before returning an idempotent receip
     assert.equal(conflict.kind, "operation_rejected");
     assert.equal(conflict.reason_code, "input_response_id_conflict");
 
+    // A child may complete immediately after acknowledging the response.  The
+    // exact-live retry guarantee therefore includes the terminal view while
+    // this server instance still owns the run.
+    const terminal = await waitForTerminalRun(client, started.run_id);
+    assert.equal(terminal.status, "completed");
+
     const replayResponse = await client.callTool({
       name: "answer_run_input",
       arguments: {
@@ -3271,12 +3433,59 @@ test("MCP input waits for child acceptance before returning an idempotent receip
     assert.equal(replay.input_response_receipt, answered.input_response_receipt);
     assert.equal(replay.input_response_outcome, "replayed");
 
-    const terminal = await waitForTerminalRun(client, started.run_id);
-    assert.equal(terminal.status, "completed");
     assert.equal(await fs.readFile(terminal.output_path, "utf8"), "INPUT CONTINUED");
     assert.equal(JSON.stringify(terminal).includes(answer), false);
     assert.equal((await fs.readFile(fakeLogPath, "utf8")).includes(answer), false);
   });
+});
+
+test("accepted input receipts replay only while their owning server remains live", async () => {
+  const stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-live-input-replay-"));
+  const stateEnv = {
+    SUBAGENT007_RUNS_DIR: path.join(stateRoot, "runs"),
+    SUBAGENT007_RUN_TASKS_DIR: path.join(stateRoot, "run-tasks"),
+    SUBAGENT007_INPUT_REQUESTS_DIR: path.join(stateRoot, "input-requests"),
+    SUBAGENT007_ACTIVE_CHILDREN_DIR: path.join(stateRoot, "active-children"),
+    SUBAGENT007_QUEUED_RUNS_DIR: path.join(stateRoot, "queued-runs"),
+  };
+  let runId = "";
+  let requestId = "";
+
+  await connectFakeClient(async (client, { projectDir }) => {
+    const started = (await client.callTool({
+      name: "start_run",
+      arguments: { cwd: projectDir, prompt: "REQUEST_INPUT_WAIT" },
+    })).structuredContent as RunSubagentMetadata;
+    runId = started.run_id;
+    const pending = await waitForInputRequired(client, runId);
+    requestId = pending.input_requests.find((request) => request.status === "pending")?.request_id ?? "";
+    assert.ok(requestId);
+    const accepted = (await client.callTool({
+      name: "answer_run_input",
+      arguments: {
+        run_id: runId,
+        request_id: requestId,
+        response_id: "live-only-response-001",
+        answer: "continue",
+      },
+    })).structuredContent as RunSubagentMetadata;
+    assert.equal(accepted.input_response_outcome, "accepted");
+    assert.equal((await waitForTerminalRun(client, runId)).status, "completed");
+  }, { env: stateEnv });
+
+  await connectFakeClient(async (client) => {
+    const replay = (await client.callTool({
+      name: "answer_run_input",
+      arguments: {
+        run_id: runId,
+        request_id: requestId,
+        response_id: "live-only-response-001",
+        answer: "continue",
+      },
+    })).structuredContent as RunSubagentMetadata;
+    assert.equal(replay.kind, "operation_rejected");
+    assert.equal(replay.reason_code, "run_not_found");
+  }, { env: stateEnv });
 });
 
 test("accepted input remains settled when cancellation happens afterwards", async () => {
@@ -3720,6 +3929,8 @@ test("unreadable legacy leases reject active-run inspection without restart term
   await fs.writeFile(
     path.join(runTasksDir, `${runId}.json`),
     `${JSON.stringify({
+      contract_name: "subagent007.durable_run",
+      contract_version: 3,
       run_id: runId,
       task_id: runId,
       task_kind: "run",
@@ -3751,7 +3962,7 @@ test("unreadable legacy leases reject active-run inspection without restart term
   assert.equal(persisted.status, "working");
 });
 
-test("get_run persists stale active restart drift as terminal failed snapshot", async () => {
+test("get_run rejects a claim-bearing v3 snapshot without its owner record and leaves staging untouched", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-stale-run-"));
   const stateDir = path.join(tmp, "state");
   const runTasksDir = path.join(stateDir, "run-tasks");
@@ -3773,10 +3984,16 @@ test("get_run persists stale active restart drift as terminal failed snapshot", 
       run_id: runId,
       task_id: runId,
       task_kind: "run",
+      root_run_id: runId,
+      recursion_depth: 0,
+      child_run_ids: [],
+      descendant_run_ids: [],
+      descendant_terminal_statuses: {},
       status: "input_required",
       started_at: "2026-06-19T00:00:00.000Z",
       input_requests_dir: inputRequestsRunDir,
       input_requests: [],
+      child_started: true,
       active_phase: "input_required",
       last_phase_at: "2026-06-19T00:00:01.000Z",
       partial_output_path: partialOutputPath,
@@ -3822,62 +4039,18 @@ test("get_run persists stale active restart drift as terminal failed snapshot", 
     });
     assert.notEqual(response.isError, true);
     const metadata = response.structuredContent as RunSubagentMetadata;
-    assert.equal(metadata.status, "failed");
-    assert.equal(metadata.success, false);
-    assert.equal(metadata.error_class, "restart_drift");
-    assert.equal(metadata.reason_code, "server_restarted_active_run");
-    assert.equal(metadata.exit_code, null);
-    assert.equal(metadata.timed_out, false);
-    assert.equal(metadata.partial_output_available, true);
-    assert.equal(metadata.resume_possible, false);
-    assert.equal(metadata.requested_timeout_ms, null);
-    assert.equal(metadata.resolved_timeout_ms, null);
-    assert.equal(metadata.effective_timeout_ms, null);
-    assert.equal(metadata.session_id, "pi-session-stale");
-    assert.equal(metadata.session_established, true);
-    assert.equal(Array.isArray(metadata.output_references), true);
-    assert.equal(metadata.output_references?.length, 1);
-    assert.equal(metadata.output_path, publishedOutputPath);
-    assert.equal(await fs.readFile(metadata.output_path, "utf8"), "[assistant]\nPUBLIC RECOVERED PARTIAL");
-    await assert.rejects(fs.stat(partialOutputPath), /ENOENT/);
-    assert.equal(typeof metadata.duration_ms, "number");
-    assert.equal(metadata.contract_name, "subagent007.durable_run");
-    assert.equal(metadata.input_requests.some((entry) => entry.status === "pending"), false);
-    assert.ok(metadata.input_requests.some((entry) =>
-      entry.request_id === request.request_id && entry.status === "closed"
-    ));
-    assert.ok(metadata.recent_events?.some((event) => event.event === "failed"));
-    await assert.rejects(fs.stat(path.join(runTasksDir, `${runId}.events.jsonl`)), /ENOENT/);
-    await assert.rejects(fs.stat(inputRequestsRunDir), /ENOENT/);
-
-    const persisted = JSON.parse(await fs.readFile(path.join(runTasksDir, `${runId}.json`), "utf8")) as RunSubagentMetadata;
-    assert.equal(persisted.status, "failed");
-    assert.equal(persisted.error_class, "restart_drift");
-    assert.equal(persisted.reason_code, "server_restarted_active_run");
-    assert.equal(persisted.exit_code, null);
-    assert.equal(persisted.timed_out, false);
-    assert.equal(persisted.partial_output_available, true);
-    assert.equal(persisted.resume_possible, false);
-    assert.equal(persisted.session_id, "pi-session-stale");
-    assert.equal(persisted.output_references?.length, 1);
-
-    const secondResponse = await client.callTool({
-      name: "get_run",
-      arguments: { run_id: runId },
-    });
-    assert.notEqual(secondResponse.isError, true);
-    const second = secondResponse.structuredContent as RunSubagentMetadata;
-    assert.equal(second.status, "failed");
-    assert.equal(second.finished_at, metadata.finished_at);
-    assert.ok(second.input_requests.some((entry) =>
-      entry.request_id === request.request_id && entry.status === "closed"
-    ));
+    assert.equal(metadata.status, "rejected");
+    assert.equal(metadata.reason_code, "run_liveness_unknown");
+    assert.equal(await fs.readFile(publishedOutputPath, "utf8"), "[assistant]\nPUBLIC RECOVERED PARTIAL");
+    await fs.stat(path.join(runTasksDir, `${runId}.events.jsonl`));
+    await fs.stat(inputRequestsRunDir);
+    assert.equal((await listInputRequests({ mailboxRoot: inputRequestsDir, runId }))[0]?.request_id, request.request_id);
   } finally {
     await client.close();
   }
 });
 
-test("restart reconciliation settles descendants before publishing the parent terminal snapshot", async () => {
+test("restart reconciliation rejects a pre-envelope v3 descendant tree without republishing it", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-stale-tree-"));
   const runTasksDir = path.join(tmp, "run-tasks");
   const inputRequestsDir = path.join(tmp, "input-requests");
@@ -3888,6 +4061,8 @@ test("restart reconciliation settles descendants before publishing the parent te
     const inputDir = path.join(inputRequestsDir, runId);
     await fs.mkdir(inputDir, { recursive: true });
     await fs.writeFile(path.join(runTasksDir, `${runId}.json`), `${JSON.stringify({
+      contract_name: "subagent007.durable_run",
+      contract_version: 3,
       run_id: runId,
       task_id: runId,
       task_kind: "run",
@@ -3901,6 +4076,7 @@ test("restart reconciliation settles descendants before publishing the parent te
       started_at: "2026-06-19T00:00:00.000Z",
       input_requests_dir: inputDir,
       input_requests: [],
+      child_started: true,
       active_phase: "running_silent",
       last_phase_at: "2026-06-19T00:00:01.000Z",
     }, null, 2)}\n`);
@@ -3910,11 +4086,14 @@ test("restart reconciliation settles descendants before publishing the parent te
     SUBAGENT007_INPUT_REQUESTS_DIR: inputRequestsDir,
     SUBAGENT007_FAILURE_LOG: "off",
   }, async () => {
-    const parent = await getRunTask(rootRunId);
-    assert.equal(parent.status, "failed");
-    assert.deepEqual(parent.descendant_run_ids, [childRunId]);
-    assert.deepEqual(parent.descendant_terminal_statuses, { [childRunId]: "failed" });
-    assert.equal((await getRunTask(childRunId)).status, "failed");
+    await assert.rejects(
+      getRunTask(rootRunId),
+      (error: unknown) => error instanceof ValidationError && error.reasonCode === "run_liveness_unknown",
+    );
+    await assert.rejects(
+      getRunTask(childRunId),
+      (error: unknown) => error instanceof ValidationError && error.reasonCode === "run_liveness_unknown",
+    );
   });
 });
 

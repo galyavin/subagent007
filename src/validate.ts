@@ -21,6 +21,11 @@ import { minimumRequestedTimeoutMs } from "./timeoutBudget.js";
 import { ValidationError } from "./types.js";
 import { safeIntegerFromEnv } from "./env.js";
 import { resolveSkillBinding } from "./skillBinding.js";
+import { boundedEffectProfileSkill, isBoundedEffectProfile } from "./toolProfile.js";
+import {
+  isEffectScopedAuthoringProfile,
+  normalizeAllowedOutputPaths,
+} from "./authoringEffectScope.js";
 
 export { validateSkillName } from "./skillBinding.js";
 const ONE_SHOT_MAX_PROMPT_CHARS = 6000;
@@ -76,6 +81,8 @@ function validationReasonCodeForKey(key: string): FailureReasonCode {
       return "invalid_tool_profile";
     case "effect_profile":
       return "invalid_effect_profile";
+    case "allowed_output_paths":
+      return "authoring_effect_scope_invalid";
     case "expected_skill_sha256":
       return "invalid_expected_skill_sha256";
     case "skill":
@@ -329,6 +336,36 @@ export async function validateAndResolveRequest(
   validateChoice(request.tool_profile, "tool_profile", TOOL_PROFILES);
   const effectProfile = validateChoice(request.effect_profile, "effect_profile", EFFECT_PROFILES);
   const recursiveDelegation = request.recursive_delegation ?? "disabled";
+  if (isBoundedEffectProfile(effectProfile)) {
+    const requiredSkill = boundedEffectProfileSkill(effectProfile);
+    if (
+      request.skill_name !== requiredSkill ||
+      request.skill !== undefined && request.skill !== null && request.skill !== requiredSkill
+    ) {
+      throw new ValidationError(
+        `${effectProfile} requires exact canonical skill_name ${JSON.stringify(requiredSkill)}`,
+        "invalid_skill",
+      );
+    }
+    if (request.continuity?.mode === "resume") {
+      throw new ValidationError(
+        `${effectProfile} supports only ephemeral and fresh continuity; resume is not supported`,
+        "effect_profile_unsupported",
+      );
+    }
+    if (request.skill_snapshot_binding === undefined || request.skill_snapshot_binding === null || typeof request.skill_snapshot_binding !== "object") {
+      throw new ValidationError(
+        `${effectProfile} requires an immutable skill_snapshot_binding with a complete runtime-bundle digest`,
+        "invalid_skill_snapshot_binding",
+      );
+    }
+    if (request.expected_skill_sha256 !== undefined) {
+      throw new ValidationError(
+        `${effectProfile} requires skill_snapshot_binding instead of expected_skill_sha256`,
+        "invalid_skill_snapshot_binding",
+      );
+    }
+  }
   if (request.continuity?.mode === "resume" && request.recursive_delegation === undefined) {
     throw new ValidationError("raw resume requires explicit recursive_delegation reauthorization", "recursive_delegation_reauthorization_required");
   }
@@ -360,9 +397,15 @@ export async function validateAndResolveRequest(
     }
   }
 
+  const taskRoot = isEffectScopedAuthoringProfile(effectProfile) ? await fs.realpath(cwd) : cwd;
+  const allowedOutputPaths = normalizeAllowedOutputPaths(
+    request.allowed_output_paths,
+    taskRoot,
+    effectProfile,
+  );
   return {
     prompt,
-    cwd,
+    cwd: taskRoot,
     modelClass,
     model: resolvedModelClass.model,
     thinkingLevel: resolvedModelClass.thinkingLevel,
@@ -372,6 +415,7 @@ export async function validateAndResolveRequest(
     effectProfile,
     recursiveDelegation,
     requestedRecursiveDelegation: request.recursive_delegation ?? null,
+    ...(allowedOutputPaths ? { allowedOutputPaths } : {}),
     expectedSkillSha256,
     skillSnapshotBinding,
     outputMode: validateOutputMode(request.output_mode),

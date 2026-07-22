@@ -27,6 +27,7 @@ const EXPECTED_PUBLIC_TOOLS = [
   "list_allowed_models",
   "list_model_classes",
   "close_skill_snapshot_references",
+  "resolve_retained_skill_snapshot_source",
   "delete_skill_snapshot",
   "plan_skill_snapshot_deletion",
   "publish_skill_snapshots",
@@ -1176,7 +1177,7 @@ function scenarioCall(scenario, cwd) {
       tool: "get_runtime_readiness",
       args: {
         expected_contract_name: "subagent007.durable_run",
-        expected_contract_version: 2,
+        expected_contract_version: 3,
         source_state_policy: "allow_unknown",
       },
     };

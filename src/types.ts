@@ -6,7 +6,13 @@ export const OUTPUT_MODES = ["final", "transcript"] as const;
 export type OutputMode = (typeof OUTPUT_MODES)[number];
 export const TOOL_PROFILES = ["all", "inspect", "web_search", "shell", "workspace_write"] as const;
 export type ToolProfile = (typeof TOOL_PROFILES)[number];
-export const EFFECT_PROFILES = ["workspace_read_only", "skill_creator_authoring_v1"] as const;
+export const EFFECT_PROFILES = [
+  "workspace_read_only",
+  "task_root_authoring_v1",
+  "skill_creator_authoring_v1",
+  "researcher_bounded_v1",
+  "assumption_audit_bounded_v1",
+] as const;
 export type EffectProfile = (typeof EFFECT_PROFILES)[number];
 export const NON_TERMINAL_RUN_STATUSES = ["working", "input_required"] as const;
 export const TERMINAL_RUN_STATUSES = ["completed", "failed", "cancelled", "timed_out"] as const;
@@ -41,6 +47,7 @@ export type FailureReasonCode =
   | "cwd_not_directory"
   | "disk_reserve_exhausted"
   | "handler_error"
+  | "client_start_id_conflict"
   | "invalid_output_mode"
   | "invalid_packet_policy"
   | "invalid_model"
@@ -53,6 +60,8 @@ export type FailureReasonCode =
   | "invalid_thinking_level"
   | "invalid_tool_profile"
   | "invalid_effect_profile"
+  | "authoring_effect_scope_invalid"
+  | "authoring_effect_scope_drift"
   | "invalid_expected_skill_sha256"
   | "effect_profile_unsupported"
   | "skill_binding_unsupported"
@@ -133,6 +142,12 @@ export interface RunSubagentRequest extends SubagentRequestBase {
   expected_skill_sha256?: string;
   skill_snapshot_binding?: SkillSnapshotLaunchBinding;
   recursive_delegation?: RecursiveDelegation;
+  /** Exact new file paths writable by task_root_authoring_v1. */
+  allowed_output_paths?: string[];
+}
+
+export interface StartRunTaskRequest extends RunSubagentRequest {
+  client_start_id?: string;
 }
 
 export const RECURSIVE_DELEGATIONS = ["disabled", "enabled"] as const;
@@ -156,11 +171,32 @@ export interface ResolvedRunSubagentRequest {
   skillSnapshotBinding?: SkillSnapshotLaunchBinding;
   recursiveDelegation: RecursiveDelegation;
   requestedRecursiveDelegation: RecursiveDelegation | null;
+  allowedOutputPaths?: string[];
   outputMode: OutputMode;
 }
 
+export type EffectScopedAuthoringProfile = Extract<
+  EffectProfile,
+  "task_root_authoring_v1" | "researcher_bounded_v1" | "assumption_audit_bounded_v1"
+>;
+
+export interface AuthoringEffectScopeBinding {
+  schema_version: 1;
+  effect_profile: EffectScopedAuthoringProfile;
+  task_root: string;
+  task_root_device: string;
+  task_root_inode: string;
+  recursive_delegation: "disabled";
+  immutable_tree_sha256: string;
+  writable_scope:
+    | { kind: "exact_output_files"; paths: string[] }
+    | { kind: "fixed_state_subtree"; paths: [string] };
+  terminal_reinspection_required: true;
+  claim_ceiling: "pi_tool_dispatch_path_controller_and_terminal_reinspection_not_os_sandbox";
+}
+
 export interface ActivationToolBinding {
-  tool_name: "request_input" | "web_read" | "web_search";
+  tool_name: "request_input" | "web_read" | "web_search" | "researchctl" | "aj_switchboard";
   provider_id: string;
   implementation_sha256: string;
 }
@@ -344,8 +380,7 @@ export type SkillBindingResolutionResult =
   | SkillBindingResolutionCwdRejectedResult
   | SkillBindingResolutionSkillRejectedResult;
 
-export interface ActivationReceipt {
-  schema_version: 1;
+interface ActivationReceiptBase {
   confirmed_before_prompt: true;
   requested_effect_profile: EffectProfile | null;
   resolved_effect_profile: EffectProfile | null;
@@ -354,6 +389,17 @@ export interface ActivationReceipt {
   toolset_sha256: string | null;
   skill_binding: ActivationSkillBinding | null;
 }
+
+export interface ActivationReceiptV1 extends ActivationReceiptBase {
+  schema_version: 1;
+}
+
+export interface ActivationReceiptV2 extends ActivationReceiptBase {
+  schema_version: 2;
+  effect_scope_binding: AuthoringEffectScopeBinding;
+}
+
+export type ActivationReceipt = ActivationReceiptV1 | ActivationReceiptV2;
 
 export interface RecursiveDelegationReceipt {
   schema_version: 1;

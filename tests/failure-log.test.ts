@@ -564,11 +564,17 @@ test("restart drift is logged once after the owner process exits", async () => {
     assert.equal(failures[0].stop_reason, "failed");
     assert.equal(failures[0].stop_signal, null);
 
-    const persisted = JSON.parse(await fs.readFile(path.join(runTasksDir, `${started.run_id}.json`), "utf8")) as {
+    const persistedRecord = JSON.parse(await fs.readFile(path.join(runTasksDir, `${started.run_id}.json`), "utf8")) as {
       status: string;
       error_class?: string;
       reason_code?: string;
+      public_view?: {
+        status: string;
+        error_class?: string;
+        reason_code?: string;
+      };
     };
+    const persisted = persistedRecord.public_view ?? persistedRecord;
     assert.equal(persisted.status, "failed");
     assert.equal(persisted.error_class, "restart_drift");
     assert.equal(persisted.reason_code, "server_restarted_active_run");

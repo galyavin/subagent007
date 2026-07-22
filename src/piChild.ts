@@ -20,18 +20,33 @@ import { createRecursiveDelegateTool } from "./recursiveDelegateTool.js";
 import { createSkillScopedResourceLoader } from "./skillResources.js";
 import { createTaskRootAuthoringTools } from "./taskRootAuthoringTools.js";
 import {
+  assertResolvedBoundedControllerPython,
+  createBoundedControllerTool,
+  type ResolvedBoundedControllerPython,
+} from "./boundedController.js";
+import {
   activateAllRegisteredTools,
   activateEffectProfileTools,
+  assertExactBoundedActivationToolBindings,
+  boundedAuthoringActivationReceipt,
+  boundedControllerActivationBindings,
+  boundedControllerScriptPath,
+  boundedEffectProfileSkill,
   effectProfileToolNames,
+  explicitWebProviderExtensionPaths,
+  isBoundedEffectProfile,
   requestInputImplementationSha256,
   resolveWorkspaceReadOnlyWebProvider,
   skillCreatorAuthoringV1ActivationReceipt,
   skillOnlyActivationReceipt,
+  taskRootAuthoringV1ActivationReceipt,
   workspaceReadOnlyActivationReceipt,
 } from "./toolProfile.js";
 import { MODEL_RUNTIME_FALLBACKS } from "./modelAllowlist.js";
 import type {
   ActivationSkillBinding,
+  ActivationToolBinding,
+  AuthoringEffectScopeBinding,
   EffectProfile,
   FailureReasonCode,
   OutputMode,
@@ -42,6 +57,11 @@ import type {
 } from "./types.js";
 import type { RecursiveControlChildConfig } from "./recursiveControl.js";
 import { resolveSkillSnapshotLaunchBinding } from "./skillSnapshot.js";
+import {
+  captureAuthoringEffectScope,
+  assertAuthoringEffectScopeBinding,
+  isEffectScopedAuthoringProfile,
+} from "./authoringEffectScope.js";
 
 interface PiChildRequest {
   prompt: string;
@@ -65,8 +85,11 @@ interface PiChildRequest {
   effectProfile?: EffectProfile;
   expectedSkillSha256?: string;
   skillBinding?: ActivationSkillBinding;
+  expectedActivationToolBindings?: ActivationToolBinding[];
+  controllerPython?: ResolvedBoundedControllerPython;
   skillSnapshotBinding?: SkillSnapshotLaunchBinding;
   expectedSkillSnapshotActivationReceipt?: SkillSnapshotActivationReceipt;
+  expectedEffectScopeBinding?: AuthoringEffectScopeBinding;
 }
 
 class ChildContractError extends Error {
@@ -391,11 +414,80 @@ async function main(): Promise<void> {
   const agentDir = resolvePiAgentDir();
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const isWorkspaceReadOnly = request.effectProfile === "workspace_read_only";
-  const webProvider = isWorkspaceReadOnly
+  const boundedProfile = isBoundedEffectProfile(request.effectProfile) ? request.effectProfile : undefined;
+  const isBounded = boundedProfile !== undefined;
+  let effectScopeBinding: AuthoringEffectScopeBinding | undefined;
+  if (isEffectScopedAuthoringProfile(request.effectProfile)) {
+    if (!request.expectedEffectScopeBinding) {
+      throw new ChildContractError("authoring effect scope binding is absent", "effect_profile_activation_failed");
+    }
+    try {
+      assertAuthoringEffectScopeBinding(request.expectedEffectScopeBinding);
+      const captured = await captureAuthoringEffectScope({
+        taskRoot: request.cwd,
+        effectProfile: request.effectProfile,
+        recursiveDelegation: request.recursiveDelegation,
+        ...(request.expectedEffectScopeBinding.writable_scope.kind === "exact_output_files"
+          ? { allowedOutputPaths: request.expectedEffectScopeBinding.writable_scope.paths }
+          : {}),
+      });
+      if (JSON.stringify(captured.binding) !== JSON.stringify(request.expectedEffectScopeBinding)) {
+        throw new Error("authoring effect scope changed after parent preflight");
+      }
+      effectScopeBinding = captured.binding;
+    } catch (error) {
+      throw asChildContractError(error, "effect_profile_activation_failed");
+    }
+  } else if (request.expectedEffectScopeBinding) {
+    throw new ChildContractError("unexpected authoring effect scope binding", "effect_profile_activation_failed");
+  }
+  const boundedSkill = boundedProfile ? boundedEffectProfileSkill(boundedProfile) : undefined;
+  if (boundedProfile && (!request.skill || request.skill !== boundedSkill || !expectedSnapshotReceipt)) {
+    throw new ChildContractError(
+      `${request.effectProfile} requires its exact canonical skill and immutable snapshot`,
+      "invalid_skill_snapshot_binding",
+    );
+  }
+  const webProvider = isWorkspaceReadOnly || isBounded
     ? await resolveWorkspaceReadOnlyWebProvider(agentDir).catch((error) => {
         throw asChildContractError(error, "effect_profile_activation_failed");
       })
     : undefined;
+  const controllerPython = isBounded
+    ? await assertResolvedBoundedControllerPython(request.controllerPython, boundedProfile!).catch((error) => {
+        throw asChildContractError(error, "effect_profile_activation_failed");
+      })
+    : undefined;
+  const boundedController = isBounded
+    ? await boundedControllerScriptPath(
+        boundedProfile!,
+        request.skill!,
+        expectedSnapshotReceipt!.resolved_skill_path,
+      ).catch((error) => {
+        throw asChildContractError(error, "effect_profile_activation_failed");
+      })
+    : undefined;
+  const boundedBindings = isBounded
+    ? await boundedControllerActivationBindings({
+        effectProfile: boundedProfile!,
+        skillName: request.skill!,
+        snapshotSkillFilePath: expectedSnapshotReceipt!.resolved_skill_path,
+        childEntrypoint: fileURLToPath(import.meta.url),
+        webProvider: webProvider!,
+        controllerPython: controllerPython!,
+      }).catch((error) => {
+        throw asChildContractError(error, "effect_profile_activation_failed");
+      })
+    : undefined;
+  if (boundedBindings) {
+    try {
+      // The parent receipt is mandatory evidence; child-derived values may only
+      // confirm it byte-for-byte and may never replace it.
+      assertExactBoundedActivationToolBindings(request.expectedActivationToolBindings, boundedBindings);
+    } catch (error) {
+      throw asChildContractError(error, "effect_profile_activation_failed");
+    }
+  }
   const resourceLoader = createSkillScopedResourceLoader({
     cwd: request.cwd,
     agentDir,
@@ -404,7 +496,7 @@ async function main(): Promise<void> {
     ...(request.effectProfile
       ? {
           noAmbientExtensions: true,
-          ...(isWorkspaceReadOnly ? { explicitExtensionPaths: [webProvider!.extensionPath] } : {}),
+          explicitExtensionPaths: explicitWebProviderExtensionPaths(request.effectProfile, webProvider),
         }
       : {}),
   });
@@ -432,9 +524,25 @@ async function main(): Promise<void> {
   });
   const skillBinding = await verifiedSkillBinding(request);
   const customTools: ToolDefinition<any>[] = [
-    createRequestInputTool(request, inputControl),
-    ...(request.effectProfile === "skill_creator_authoring_v1"
-      ? createTaskRootAuthoringTools(request.cwd, expectedSnapshotReceipt?.resolved_skill_path)
+    ...(request.effectProfile === undefined || isWorkspaceReadOnly
+      ? [createRequestInputTool(request, inputControl)]
+      : []),
+    ...(request.effectProfile === "skill_creator_authoring_v1" || request.effectProfile === "task_root_authoring_v1" || isBounded
+      ? createTaskRootAuthoringTools(
+          request.cwd,
+          expectedSnapshotReceipt?.resolved_skill_path,
+          request.effectProfile === "task_root_authoring_v1" ? ["read", "write"] : undefined,
+          effectScopeBinding,
+        )
+      : []),
+    ...(boundedController
+      ? [createBoundedControllerTool(
+          request.cwd,
+          boundedController.tool,
+          boundedController.scriptPath,
+          controllerPython!,
+          effectScopeBinding,
+        )]
       : []),
   ];
   if (!request.effectProfile && request.recursiveDelegation === "enabled") {
@@ -505,6 +613,21 @@ async function main(): Promise<void> {
     writeEvent({ type: "subagent007.activation_confirmed", receipt });
   } else if (request.effectProfile === "skill_creator_authoring_v1") {
     writeEvent({ type: "subagent007.activation_confirmed", receipt: skillCreatorAuthoringV1ActivationReceipt(skillBinding) });
+  } else if (request.effectProfile === "task_root_authoring_v1") {
+    writeEvent({
+      type: "subagent007.activation_confirmed",
+      receipt: taskRootAuthoringV1ActivationReceipt(skillBinding, effectScopeBinding!),
+    });
+  } else if (isBounded && boundedBindings) {
+    writeEvent({
+      type: "subagent007.activation_confirmed",
+      receipt: boundedAuthoringActivationReceipt({
+        effectProfile: boundedProfile,
+        skillBinding,
+        toolBindings: boundedBindings,
+        effectScopeBinding: effectScopeBinding!,
+      }),
+    });
   } else if (request.expectedSkillSha256 && skillBinding) {
     writeEvent({
       type: "subagent007.activation_confirmed",

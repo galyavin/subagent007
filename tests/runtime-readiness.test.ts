@@ -206,7 +206,7 @@ test("runtime readiness returns a ready snapshot for a clean current build", asy
     processArgv: ["node", serverEntrypoint],
     source_state_policy: "require_clean",
     expected_contract_name: "subagent007.durable_run",
-    expected_contract_version: 2,
+    expected_contract_version: 3,
   });
 
   assert.equal(snapshot.ready, true);
@@ -219,9 +219,13 @@ test("runtime readiness returns a ready snapshot for a clean current build", asy
   assert.equal(snapshot.capabilities.public_tools.includes("validate_skill_runtime_bundle"), true);
   assert.equal(snapshot.capabilities.public_tools.includes("publish_skill_snapshots"), true);
   assert.equal(snapshot.capabilities.public_tools.includes("close_skill_snapshot_references"), true);
-  assert.equal(snapshot.capabilities.public_tools.length, 20);
+  assert.equal(snapshot.capabilities.public_tools.includes("resolve_retained_skill_snapshot_source"), true);
+  assert.equal(snapshot.capabilities.public_tools.includes("materialize_retained_skill_snapshot" as never), false);
+  assert.equal(snapshot.capabilities.public_tools.length, 21);
   assert.equal(snapshot.capabilities.durable_run.includes("batch_skill_binding_verification"), true);
   assert.equal(snapshot.capabilities.durable_run.includes("batch_skill_binding_resolution"), true);
+  assert.equal(snapshot.capabilities.durable_run.includes("researcher_bounded_v1_effect_profile"), true);
+  assert.equal(snapshot.capabilities.durable_run.includes("assumption_audit_bounded_v1_effect_profile"), true);
   assert.equal(snapshot.capabilities.durable_run.includes("explicit_recursive_delegation"), true);
   assert.equal(snapshot.capabilities.durable_run.includes("terminal_recursive_subtree_closure"), true);
   assert.equal(snapshot.build.child_entrypoint.exists, true);
@@ -233,11 +237,89 @@ test("runtime readiness returns a ready snapshot for a clean current build", asy
     snapshot.contract.effect_profiles.skill_creator_authoring_v1.supported_tools,
     ["read", "grep", "find", "ls", "write", "edit"],
   );
+  assert.deepEqual(
+    snapshot.contract.effect_profiles.researcher_bounded_v1.supported_tools,
+    ["read", "grep", "find", "ls", "write", "edit", "web_search", "web_read", "researchctl"],
+  );
+  assert.deepEqual(
+    snapshot.contract.effect_profiles.assumption_audit_bounded_v1.supported_tools,
+    ["read", "grep", "find", "ls", "write", "edit", "web_search", "web_read", "aj_switchboard"],
+  );
+  assert.deepEqual(snapshot.contract.effect_profiles.researcher_bounded_v1.supported_continuity_modes, ["ephemeral", "fresh"]);
+  assert.deepEqual(snapshot.contract.effect_profiles.assumption_audit_bounded_v1.supported_continuity_modes, ["ephemeral", "fresh"]);
   assert.equal(snapshot.contract.effect_profiles.skill_creator_authoring_v1.task_root, "exact_run_cwd");
   assert.equal(snapshot.contract.effect_profiles.skill_creator_authoring_v1.task_root_write_scope, "exact_real_run_cwd");
   assert.equal(
     snapshot.contract.effect_profiles.skill_creator_authoring_v1.snapshot_runtime_read_scope,
     "active_validated_snapshot_runtime_root_or_none",
+  );
+});
+
+test("runtime readiness remains ready when the loaded versioned release is current", async () => {
+  const { root, serverEntrypoint } = await writeFixtureProject();
+  const releasesDir = path.join(root, "dist", "releases");
+  const releaseId = "20260719-current";
+  const releasePath = path.join(releasesDir, releaseId);
+  await fs.mkdir(releasePath, { recursive: true });
+  const loadedReleasePath = await fs.realpath(releasePath);
+  await fs.symlink(path.join("releases", releaseId), path.join(root, "dist", "current"), "dir");
+
+  const snapshot = await runtimeReadinessSnapshot({
+    projectRoot: root,
+    serverEntrypoint,
+    processArgv: ["node", serverEntrypoint],
+    source_state_policy: "allow_unknown",
+  }, {
+    loadedBuildRelease: { release_id: releaseId, release_path: loadedReleasePath },
+  });
+
+  assert.equal(snapshot.ready, true);
+  assert.deepEqual(snapshot.build.loaded_release, { release_id: releaseId, release_path: loadedReleasePath });
+  assert.deepEqual(snapshot.build.current_release, { release_id: releaseId, release_path: loadedReleasePath });
+  assert.equal(snapshot.blocks.some((block) => block.reason_code === "loaded_release_not_current"), false);
+});
+
+test("runtime readiness blocks when the loaded versioned release is no longer current", async () => {
+  const { root, serverEntrypoint } = await writeFixtureProject();
+  const releasesDir = path.join(root, "dist", "releases");
+  const loadedReleaseId = "20260719-loaded";
+  const currentReleaseId = "20260719-current";
+  const loadedReleasePath = path.join(releasesDir, loadedReleaseId);
+  const currentReleasePath = path.join(releasesDir, currentReleaseId);
+  await Promise.all([
+    fs.mkdir(loadedReleasePath, { recursive: true }),
+    fs.mkdir(currentReleasePath, { recursive: true }),
+  ]);
+  const [resolvedLoadedReleasePath, resolvedCurrentReleasePath] = await Promise.all([
+    fs.realpath(loadedReleasePath),
+    fs.realpath(currentReleasePath),
+  ]);
+  await fs.symlink(path.join("releases", currentReleaseId), path.join(root, "dist", "current"), "dir");
+
+  const snapshot = await runtimeReadinessSnapshot({
+    projectRoot: root,
+    serverEntrypoint,
+    processArgv: ["node", serverEntrypoint],
+    source_state_policy: "allow_unknown",
+  }, {
+    loadedBuildRelease: { release_id: loadedReleaseId, release_path: resolvedLoadedReleasePath },
+  });
+
+  assert.equal(snapshot.ready, false);
+  assert.equal(snapshot.status, "blocked");
+  assert.deepEqual(snapshot.build.loaded_release, { release_id: loadedReleaseId, release_path: resolvedLoadedReleasePath });
+  assert.deepEqual(snapshot.build.current_release, { release_id: currentReleaseId, release_path: resolvedCurrentReleasePath });
+  assert.deepEqual(
+    snapshot.blocks.find((block) => block.reason_code === "loaded_release_not_current"),
+    {
+      class: "loaded_release_mismatch",
+      reason_code: "loaded_release_not_current",
+      message: "running MCP process loaded a versioned release that is no longer dist/current",
+      evidence: {
+        loaded_release: { release_id: loadedReleaseId, release_path: resolvedLoadedReleasePath },
+        current_release: { release_id: currentReleaseId, release_path: resolvedCurrentReleasePath },
+      },
+    },
   );
 });
 

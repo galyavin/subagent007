@@ -12,12 +12,40 @@ edges:
     condition: when a decision relates to system structure
   - target: context/stack.md
     condition: when a decision relates to technology choice
-last_updated: 2026-07-19
+last_updated: 2026-07-22
 ---
 
 # Decisions
 
+### Scoped authoring binds exact outputs or one fresh state subtree
+**Date:** 2026-07-21
+**Status:** Active
+**Decision:** Add only `allowed_output_paths` to the existing constrained v3 run request family. `task_root_authoring_v1` requires that exact canonical new-file list. Researcher/AJ instead receive one fixed fresh-only `.subagent007/<profile>` writable state subtree; their direct tools and controller mutation paths share it, while read-only controller inputs may reference the immutable outside task tree. Parent and child capture/compare exact task-root and bounded initial-tree identity in activation receipt v2. Terminal reinspection runs after every settled child outcome. Immutable and writable trees reject sparse/multi-link entries and use separate size ceilings.
+**Reasoning:** Subagent007 can observe Pi tool dispatch, owned path/controller calls, and terminal filesystem state, but it does not own Bendum's semantic manifests or an OS sandbox. Exact output paths and fixed state roots are the smallest enforceable closures that prevent transient substitution through the available tool/controller surfaces without importing a second semantic schema.
+**Consequences:** Bendum must stop forwarding `input_manifest`, derive sorted canonical exact `allowed_output_paths` for neutral builder runs, require capability `authoring_effect_scope_binding`, and validate receipt schema 2 and its exact scope binding. Same-key changes to output closure conflict through the existing idempotent request hash. Legacy/v2 no-key behavior and creator-named schema-1 activation stay unchanged.
+
 ## Decision Log
+
+### Durable start identity is owner-bound before execution admission
+**Date:** 2026-07-21
+**Status:** Active
+**Decision:** Durable-run contract v3 adds optional `client_start_id` only to `start_run`. One strict schema-normalized canonical request identity excludes only that key and uses deterministic code-point key ordering. The existing run-task store atomically persists and fsyncs key to request-hash/run-id before queue or child admission; replay does not rerun mutable launch preflights.
+**Reasoning:** Bendum must survive ambiguous transport/process loss without creating a second run, but a caller key cannot authorize a changed body or counterfeit reattachment.
+**Consequences:** Exact replay returns the same run across processes, changed bodies reject as `client_start_id_conflict`, and live concurrent admission reads the already-promoted canonical run promptly without polling. If another promoter removed the private candidate, the join re-resolves the authoritative key/request digest and accepts that exact canonical run in any valid current lifecycle state, including child-started work or terminal completion. One shared run-task validator now guards current-v3 snapshot publication/readback and the replay join, rejecting impossible active/result/error combinations while preserving historical v2 readback. For owner terminals it derives declaration-only, observed, and settled phases from existing fields: declarations remain valid before child launch, observations reuse the existing strict receipt validators after prompt submission, and one exact final settlement event is required. A process-zero result may still be a typed durable failure when post-run contract validation fails. Definitely lost execution ownership produces the existing owner-issued terminal restart drift. No lookup tool, queue, service, or second run store was added.
+
+### Retained snapshot source resolution stays inside the snapshot owner
+**Date:** 2026-07-21
+**Status:** Active
+**Decision:** Add one public `resolve_retained_skill_snapshot_source` v1 operation to the existing snapshot family. It accepts one exact committed retained identity, resolves immutable private bytes itself, accepts active/closed references, and returns only the existing owner-controlled content-addressed runtime source identity after complete validation.
+**Reasoning:** Rollback needs immutable predecessor bytes, but caller access to private store paths or caller-path publication would split authority. The runtime cannot atomically bind a caller-selected publication path to continued authorized ancestry, and a generic export/control plane would exceed the requirement.
+**Consequences:** Exact retries are idempotent and zero-write; no caller staging path, copy, lock, cache, or retained-state mutation exists. Consumers that copy the resolved source revalidate under their own transaction. Internal content-addressed bundle materialization, reference closure, and impact-confirmed deletion remain separate.
+
+### Researcher and AJ bounded profiles use fixed snapshot-owned controllers
+**Date:** 2026-07-19
+**Status:** Active
+**Decision:** Add exactly `researcher_bounded_v1` and `assumption_audit_bounded_v1` as additive Pi effect ceilings. Each requires exact canonical `skill_name`, an active complete immutable snapshot binding, and ephemeral/fresh continuity with recursion disabled. The ordered tool list is the six bounded task-root filesystem tools, `web_search`, `web_read`, and one profile-specific controller. The controller wrapper discovers inherited-`PATH` `python3` candidates only in the parent, admits the first realpath that imports the profile-owned fixed requirements (`json` for Researcher; `json` and `yaml` for AJ), then invokes only that parent-bound resolved absolute realpath plus the exact snapshot `scripts/researchctl.py` or `scripts/aj.py` via `execFile`. Parent and child recheck regular-file identity, SHA-256, and required imports; the child/controller never substitutes a `PATH` interpreter. It validates bounded data/path arguments and retains state/artifacts under the exact real task root.
+**Reasoning:** Researcher and AJ need Smith authoring-phase state transitions without ambient shell, arbitrary executables, unrestricted writes, mutable skill source, or controller-path substitution. A callable-tool ceiling alone cannot constrain filesystem side effects, so the existing task-root guards are shared and controller-owned I/O is separately bounded.
+**Consequences:** Parent and Pi child activation receipts bind the explicit web provider and a combined SHA-256 over the fixed controller wrapper, exact snapshot script, and resolved Python realpath/file SHA-256. An AJ launch with no YAML-capable candidate fails closed as `effect_profile_activation_failed` before a Pi child is spawned; Researcher remains stdlib-only. URLs remain data only outside owned path arguments. The boundary claims Pi tool dispatch, owned path guards, and owned subprocess invocation only; it does not claim an OS sandbox or hostile-runtime containment. Existing profiles and omitted behavior remain unchanged.
 
 ### Batch skill verification is a point-in-time public owner boundary
 **Date:** 2026-07-16

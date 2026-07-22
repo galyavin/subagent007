@@ -11,6 +11,11 @@ import {
 import { configuredChildEntrypointPath } from "./childEntrypoint.js";
 import { SERVER_VERSION, serverBuildSha } from "./runtimeMetadata.js";
 import { projectRootFromModuleUrl } from "./projectRoot.js";
+import {
+  buildReleaseIdentityFromModuleUrl,
+  currentBuildReleaseIdentity,
+  type BuildReleaseIdentity,
+} from "./buildReleaseLease.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -20,12 +25,13 @@ const RUNTIME_READINESS_CONTRACT_VERSION = 1;
 export const SOURCE_STATE_POLICIES = ["require_clean", "allow_dirty", "allow_unknown"] as const;
 type SourceStatePolicy = (typeof SOURCE_STATE_POLICIES)[number];
 
-type RuntimeReadinessBlockClass =
+export type RuntimeReadinessBlockClass =
   | "missing_build"
   | "stale_build"
   | "dirty_source"
   | "source_state_unknown"
   | "incompatible_contract"
+  | "loaded_release_mismatch"
   | "runtime_launch_failure";
 
 const PUBLIC_TOOL_SURFACE = [
@@ -46,6 +52,7 @@ const PUBLIC_TOOL_SURFACE = [
   "resolve_skill_runtime_bundles",
   "validate_skill_runtime_bundle",
   "publish_skill_snapshots",
+  "resolve_retained_skill_snapshot_source",
   "plan_skill_snapshot_deletion",
   "delete_skill_snapshot",
   "close_skill_snapshot_references",
@@ -58,6 +65,7 @@ const RUNTIME_READINESS_CAPABILITIES = [
   "git_source_state_detection",
   "typed_readiness_blocks",
   "public_tool_surface_snapshot",
+  "loaded_release_identity",
 ] as const;
 
 interface RuntimeReadinessRequest {
@@ -76,7 +84,11 @@ export interface RuntimeReadinessOptions extends RuntimeReadinessRequest {
   now?: Date;
 }
 
-interface RuntimeReadinessBlock {
+export interface RuntimeReadinessContext {
+  loadedBuildRelease?: BuildReleaseIdentity;
+}
+
+export interface RuntimeReadinessBlock {
   class: RuntimeReadinessBlockClass;
   reason_code: string;
   message: string;
@@ -136,6 +148,8 @@ export interface RuntimeReadinessSnapshot {
   };
   build: {
     dist_dir: string;
+    loaded_release?: BuildReleaseIdentity;
+    current_release?: BuildReleaseIdentity;
     server_entrypoint: FileFact;
     child_entrypoint: FileFact;
     child_entrypoint_source: "env" | "server_entrypoint_dir";
@@ -310,6 +324,39 @@ function appendContractBlock(
   }
 }
 
+function appendLoadedReleaseBlocks(
+  blocks: RuntimeReadinessBlock[],
+  loadedRelease: BuildReleaseIdentity | undefined,
+  currentRelease: BuildReleaseIdentity | undefined,
+): void {
+  if (!loadedRelease) {
+    return;
+  }
+  if (!currentRelease) {
+    blocks.push({
+      class: "missing_build",
+      reason_code: "current_release_missing",
+      message: "dist/current is missing while the MCP process is running a versioned release",
+      evidence: { loaded_release: loadedRelease },
+    });
+    return;
+  }
+  if (
+    loadedRelease.release_id !== currentRelease.release_id
+    || loadedRelease.release_path !== currentRelease.release_path
+  ) {
+    blocks.push({
+      class: "loaded_release_mismatch",
+      reason_code: "loaded_release_not_current",
+      message: "running MCP process loaded a versioned release that is no longer dist/current",
+      evidence: {
+        loaded_release: loadedRelease,
+        current_release: currentRelease,
+      },
+    });
+  }
+}
+
 function appendSourceBlocks(
   blocks: RuntimeReadinessBlock[],
   facts: GitFacts,
@@ -338,8 +385,11 @@ function appendSourceBlocks(
   }
 }
 
+const MODULE_LOADED_BUILD_RELEASE = buildReleaseIdentityFromModuleUrl(import.meta.url);
+
 export async function runtimeReadinessSnapshot(
   options: RuntimeReadinessOptions = {},
+  context: RuntimeReadinessContext = {},
 ): Promise<RuntimeReadinessSnapshot> {
   const processArgv = options.processArgv ?? process.argv;
   const projectRoot = path.resolve(options.projectRoot ?? defaultProjectRoot());
@@ -354,6 +404,8 @@ export async function runtimeReadinessSnapshot(
     newestBuildInput(projectRoot),
     gitFacts(projectRoot),
   ]);
+  const loadedRelease = context.loadedBuildRelease ?? MODULE_LOADED_BUILD_RELEASE;
+  const currentRelease = loadedRelease ? currentBuildReleaseIdentity(loadedRelease) : undefined;
   const contract = durableRunContractView();
   const blocks: RuntimeReadinessBlock[] = [];
 
@@ -407,6 +459,7 @@ export async function runtimeReadinessSnapshot(
       },
     });
   }
+  appendLoadedReleaseBlocks(blocks, loadedRelease, currentRelease);
   const contractBlockStart = blocks.length;
   appendContractBlock(blocks, contract, options);
   const compatible = blocks.length === contractBlockStart;
@@ -447,6 +500,8 @@ export async function runtimeReadinessSnapshot(
     },
     build: {
       dist_dir: path.join(projectRoot, "dist"),
+      ...(loadedRelease ? { loaded_release: loadedRelease } : {}),
+      ...(currentRelease ? { current_release: currentRelease } : {}),
       server_entrypoint: entrypointFact,
       child_entrypoint: childEntrypointFact,
       child_entrypoint_source: childEntrypointSource,

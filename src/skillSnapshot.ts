@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { resolvePiAgentDir } from "./piAgentDir.js";
 import { loadSkillCatalog, resolveRequestedSkillFromCatalog, SkillResolutionError } from "./skillResources.js";
@@ -30,6 +31,7 @@ import {
 } from "./skillSnapshotStore.js";
 import { ValidationError, type SkillSnapshotActivationReceipt, type SkillSnapshotLaunchBinding } from "./types.js";
 import { validateCwd } from "./validate.js";
+import { declaredSkillName } from "./skillRuntimeBundleValidation.js";
 
 export const SKILL_RUNTIME_BUNDLE_RESOLUTION_CONTRACT_NAME =
   "subagent007.skill_runtime_bundle_resolution" as const;
@@ -134,7 +136,32 @@ export interface SkillSnapshotPublicationRequest {
   contract_version: 1;
   cwd: string;
   project_reference: SkillSnapshotProjectReference & { lifecycle: "active" };
-  bindings: Array<{ skill_name: string; expected_bundle_sha256: string }>;
+  bindings: Array<{ skill_name: string; expected_bundle_sha256: string; source_root?: string }>;
+}
+
+async function exactPublicationSourceRoot(cwd: string, sourceRoot: string): Promise<string> {
+  const reject = (message: string, cause?: unknown): never => {
+    throw new RuntimeBundleValidationError("runtime_bundle_unsafe_path", message, cause === undefined ? {} : { cause });
+  };
+  if (!path.isAbsolute(sourceRoot) || path.resolve(sourceRoot) !== sourceRoot) {
+    return reject("staged runtime bundle source_root must be a canonical absolute path");
+  }
+  let rootStat;
+  let realRoot;
+  let realCwd;
+  try {
+    rootStat = await fs.lstat(sourceRoot);
+    [realRoot, realCwd] = await Promise.all([fs.realpath(sourceRoot), fs.realpath(cwd)]);
+  } catch (error) {
+    return reject("staged runtime bundle source_root could not be inspected", error);
+  }
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || realRoot !== sourceRoot) {
+    return reject("staged runtime bundle source_root must be an exact real directory, not a symlink");
+  }
+  if (realRoot !== realCwd && !realRoot.startsWith(`${realCwd}${path.sep}`)) {
+    return reject("staged runtime bundle source_root must remain under cwd");
+  }
+  return realRoot;
 }
 
 export type SkillSnapshotPublicationResult =
@@ -347,25 +374,61 @@ export async function publishSkillSnapshotsRequest(
       error instanceof Error ? error.message : String(error),
     );
   }
-  const catalog = loadSkillCatalog({
-    cwd,
-    agentDir: options.agentDir ?? resolvePiAgentDir(),
-    ...(options.lookupPaths ? { lookupPaths: options.lookupPaths } : {}),
-  });
+  const catalog = request.bindings.some((binding) => binding.source_root === undefined)
+    ? loadSkillCatalog({
+        cwd,
+        agentDir: options.agentDir ?? resolvePiAgentDir(),
+        ...(options.lookupPaths ? { lookupPaths: options.lookupPaths } : {}),
+      })
+    : null;
   const prepared = [];
   for (const [index, binding] of request.bindings.entries()) {
-    const failed = { index, ...binding };
-    let skill;
-    try {
-      skill = resolveRequestedSkillFromCatalog(binding.skill_name, catalog);
-    } catch (error) {
-      if (error instanceof SkillResolutionError) {
-        return publicationRejected(request, error.resolutionCode, error.message, failed);
+    const failed = {
+      index,
+      skill_name: binding.skill_name,
+      expected_bundle_sha256: binding.expected_bundle_sha256,
+    };
+    let sourceRoot: string;
+    if (binding.source_root === undefined) {
+      let skill;
+      try {
+        skill = resolveRequestedSkillFromCatalog(binding.skill_name, catalog!);
+      } catch (error) {
+        if (error instanceof SkillResolutionError) {
+          return publicationRejected(request, error.resolutionCode, error.message, failed);
+        }
+        throw error;
       }
-      throw error;
+      sourceRoot = path.dirname(skill.filePath);
+    } else {
+      try {
+        sourceRoot = await exactPublicationSourceRoot(cwd, binding.source_root);
+      } catch (error) {
+        if (error instanceof RuntimeBundleValidationError) {
+          return publicationRejected(request, error.failureCode, error.message, failed);
+        }
+        throw error;
+      }
     }
     try {
-      const captured = await captureSkillRuntimeBundle(path.dirname(skill.filePath));
+      const captured = await captureSkillRuntimeBundle(sourceRoot);
+      if (binding.source_root !== undefined) {
+        const recheckedRoot = await exactPublicationSourceRoot(cwd, binding.source_root);
+        if (captured.source_root_path !== sourceRoot || recheckedRoot !== sourceRoot) {
+          throw new RuntimeBundleValidationError(
+            "runtime_bundle_changed",
+            "staged runtime bundle source_root changed while it was being captured",
+          );
+        }
+        if (declaredSkillName(captured.contents.get("SKILL.md")!) !== binding.skill_name) {
+          return publicationRejected(
+            request,
+            "skill_runtime_bundle_name_mismatch",
+            "SKILL.md name does not match the publication skill_name",
+            failed,
+          );
+        }
+      }
       if (captured.bundle_sha256 !== binding.expected_bundle_sha256) {
         return publicationRejected(
           request,
@@ -437,11 +500,315 @@ export async function publishSkillSnapshotsRequest(
   }
 }
 
+export interface RetainedSkillSnapshotSourceResolutionRequest {
+  contract_version: 1;
+  skill_name: string;
+  snapshot_binding: SkillSnapshotLaunchBinding;
+}
+
+type RetainedSnapshotSourceResolutionReasonCode =
+  | "skill_snapshot_not_found"
+  | "skill_snapshot_altered"
+  | "skill_snapshot_reference_mismatch"
+  | "snapshot_source_resolution_failed";
+
+class RetainedSnapshotSourceResolutionError extends Error {
+  constructor(
+    readonly reasonCode: RetainedSnapshotSourceResolutionReasonCode,
+    message: string,
+    options: { cause?: unknown } = {},
+  ) {
+    super(message, options);
+    this.name = "RetainedSnapshotSourceResolutionError";
+  }
+}
+
+function canonicalRetainedSnapshotSourceResolutionRequest(
+  request: RetainedSkillSnapshotSourceResolutionRequest,
+) {
+  return {
+    contract_version: request.contract_version,
+    skill_name: request.skill_name,
+    snapshot_binding: {
+      contract_version: request.snapshot_binding.contract_version,
+      snapshot_id: request.snapshot_binding.snapshot_id,
+      metadata_sha256: request.snapshot_binding.metadata_sha256,
+      publication_receipt_sha256: request.snapshot_binding.publication_receipt_sha256,
+      reference_id: request.snapshot_binding.reference_id,
+      project_id: request.snapshot_binding.project_id,
+      publication_id: request.snapshot_binding.publication_id,
+    },
+  };
+}
+
+function retainedSnapshotSourceResolutionRequestBinding(
+  request: RetainedSkillSnapshotSourceResolutionRequest,
+) {
+  return {
+    canonical_request_sha256: createHash("sha256")
+      .update("subagent007.skill_snapshot_source_resolution.request.v1\n")
+      .update(JSON.stringify(canonicalRetainedSnapshotSourceResolutionRequest(request)))
+      .digest("hex"),
+  };
+}
+
+function retainedSnapshotSourceResolutionRejected(
+  request: RetainedSkillSnapshotSourceResolutionRequest,
+  reasonCode: RetainedSnapshotSourceResolutionReasonCode,
+  message: string,
+) {
+  return {
+    contract_name: "subagent007.skill_snapshot_source_resolution" as const,
+    contract_version: 1 as const,
+    kind: "skill_snapshot_source_resolution_rejected" as const,
+    success: false as const,
+    resolved: false as const,
+    child_started: false as const,
+    model_invoked: false as const,
+    request_binding: retainedSnapshotSourceResolutionRequestBinding(request),
+    reason_code: reasonCode,
+    message,
+  };
+}
+
+interface ExactSnapshotSourcePathState {
+  snapshot_path: string;
+  runtime_path: string;
+  metadata_path: string;
+  snapshot_device: bigint;
+  snapshot_inode: bigint;
+  runtime_device: bigint;
+  runtime_inode: bigint;
+  metadata_device: bigint;
+  metadata_inode: bigint;
+}
+
+async function exactSnapshotSourcePathState(
+  identity: SkillSnapshotIdentity,
+  snapshotsRoot: string,
+): Promise<ExactSnapshotSourcePathState> {
+  const snapshotPath = path.join(snapshotsRoot, "bundles", identity.snapshot_id);
+  const runtimePath = path.join(snapshotPath, "runtime");
+  const metadataPath = path.join(snapshotPath, "snapshot.json");
+  if (identity.snapshot_path !== snapshotPath) {
+    throw new Error("snapshot identity path is not the owner-derived content-addressed path");
+  }
+  const [
+    snapshotStat,
+    snapshotRealPath,
+    runtimeStat,
+    runtimeRealPath,
+    metadataStat,
+    metadataRealPath,
+  ] = await Promise.all([
+    fs.lstat(snapshotPath, { bigint: true }),
+    fs.realpath(snapshotPath),
+    fs.lstat(runtimePath, { bigint: true }),
+    fs.realpath(runtimePath),
+    fs.lstat(metadataPath, { bigint: true }),
+    fs.realpath(metadataPath),
+  ]);
+  if (
+    !snapshotStat.isDirectory() || snapshotStat.isSymbolicLink() || snapshotRealPath !== snapshotPath ||
+    !runtimeStat.isDirectory() || runtimeStat.isSymbolicLink() || runtimeRealPath !== runtimePath ||
+    !metadataStat.isFile() || metadataStat.isSymbolicLink() || metadataRealPath !== metadataPath
+  ) {
+    throw new Error("snapshot source path is not exact owner-controlled regular state");
+  }
+  return {
+    snapshot_path: snapshotPath,
+    runtime_path: runtimePath,
+    metadata_path: metadataPath,
+    snapshot_device: snapshotStat.dev,
+    snapshot_inode: snapshotStat.ino,
+    runtime_device: runtimeStat.dev,
+    runtime_inode: runtimeStat.ino,
+    metadata_device: metadataStat.dev,
+    metadata_inode: metadataStat.ino,
+  };
+}
+
+function sameSnapshotSourcePathState(
+  left: ExactSnapshotSourcePathState,
+  right: ExactSnapshotSourcePathState,
+): boolean {
+  return left.snapshot_path === right.snapshot_path &&
+    left.runtime_path === right.runtime_path &&
+    left.metadata_path === right.metadata_path &&
+    left.snapshot_device === right.snapshot_device &&
+    left.snapshot_inode === right.snapshot_inode &&
+    left.runtime_device === right.runtime_device &&
+    left.runtime_inode === right.runtime_inode &&
+    left.metadata_device === right.metadata_device &&
+    left.metadata_inode === right.metadata_inode;
+}
+
+async function validateExactRetainedSnapshotSource(input: {
+  identity: SkillSnapshotIdentity;
+  skill_name: string;
+  snapshotsRoot: string;
+}): Promise<{
+  metadata: SkillSnapshotMetadata;
+  pathState: ExactSnapshotSourcePathState;
+}> {
+  const before = await exactSnapshotSourcePathState(input.identity, input.snapshotsRoot);
+  const metadata = await validateRecordedSkillSnapshot(input.identity, {
+    snapshotsRoot: input.snapshotsRoot,
+  });
+  const captured = await captureSkillRuntimeBundle(before.runtime_path);
+  const {
+    source_root_path,
+    resolved_skill_path,
+    contents,
+    ...runtimeClosure
+  } = captured;
+  if (
+    source_root_path !== before.runtime_path ||
+    resolved_skill_path !== path.join(before.runtime_path, "SKILL.md") ||
+    declaredSkillName(contents.get("SKILL.md")!) !== input.skill_name ||
+    captured.bundle_sha256 !== metadata.bundle_sha256 ||
+    JSON.stringify(runtimeClosure) !== JSON.stringify(metadata.runtime_closure)
+  ) {
+    throw new Error("snapshot source bytes, canonical skill name, or runtime closure do not match");
+  }
+  const after = await exactSnapshotSourcePathState(input.identity, input.snapshotsRoot);
+  if (!sameSnapshotSourcePathState(before, after)) {
+    throw new Error("snapshot source path identity changed during validation");
+  }
+  return { metadata, pathState: after };
+}
+
+export async function resolveRetainedSkillSnapshotSourceRequest(
+  request: RetainedSkillSnapshotSourceResolutionRequest,
+  options: { snapshotsRoot?: string } = {},
+) {
+  const snapshotsRoot = path.resolve(options.snapshotsRoot ?? defaultSkillSnapshotsRoot());
+  const identity: SkillSnapshotIdentity = {
+    schema_version: 1,
+    snapshot_id: request.snapshot_binding.snapshot_id,
+    snapshot_path: path.join(snapshotsRoot, "bundles", request.snapshot_binding.snapshot_id),
+    metadata_sha256: request.snapshot_binding.metadata_sha256,
+  };
+  try {
+    let validated;
+    try {
+      validated = await validateExactRetainedSnapshotSource({
+        identity,
+        skill_name: request.skill_name,
+        snapshotsRoot,
+      });
+    } catch (error) {
+      throw new RetainedSnapshotSourceResolutionError(
+        (error as NodeJS.ErrnoException).code === "ENOENT"
+          ? "skill_snapshot_not_found"
+          : "skill_snapshot_altered",
+        "retained skill snapshot source is missing, altered, incomplete, symlinked, or mismatched",
+        { cause: error },
+      );
+    }
+    let reference;
+    try {
+      reference = await validateSkillSnapshotReference({
+        snapshot_id: request.snapshot_binding.snapshot_id,
+        reference_id: request.snapshot_binding.reference_id,
+        project_id: request.snapshot_binding.project_id,
+        publication_id: request.snapshot_binding.publication_id,
+        snapshotsRoot,
+      });
+    } catch (error) {
+      throw new RetainedSnapshotSourceResolutionError(
+        "skill_snapshot_reference_mismatch",
+        "retained snapshot reference does not exactly match owner records",
+        { cause: error },
+      );
+    }
+    const publication = await getSkillSnapshotPublicationRecord({
+      project_id: reference.project_reference.project_id,
+      publication_id: reference.project_reference.publication_id,
+      publication_request_sha256: reference.publication_request_sha256,
+      snapshotsRoot,
+    });
+    const publicationBinding = publication?.status === "committed"
+      ? publication.committed_bindings?.find((binding) =>
+          binding.skill_name === request.skill_name &&
+          binding.snapshot_identity.snapshot_id === identity.snapshot_id &&
+          binding.snapshot_identity.metadata_sha256 === identity.metadata_sha256 &&
+          binding.publication_receipt.reference_id === reference.reference_id &&
+          binding.publication_receipt.receipt_sha256 === request.snapshot_binding.publication_receipt_sha256)
+      : undefined;
+    if (
+      !publicationBinding ||
+      reference.skill_name !== request.skill_name ||
+      reference.bundle_sha256 !== validated.metadata.bundle_sha256
+    ) {
+      throw new RetainedSnapshotSourceResolutionError(
+        "skill_snapshot_reference_mismatch",
+        "retained snapshot identity is not part of the exact committed publication",
+      );
+    }
+    const finalValidation = await validateExactRetainedSnapshotSource({
+      identity,
+      skill_name: request.skill_name,
+      snapshotsRoot,
+    });
+    if (
+      !sameSnapshotSourcePathState(validated.pathState, finalValidation.pathState) ||
+      JSON.stringify(validated.metadata) !== JSON.stringify(finalValidation.metadata)
+    ) {
+      throw new RetainedSnapshotSourceResolutionError(
+        "skill_snapshot_altered",
+        "retained snapshot source changed during resolution",
+      );
+    }
+    return {
+      contract_name: "subagent007.skill_snapshot_source_resolution" as const,
+      contract_version: 1 as const,
+      kind: "skill_snapshot_source_resolved" as const,
+      success: true as const,
+      resolved: true as const,
+      child_started: false as const,
+      model_invoked: false as const,
+      request_binding: retainedSnapshotSourceResolutionRequestBinding(request),
+      skill_name: request.skill_name,
+      source_identity: sourceIdentity({
+        skill_name: request.skill_name,
+        source_root_path: finalValidation.pathState.runtime_path,
+        resolved_skill_path: path.join(finalValidation.pathState.runtime_path, "SKILL.md"),
+        bundle_sha256: finalValidation.metadata.bundle_sha256,
+      }),
+      snapshot_identity: finalValidation.metadata.snapshot_identity,
+      bundle_sha256: finalValidation.metadata.bundle_sha256,
+      runtime_closure: finalValidation.metadata.runtime_closure,
+      retained_reference: {
+        reference_id: reference.reference_id,
+        project_id: reference.project_reference.project_id,
+        publication_id: reference.project_reference.publication_id,
+        lifecycle: reference.project_reference.lifecycle,
+      },
+    };
+  } catch (error) {
+    if (error instanceof RetainedSnapshotSourceResolutionError) {
+      return retainedSnapshotSourceResolutionRejected(request, error.reasonCode, error.message);
+    }
+    return retainedSnapshotSourceResolutionRejected(
+      request,
+      "snapshot_source_resolution_failed",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+
 export async function resolveSkillSnapshotLaunchBinding(input: {
   skill_name: string;
   binding: SkillSnapshotLaunchBinding;
   snapshotsRoot?: string;
 }): Promise<{ metadata: SkillSnapshotMetadata; receipt: SkillSnapshotActivationReceipt }> {
+  if (!validatedSkillSnapshotLaunchBinding(input.binding)) {
+    throw new SkillSnapshotLaunchError(
+      "skill_snapshot_reference_mismatch",
+      "skill snapshot launch binding has an invalid exact owner shape",
+    );
+  }
   const root = path.resolve(input.snapshotsRoot ?? defaultSkillSnapshotsRoot());
   const identity: SkillSnapshotIdentity = {
     schema_version: 1,
@@ -516,6 +883,70 @@ export async function resolveSkillSnapshotLaunchBinding(input: {
       runtime_closure_sha256: runtimeClosureSha256,
     },
   };
+}
+
+const SKILL_SNAPSHOT_SHA256_PATTERN = /^[0-9a-f]{64}$/;
+const SKILL_SNAPSHOT_PUBLICATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+
+function snapshotRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function snapshotExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return Object.keys(value).sort().join("\0") === [...keys].sort().join("\0");
+}
+
+export function validatedSkillSnapshotLaunchBinding(value: unknown): SkillSnapshotLaunchBinding | undefined {
+  const binding = snapshotRecord(value);
+  if (!binding || !snapshotExactKeys(binding, [
+    "contract_version", "snapshot_id", "metadata_sha256", "publication_receipt_sha256",
+    "reference_id", "project_id", "publication_id",
+  ])) return undefined;
+  if (
+    binding.contract_version !== 1 ||
+    typeof binding.snapshot_id !== "string" || !SKILL_SNAPSHOT_SHA256_PATTERN.test(binding.snapshot_id) ||
+    typeof binding.metadata_sha256 !== "string" || !SKILL_SNAPSHOT_SHA256_PATTERN.test(binding.metadata_sha256) ||
+    typeof binding.publication_receipt_sha256 !== "string" || !SKILL_SNAPSHOT_SHA256_PATTERN.test(binding.publication_receipt_sha256) ||
+    typeof binding.reference_id !== "string" || !SKILL_SNAPSHOT_SHA256_PATTERN.test(binding.reference_id) ||
+    typeof binding.project_id !== "string" || binding.project_id.trim() === "" ||
+    typeof binding.publication_id !== "string" || binding.publication_id.length > 200 ||
+    !SKILL_SNAPSHOT_PUBLICATION_ID_PATTERN.test(binding.publication_id)
+  ) return undefined;
+  return binding as unknown as SkillSnapshotLaunchBinding;
+}
+
+export function validatedSkillSnapshotActivationReceipt(input: {
+  value: unknown;
+  binding: SkillSnapshotLaunchBinding;
+}): SkillSnapshotActivationReceipt | undefined {
+  const binding = validatedSkillSnapshotLaunchBinding(input.binding);
+  const receipt = snapshotRecord(input.value);
+  if (!binding || !receipt || !snapshotExactKeys(receipt, [
+    "schema_version", "confirmed_before_prompt", "skill_name", "snapshot_id", "metadata_sha256",
+    "bundle_sha256", "publication_receipt_sha256", "reference_id", "project_id", "publication_id",
+    "resolved_skill_path", "runtime_closure_sha256",
+  ])) return undefined;
+  if (
+    receipt.schema_version !== 1 || receipt.confirmed_before_prompt !== true ||
+    typeof receipt.skill_name !== "string" || receipt.skill_name.trim() === "" ||
+    receipt.snapshot_id !== binding.snapshot_id || receipt.metadata_sha256 !== binding.metadata_sha256 ||
+    receipt.publication_receipt_sha256 !== binding.publication_receipt_sha256 ||
+    receipt.reference_id !== binding.reference_id || receipt.project_id !== binding.project_id ||
+    receipt.publication_id !== binding.publication_id ||
+    typeof receipt.bundle_sha256 !== "string" || !SKILL_SNAPSHOT_SHA256_PATTERN.test(receipt.bundle_sha256) ||
+    typeof receipt.runtime_closure_sha256 !== "string" || !SKILL_SNAPSHOT_SHA256_PATTERN.test(receipt.runtime_closure_sha256) ||
+    typeof receipt.resolved_skill_path !== "string" || !path.isAbsolute(receipt.resolved_skill_path)
+  ) return undefined;
+  const runtimeRoot = path.dirname(receipt.resolved_skill_path);
+  const snapshotRoot = path.dirname(runtimeRoot);
+  if (
+    path.basename(receipt.resolved_skill_path) !== "SKILL.md" ||
+    path.basename(runtimeRoot) !== "runtime" ||
+    path.basename(snapshotRoot) !== binding.snapshot_id
+  ) return undefined;
+  return receipt as unknown as SkillSnapshotActivationReceipt;
 }
 
 export async function planSkillSnapshotDeletionRequest(

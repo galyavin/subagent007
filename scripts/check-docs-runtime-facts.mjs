@@ -11,6 +11,17 @@ const PROCESS_ENV_INDEX_PATTERN = /\bprocess\.env\[\s*["']([A-Z][A-Z0-9_]*)["']\
 const ENV_HELPER_ARG_PATTERN =
   /\b(?:defaultSubagentStatePath|safeIntegerFromEnv|nonnegativeIntegerFromEnv|optionalEnv)\(\s*["']([A-Z][A-Z0-9_]*)["']/g;
 const ENV_CONSTANT_PATTERN = /\bconst\s+[A-Za-z0-9_]*ENV[A-Za-z0-9_]*\s*=\s*["']([A-Z][A-Z0-9_]*)["']/g;
+const RETIRED_PUBLIC_SNAPSHOT_TERMS = [
+  "materialize_retained_skill_snapshot",
+  "retained_skill_snapshot_materialization",
+];
+const SNAPSHOT_CONTRACT_DOCUMENTS = [
+  "README.md",
+  ".mex/ROUTER.md",
+  ".mex/context/architecture.md",
+  ".mex/context/decisions.md",
+  ".mex/patterns/skill-snapshot-foundation.md",
+];
 
 function rootFromArgs(argv) {
   const rootIndex = argv.indexOf("--root");
@@ -30,6 +41,15 @@ async function readText(relativePath) {
   return fs.readFile(path.join(ROOT, relativePath), "utf8");
 }
 
+async function readOptionalText(relativePath) {
+  try {
+    return await readText(relativePath);
+  } catch (error) {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
 function collectMatches(text, pattern) {
   return [...text.matchAll(pattern)].map((match) => match[1] ?? match[0]);
 }
@@ -39,7 +59,8 @@ function uniqueSorted(values) {
 }
 
 function isDocumentedRuntimeEnvKey(key) {
-  return /^(?:SUBAGENT007_[A-Z0-9_]+|PI_CODING_AGENT_DIR|GIT_COMMIT)$/.test(key);
+  return !key.startsWith("SUBAGENT007_TEST_") &&
+    /^(?:SUBAGENT007_[A-Z0-9_]+|PI_CODING_AGENT_DIR|GIT_COMMIT)$/.test(key);
 }
 
 function calibrationBlockFor(modelSource, modelClass) {
@@ -144,11 +165,47 @@ async function checkEnvKeys(readme) {
   ];
 }
 
+async function checkRetiredPublicSnapshotTerms() {
+  const stale = [];
+  for (const document of SNAPSHOT_CONTRACT_DOCUMENTS) {
+    const text = await readOptionalText(document);
+    if (!text) continue;
+    for (const term of RETIRED_PUBLIC_SNAPSHOT_TERMS) {
+      if (text.includes(term)) stale.push(`${document}: ${term}`);
+    }
+  }
+  return stale.length === 0
+    ? []
+    : [`Current documentation names retired public snapshot terms:\n${formatList(stale)}`];
+}
+
+async function checkAuthoringEffectScopeFacts(readme) {
+  const [scopeSource, contractSource] = await Promise.all([
+    readOptionalText("src/authoringEffectScope.ts"),
+    readOptionalText("src/durableRunContract.ts"),
+  ]);
+  if (!scopeSource || !contractSource) return [];
+  const required = [
+    "allowed_output_paths",
+    "authoring_effect_scope_binding",
+    ".subagent007/researcher_bounded_v1",
+    ".subagent007/assumption_audit_bounded_v1",
+    "authoring_effect_scope_drift",
+    "not an OS sandbox",
+  ];
+  const missing = required.filter((term) => !readme.includes(term));
+  return missing.length === 0
+    ? []
+    : [`README is missing current authoring effect-scope contract facts:\n${formatList(missing)}`];
+}
+
 const readme = await readText("README.md");
 const modelSource = await readText("src/modelAllowlist.ts");
 const failures = [
   ...checkInternalCalibrationsNotPublished(readme, modelSource),
   ...await checkEnvKeys(readme),
+  ...await checkRetiredPublicSnapshotTerms(),
+  ...await checkAuthoringEffectScopeFacts(readme),
 ];
 
 if (failures.length > 0) {
