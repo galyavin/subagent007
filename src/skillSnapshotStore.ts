@@ -14,6 +14,8 @@ const SNAPSHOT_METADATA_FILE = "snapshot.json";
 const LOCK_RETRY_COUNT = 100;
 const LOCK_RETRY_MS = 10;
 const IMPACT_DIGEST_DOMAIN = "subagent007.skill_snapshot_deletion_impact.v1\n";
+export const SNAPSHOT_PUBLICATION_RECEIPT_DOMAIN = "subagent007.skill_snapshot_publication.receipt.v1\n";
+const RUNTIME_BUNDLE_SOURCE_ID_DOMAIN = "subagent007.skill_runtime_source.v1\n";
 
 export interface RuntimeBundleSourceIdentity {
   schema_version: 1;
@@ -88,6 +90,30 @@ export interface SkillSnapshotPublicationRecord {
   prepared_bindings: SkillSnapshotPublicationPreparedBinding[];
   committed_bindings?: SkillSnapshotPublicationReceiptBinding[];
   record_sha256: string;
+}
+
+export function skillRuntimeBundleSourceIdentitySha256(input: {
+  skill_name: string;
+  resolved_skill_path: string;
+  source_root_path: string;
+  bundle_sha256: string;
+}): string {
+  return createHash("sha256").update(RUNTIME_BUNDLE_SOURCE_ID_DOMAIN).update(JSON.stringify(input)).digest("hex");
+}
+
+export function skillSnapshotPublicationReceiptSha256(input: {  snapshot_identity: SkillSnapshotIdentity;
+  project_reference: SkillSnapshotProjectReference;
+  reference_id: string;
+}): string {
+  return createHash("sha256")
+    .update(SNAPSHOT_PUBLICATION_RECEIPT_DOMAIN)
+    .update(JSON.stringify({
+      schema_version: 1,
+      project_reference: input.project_reference,
+      reference_id: input.reference_id,
+      snapshot_identity: input.snapshot_identity,
+    }))
+    .digest("hex");
 }
 
 export class SkillSnapshotPublicationConflictError extends Error {

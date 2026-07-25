@@ -1,5 +1,3 @@
-import fs from "node:fs/promises";
-import path from "node:path";
 import type { RunPublicEvent } from "./types.js";
 
 const MAX_RECENT_EVENTS = 25;
@@ -12,10 +10,6 @@ const REDACTED_PATTERNS = [
   /<thinking>[\s\S]*?<\/thinking>/gi,
   /\braw thinking\b[\s\S]{0,200}/gi,
 ];
-
-function runEventFilePath(runTasksDir: string, runId: string): string {
-  return path.join(runTasksDir, `${runId}.events.jsonl`);
-}
 
 function redactPublicEventText(text: string): string {
   let next = text;
@@ -32,85 +26,41 @@ function truncatePublicEventText(text: string): string {
   return `${text.slice(0, Math.max(0, MAX_PUBLIC_EVENT_TEXT_CHARS - 15))}[truncated]`;
 }
 
-function sanitizePublicEvent(event: RunPublicEvent): RunPublicEvent {
+declare const canonicalRunPublicEventBrand: unique symbol;
+
+export type CanonicalRunPublicEvent = RunPublicEvent & {
+  readonly [canonicalRunPublicEventBrand]: true;
+};
+
+export function canonicalRunPublicEvent(event: RunPublicEvent): CanonicalRunPublicEvent {
+  const { metadata, ...eventWithoutMetadata } = event;
   return {
-    ...event,
+    ...eventWithoutMetadata,
     schema_version: 1,
     text: truncatePublicEventText(redactPublicEventText(event.text)),
-    metadata: event.metadata ? JSON.parse(JSON.stringify(event.metadata)) as Record<string, unknown> : undefined,
-  };
-}
-
-export async function appendRunPublicEvent(
-  runTasksDir: string,
-  runId: string,
-  event: RunPublicEvent,
-): Promise<RunPublicEvent> {
-  const sanitized = sanitizePublicEvent(event);
-  await fs.mkdir(runTasksDir, { recursive: true });
-  await fs.appendFile(runEventFilePath(runTasksDir, runId), `${JSON.stringify(sanitized)}\n`, "utf8");
-  return sanitized;
-}
-
-export async function readRunPublicEvents(
-  runTasksDir: string,
-  runId: string,
-): Promise<RunPublicEvent[]> {
-  let text: string;
-  try {
-    text = await fs.readFile(runEventFilePath(runTasksDir, runId), "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return [];
-    }
-    throw error;
-  }
-  const events: RunPublicEvent[] = [];
-  for (const line of text.split(/\r?\n/)) {
-    if (line.trim() === "") {
-      continue;
-    }
-    try {
-      const parsed = JSON.parse(line) as RunPublicEvent;
-      if (
-        parsed &&
-        typeof parsed.kind === "string" &&
-        typeof parsed.text === "string" &&
-        typeof parsed.occurred_at === "string"
-      ) {
-        events.push(sanitizePublicEvent(parsed));
-      }
-    } catch {
-      return [];
-    }
-  }
-  return events;
-}
-
-export async function removeRunPublicEvents(runTasksDir: string, runId: string): Promise<void> {
-  await fs.rm(runEventFilePath(runTasksDir, runId), { force: true });
+    ...(metadata
+      ? { metadata: JSON.parse(JSON.stringify(metadata)) as Record<string, unknown> }
+      : {}),
+  } as CanonicalRunPublicEvent;
 }
 
 export function recentEventsProjection(events: RunPublicEvent[]): RunPublicEvent[] {
-  return events.slice(-MAX_RECENT_EVENTS);
+  if (events.length <= MAX_RECENT_EVENTS) return events;
+  const started = events.find((event) => event.event === "run_started");
+  const spawned = events.filter((event) =>
+    event.kind === "child" && event.event === "child_spawned"
+  ).slice(0, 2);
+  const anchors = [started, ...spawned].filter((event): event is RunPublicEvent => event !== undefined);
+  const anchorSet = new Set(anchors);
+  const tail = events
+    .filter((event) => !anchorSet.has(event))
+    .slice(-(MAX_RECENT_EVENTS - anchors.length));
+  const retained = new Set([...anchors, ...tail]);
+  return events.filter((event) => retained.has(event));
 }
 
 export function terminalEventsProjection(events: RunPublicEvent[]): RunPublicEvent[] {
-  const unique: RunPublicEvent[] = [];
-  const seen = new Set<string>();
-  for (const event of events) {
-    const key = JSON.stringify(event);
-    if (!seen.has(key)) {
-      seen.add(key);
-      unique.push(event);
-    }
-  }
-  const recent = recentEventsProjection(unique);
-  const started = unique.find((event) => event.event === "run_started");
-  if (!started || recent.includes(started)) {
-    return recent;
-  }
-  return [started, ...recent.slice(-(MAX_RECENT_EVENTS - 1))];
+  return recentEventsProjection(events);
 }
 
 export function publicOutputExcerptProjection(events: RunPublicEvent[]): string | undefined {

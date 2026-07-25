@@ -78,7 +78,6 @@ export interface FailureLogRecord {
   cwd?: string;
   run_id?: string;
   task_kind?: "run" | "session";
-  output_path?: string | null;
   session_key?: string;
   session_dir?: string;
   success?: boolean;

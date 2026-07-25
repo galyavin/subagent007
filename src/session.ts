@@ -12,8 +12,11 @@ import {
   type FailureLogTool,
 } from "./failureLog.js";
 import { resolveAllowedModelRef } from "./modelAllowlist.js";
-import { defaultSessionsDir } from "./output.js";
-import { appendContractPacketInstruction, extractContractPacket } from "./packet.js";
+import { decodeRunOutputReference, defaultSessionsDir, resolveRunsDir, runOutputPath } from "./output.js";
+import {
+  appendContractPacketInstruction,
+  extractContractPacket,
+} from "./packet.js";
 import { processIsDefinitelyGone } from "./processLiveness.js";
 import { createPromptProvenance } from "./prompt.js";
 import type { HeartbeatNotify } from "./progress.js";
@@ -44,6 +47,12 @@ import { ValidationError } from "./types.js";
 import { assertDeadlineRiskTimeoutBudget, validateAndResolveRequest } from "./validate.js";
 
 const SESSION_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
+type RunSubagentCoreOptions = NonNullable<Parameters<typeof runSubagentCore>[1]>;
+
+const runOutputReferenceSchema = z.custom<import("./types.js").RunOutputReference>(
+  (value) => decodeRunOutputReference(value) !== undefined,
+  "invalid run output reference",
+);
 
 const sessionManifestSchema = z.object({
   schema_version: z.literal(1),
@@ -56,7 +65,7 @@ const sessionManifestSchema = z.object({
   created_at: z.string(),
   last_run_at: z.string(),
   run_count: z.number().int().nonnegative(),
-  last_output_path: z.string(),
+  last_output_reference: runOutputReferenceSchema,
   status: z.literal("active"),
 });
 
@@ -70,7 +79,7 @@ const sessionRunRecordSchema = z.object({
   attempt_subagent_session_id: z.string().nullable().optional(),
   attempt_session_established: z.boolean().optional(),
   resume_mode: z.enum(RESUME_MODES),
-  output_path: z.string(),
+  output_reference: runOutputReferenceSchema,
   packet_path: z.string().nullable(),
   packet_policy: z.enum(SESSION_PACKET_POLICIES),
   packet_parse_status: z.enum(PACKET_PARSE_STATUSES),
@@ -90,6 +99,8 @@ const sessionRunRecordSchema = z.object({
   force_grace_ms: z.number().int().nonnegative().optional(),
   resolved_model_class: z.enum(MODEL_CLASSES).optional(),
   requested_skill: z.string().nullable(),
+  resolved_skill_path: z.string().nullable().optional(),
+  resolved_skill_sha256: z.string().nullable().optional(),
   requested_output_mode: z.enum(OUTPUT_MODES),
   written_output_mode: z.enum(OUTPUT_MODES),
   stop_reason: z.enum(RUN_STOP_REASONS).optional(),
@@ -475,7 +486,7 @@ async function reconcileManifestWithLedger(
     ...manifest,
     run_count: records.length,
     last_run_at: last.finished_at,
-    last_output_path: last.output_path,
+    last_output_reference: last.output_reference,
   };
   await writeJsonAtomic(manifestPath, reconciled);
   return reconciled;
@@ -713,6 +724,7 @@ export async function runSubagentSession(
   request: RunSubagentSessionRequest,
   options: {
     sessionsDir?: string;
+    runsDir?: string;
     heartbeat?: HeartbeatNotify;
     heartbeatIntervalMs?: number;
     abortSignal?: AbortSignal;
@@ -722,9 +734,14 @@ export async function runSubagentSession(
     rootRunId?: string;
     recursionDepth?: number;
     onOutputLine?: (line: string) => void | Promise<void>;
-    onChildSpawned?: () => void | Promise<void>;
+    onChildSpawned?: (occurredAt: string) => void | Promise<void>;
     onChildControlReady?: (send: (message: string) => boolean) => void;
     onInputResponseAccepted?: (response: ChildInputResponseAccepted) => void;
+    onTranscriptStaged?: RunSubagentCoreOptions["onTranscriptStaged"];
+    onActivationConfirmed?: RunSubagentCoreOptions["onActivationConfirmed"];
+    onSkillSnapshotActivationConfirmed?: RunSubagentCoreOptions["onSkillSnapshotActivationConfirmed"];
+    onRecursiveDelegationConfirmed?: RunSubagentCoreOptions["onRecursiveDelegationConfirmed"];
+    onOwnerLaunchObservation?: RunSubagentCoreOptions["onOwnerLaunchObservation"];
     failureLogTool?: Extract<FailureLogTool, "start_session_run" | "run_subagent_session">;
     onSessionCommitPhase?: (phase: SessionCommitPhase) => void | Promise<void>;
   } = {},
@@ -782,10 +799,11 @@ export async function runSubagentSession(
     const childRunId = options.childRunId ?? runId;
     attemptPiSessionDir = path.join(sessionDir, "attempt-pi-sessions", runId);
     const attemptSession = await prepareAttemptSession(sessionDir, runId, manifest);
+    const sessionRunsDir = resolveRunsDir(options.runsDir);
     const runResult = await runSubagentCore(sessionRunRequest(resolved, attemptSession.runManifest), {
       runId: childRunId,
       mailboxRoot: options.mailboxRoot,
-      runsDir: path.join(sessionDir, "runs"),
+      runsDir: sessionRunsDir,
       allowTimeout: true,
       piSessionDir: attemptSession.attemptPiSessionDir,
       heartbeat: options.heartbeat,
@@ -795,12 +813,21 @@ export async function runSubagentSession(
       onChildSpawned: options.onChildSpawned,
       onChildControlReady: options.onChildControlReady,
       onInputResponseAccepted: options.onInputResponseAccepted,
+      onTranscriptStaged: options.onTranscriptStaged,
+      onActivationConfirmed: options.onActivationConfirmed,
+      onSkillSnapshotActivationConfirmed: options.onSkillSnapshotActivationConfirmed,
+      onRecursiveDelegationConfirmed: options.onRecursiveDelegationConfirmed,
+      onOwnerLaunchObservation: options.onOwnerLaunchObservation,
       promptProvenance,
       skillFilePath,
       rootRunId: options.rootRunId,
       recursionDepth: options.recursionDepth,
     });
-    const outputText = await fs.readFile(runResult.output_path, "utf8");
+    const primaryOutputReference = runResult.output_references.length === 1
+      ? decodeRunOutputReference(runResult.output_references[0])
+      : undefined;
+    if (!primaryOutputReference) throw new Error("session run did not emit one exact primary output reference");
+    const outputText = await fs.readFile(runOutputPath(primaryOutputReference, sessionRunsDir), "utf8");
     const attemptSubagentSessionId = attemptSession.runManifest?.subagent_session_id ?? runResult.session_id;
     const attemptSessionEstablished = attemptSubagentSessionId !== null;
     const packet =
@@ -847,7 +874,7 @@ export async function runSubagentSession(
       attempt_subagent_session_id: attemptSubagentSessionId,
       attempt_session_established: attemptSessionEstablished,
       resume_mode: resumeMode,
-      output_path: runResult.output_path,
+      output_reference: primaryOutputReference,
       packet_path: packet.packetPath,
       packet_policy: packetPolicy,
       packet_parse_status: packet.packetParseStatus,
@@ -886,7 +913,7 @@ export async function runSubagentSession(
         created_at: manifest?.created_at ?? startedAt,
         last_run_at: finishedAt,
         run_count: runRecord.sequence,
-        last_output_path: runResult.output_path,
+        last_output_reference: primaryOutputReference,
         status: "active",
       };
       await commitAttemptSession({
@@ -903,7 +930,6 @@ export async function runSubagentSession(
     }
 
     const result: RunSubagentSessionResult = {
-      output_path: runResult.output_path,
       output_references: runResult.output_references,
       success,
       exit_code: runResult.exit_code,
@@ -956,7 +982,6 @@ export async function runSubagentSession(
         cwd,
         run_id: options.childRunId ?? runRecord.run_id,
         task_kind: "session",
-        output_path: result.output_path,
         session_key: result.session_key,
         session_dir: result.session_dir,
         success: result.success,

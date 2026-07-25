@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { defaultConfigPath, loadConfig, loadConfigRecord } from "../src/config.js";
 import { modelHealthForClass } from "../src/modelHealth.js";
-import { stripAnsiAndControls, writeRunOutput } from "../src/output.js";
+import { runOutputPath, stripAnsiAndControls, writeRunOutput } from "../src/output.js";
 import { resolvePiAgentDir } from "../src/piAgentDir.js";
 import { composePrompt } from "../src/prompt.js";
 import { ValidationError } from "../src/types.js";
@@ -157,7 +157,7 @@ test("rejects unsupported config model classes", async () => {
     JSON.stringify({ default_model_class: "Z" }),
   );
 
-  await assert.rejects(loadConfig(configPath), /default_model_class must be one of: A, B, C, D, E, Z1, Z2, Z3/);
+  await assert.rejects(loadConfig(configPath), /default_model_class must be one of: A, B, C, D, E, Z1, Z2, Z3, Z4, Z5/);
 });
 
 test("missing config file is allowed until defaults are needed", async () => {
@@ -478,9 +478,11 @@ test("resolves model classes to calibrated model and thinking level", async () =
     ["C", "openai-codex/gpt-5.6-luna", "xhigh"],
     ["D", "openai-codex/gpt-5.6-terra", "high"],
     ["E", "openai-codex/gpt-5.6-sol", "high"],
-    ["Z1", "openrouter/moonshotai/kimi-k3", "xhigh"],
-    ["Z2", "openrouter/anthropic/claude-opus-4.8", "xhigh"],
-    ["Z3", "openrouter/z-ai/glm-5.2", "xhigh"],
+    ["Z1", "openrouter/deepseek/deepseek-v4-pro", "xhigh"],
+    ["Z2", "openrouter/z-ai/glm-5.2", "xhigh"],
+    ["Z3", "openrouter/anthropic/claude-sonnet-5", "xhigh"],
+    ["Z4", "openrouter/moonshotai/kimi-k3", "xhigh"],
+    ["Z5", "openrouter/anthropic/claude-opus-5", "xhigh"],
   ] as const) {
     const resolved = await validateAndResolveRequest(
       { prompt: "x", cwd, model_class: modelClass },
@@ -499,7 +501,7 @@ test("rejects invalid model class and old public model fields", async () => {
       { prompt: "x", cwd, model_class: "Z" as never },
       {},
     ),
-    /model_class must be one of: A, B, C, D, E, Z1, Z2, Z3/,
+    /model_class must be one of: A, B, C, D, E, Z1, Z2, Z3, Z4, Z5/,
   );
   await assert.rejects(
     validateAndResolveRequest(
@@ -540,7 +542,7 @@ test("rejects invalid preflight input before any child spawn is possible", async
       { prompt: "x", cwd, model_class: "minimal" as never },
       {},
     ),
-    /model_class must be one of: A, B, C, D, E, Z1, Z2, Z3/,
+    /model_class must be one of: A, B, C, D, E, Z1, Z2, Z3, Z4, Z5/,
   );
 
   await withEnv(
@@ -641,7 +643,8 @@ test("strips ANSI escape and control codes for Markdown output", () => {
 test("run output filenames use the timestamped safe-id shape", async () => {
   const runsDir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-output-name-"));
   const output = await writeRunOutput("content", runsDir);
+  const outputPath = runOutputPath(output.reference, runsDir);
 
-  assert.equal(path.dirname(output.outputPath), runsDir);
-  assert.match(path.basename(output.outputPath), TIMESTAMPED_OUTPUT_BASENAME_PATTERN);
+  assert.equal(path.dirname(outputPath), runsDir);
+  assert.match(path.basename(outputPath), TIMESTAMPED_OUTPUT_BASENAME_PATTERN);
 });

@@ -1,12 +1,33 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { createFakePiChild } from "./helpers/fakePiChild.js";
 import { readJsonl } from "./helpers/testUtils.js";
+
+const execFileAsync = promisify(execFile);
+
+async function compileDetachedServer(directory: string): Promise<string> {
+  const projectRoot = path.resolve(".");
+  const detachedProject = path.join(directory, "compiled-source-server");
+  const outputDir = path.join(detachedProject, "dist");
+  await fs.mkdir(detachedProject);
+  await Promise.all([
+    fs.copyFile(path.join(projectRoot, "package.json"), path.join(detachedProject, "package.json")),
+    fs.symlink(path.join(projectRoot, "node_modules"), path.join(detachedProject, "node_modules"), "dir"),
+  ]);
+  await execFileAsync(
+    process.execPath,
+    [path.join(projectRoot, "node_modules", "typescript", "bin", "tsc"), "-p", path.join(projectRoot, "tsconfig.json"), "--outDir", outputDir, "--noCheck"],
+    { cwd: projectRoot, maxBuffer: 10 * 1024 * 1024 },
+  );
+  return path.join(outputDir, "server.js");
+}
 
 test("bounded researcher profile activates through every supported start surface and fails closed before launch", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-bounded-mcp-"));
@@ -24,7 +45,20 @@ test("bounded researcher profile activates through every supported start surface
   await fs.mkdir(path.join(ajSkillDir, "scripts"), { recursive: true });
   await fs.mkdir(path.join(agentDir, "npm", "node_modules", "pi-search-hub", "extensions"), { recursive: true });
   await fs.writeFile(path.join(skillDir, "SKILL.md"), "---\nname: researcher\ndescription: bounded\n---\n# researcher\n", "utf8");
-  await fs.writeFile(path.join(skillDir, "scripts", "researchctl.py"), "print('research controller snapshot')\n", "utf8");
+  await fs.writeFile(path.join(skillDir, "scripts", "researchctl.py"), [
+    "import json",
+    "import sys",
+    "command = sys.argv[1]",
+    "with open(sys.argv[2], encoding='utf-8') as source:",
+    "    job = json.load(source)",
+    "if job.get('state') != 'complete':",
+    "    raise SystemExit(1)",
+    "if command == 'render':",
+    "    print('# complete research')",
+    "elif command != 'validate':",
+    "    raise SystemExit(2)",
+    "",
+  ].join("\n"), "utf8");
   await fs.writeFile(path.join(ajSkillDir, "SKILL.md"), "---\nname: assumption-judge\ndescription: bounded\n---\n# assumption-judge\n", "utf8");
   await fs.writeFile(path.join(ajSkillDir, "scripts", "aj.py"), "print('aj controller snapshot')\n", "utf8");
   await fs.writeFile(
@@ -35,9 +69,10 @@ test("bounded researcher profile activates through every supported start surface
   await fs.writeFile(path.join(agentDir, "npm", "node_modules", "pi-search-hub", "extensions", "search-hub.ts"), "export default {};\n", "utf8");
   const configPath = path.join(stateDir, "config.json");
   await fs.writeFile(configPath, JSON.stringify({ default_model_class: "C" }), "utf8");
+  const serverPath = await compileDetachedServer(root);
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [path.resolve("dist/server.js")],
+    args: [serverPath],
     env: {
       ...process.env,
       HOME: path.join(root, "home"),
@@ -92,7 +127,7 @@ test("bounded researcher profile activates through every supported start surface
         name,
         arguments: {
           cwd: projectDir,
-          prompt: "FAST",
+          prompt: "RESEARCH_COMPLETE_JOB",
           skill_name: "researcher",
           effect_profile: "researcher_bounded_v1",
           skill_snapshot_binding: binding,
@@ -101,12 +136,35 @@ test("bounded researcher profile activates through every supported start surface
         },
       });
       assert.notEqual(response.isError, true, name);
-      const view = response.structuredContent as { run_id?: string; status: string; activation_receipt?: { active_tool_names?: string[]; tool_bindings?: Array<{ tool_name: string }> } };
+      const view = response.structuredContent as {
+        run_id?: string;
+        status: string;
+        activation_receipt?: { active_tool_names?: string[]; tool_bindings?: Array<{ tool_name: string }> };
+        controller_terminal_receipt?: {
+          schema_version?: number;
+          controller?: string;
+          state?: string;
+          validation?: string;
+          job_sha256?: string;
+          render_profile?: string;
+          render_sha256?: string;
+        };
+      };
       const terminal = view.status === "working" || view.status === "input_required"
         ? await waitForTerminal(client, view.run_id!)
         : view;
       assert.equal((terminal.activation_receipt?.active_tool_names ?? []).join(","), "read,grep,find,ls,write,edit,web_search,web_read,researchctl", `${name}: ${JSON.stringify(terminal)}`);
       assert.deepEqual(terminal.activation_receipt?.tool_bindings?.map((entry) => entry.tool_name), ["web_read", "web_search", "researchctl"]);
+      assert.deepEqual(terminal.controller_terminal_receipt, {
+        schema_version: 1,
+        controller: "researchctl",
+        state: "complete",
+        validation: "passed",
+        job_sha256: terminal.controller_terminal_receipt?.job_sha256,
+        render_profile: "full",
+        render_sha256: terminal.controller_terminal_receipt?.render_sha256,
+      });
+      await fs.rm(path.join(projectDir, ".subagent007"), { recursive: true, force: true });
     }
     const ajResolved = await client.callTool({
       name: "resolve_skill_runtime_bundles",
@@ -270,7 +328,20 @@ test("bounded researcher profile activates through every supported start surface
   }
 });
 
-async function waitForTerminal(client: Client, runId: string): Promise<{ status: string; reason_code?: string; activation_receipt?: { active_tool_names?: string[]; tool_bindings?: Array<{ tool_name: string }> } }> {
+async function waitForTerminal(client: Client, runId: string): Promise<{
+  status: string;
+  reason_code?: string;
+  activation_receipt?: { active_tool_names?: string[]; tool_bindings?: Array<{ tool_name: string }> };
+  controller_terminal_receipt?: {
+    schema_version?: number;
+    controller?: string;
+    state?: string;
+    validation?: string;
+    job_sha256?: string;
+    render_profile?: string;
+    render_sha256?: string;
+  };
+}> {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
     const response = await client.callTool({ name: "get_run", arguments: { run_id: runId } });

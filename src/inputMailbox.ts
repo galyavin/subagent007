@@ -270,6 +270,7 @@ async function settleInputRequestAtPath(options: {
   responseId?: string;
   receipt?: string;
   reason?: string;
+  settledAt?: string;
 }): Promise<InputTerminalRecord> {
   if (options.outcome === "answered") {
     if (typeof options.responseId !== "string" || options.responseId.trim() === "") {
@@ -290,7 +291,7 @@ async function settleInputRequestAtPath(options: {
     schema_version: 2,
     request_id: options.requestId,
     status: options.outcome,
-    settled_at: new Date().toISOString(),
+    settled_at: options.settledAt ?? new Date().toISOString(),
     ...(options.outcome === "answered" ? { response_id: options.responseId, receipt: options.receipt } : {}),
     ...(options.reason ? { reason: options.reason } : {}),
   };
@@ -325,6 +326,7 @@ export async function settleInputResponse(options: {
   requestId: string;
   responseId: string;
   receipt: string;
+  settledAt?: string;
 }): Promise<InputTerminalRecord> {
   const mailboxRoot = options.mailboxRoot ?? defaultInputRequestsDir();
   const recordPath = await findRequestPath(mailboxRoot, options.requestId);
@@ -335,6 +337,7 @@ export async function settleInputResponse(options: {
     outcome: "answered",
     responseId: options.responseId,
     receipt: options.receipt,
+    settledAt: options.settledAt,
   });
 }
 
@@ -342,6 +345,7 @@ export async function closePendingInputRequestsForRun(options: {
   mailboxRoot?: string;
   runId: string;
   reason?: string;
+  settledAt?: string;
 }): Promise<InputTerminalRecord[]> {
   const mailboxRoot = options.mailboxRoot ?? defaultInputRequestsDir();
   const pending = await listInputRequests({ mailboxRoot, runId: options.runId, status: "pending" });
@@ -354,6 +358,7 @@ export async function closePendingInputRequestsForRun(options: {
         requestId: request.request_id,
         outcome: "closed",
         reason: options.reason ?? "run reached a terminal state",
+        settledAt: options.settledAt,
       }));
     } catch (error) {
       if (!(error instanceof ValidationError) || !/already (answered|timed out|closed)/.test(error.message)) {

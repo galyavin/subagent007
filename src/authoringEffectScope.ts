@@ -22,6 +22,19 @@ export const MIN_MATERIAL_ALLOCATION_RATIO = 0.5;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const EFFECT_SCOPE_DIGEST_DOMAIN = "subagent007.authoring_effect_scope.immutable_tree.v1\n";
 const CLAIM_CEILING = "pi_tool_dispatch_path_controller_and_terminal_reinspection_not_os_sandbox" as const;
+const AUTHORING_EFFECT_SCOPE_BINDING_KEYS = [
+  "schema_version",
+  "effect_profile",
+  "task_root",
+  "task_root_device",
+  "task_root_inode",
+  "recursive_delegation",
+  "immutable_tree_sha256",
+  "writable_scope",
+  "terminal_reinspection_required",
+  "claim_ceiling",
+] as const;
+const WRITABLE_SCOPE_KEYS = ["kind", "paths"] as const;
 
 interface CapturedDirectoryEntry {
   kind: "directory";
@@ -52,6 +65,12 @@ function failInvalid(message: string): never {
 
 function failDrift(message: string): never {
   throw new ValidationError(message, "authoring_effect_scope_drift");
+}
+
+function hasExactOwnKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value) &&
+    Object.keys(value).length === keys.length &&
+    keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
 }
 
 function isWithin(root: string, candidate: string): boolean {
@@ -474,6 +493,8 @@ export async function assertAuthoringEffectScopeTerminal(
 
 export function assertAuthoringEffectScopeBinding(value: AuthoringEffectScopeBinding): void {
   if (
+    !hasExactOwnKeys(value, AUTHORING_EFFECT_SCOPE_BINDING_KEYS) ||
+    !hasExactOwnKeys(value.writable_scope, WRITABLE_SCOPE_KEYS) ||
     value.schema_version !== 1 ||
     !isEffectScopedAuthoringProfile(value.effect_profile) ||
     !path.isAbsolute(value.task_root) || path.resolve(value.task_root) !== value.task_root ||

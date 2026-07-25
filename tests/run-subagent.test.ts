@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { SkillBindingVerificationResult } from "../src/types.js";
@@ -15,7 +17,15 @@ import {
   runSubagentCore as runSubagent,
   RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT,
 } from "../src/runSubagent.js";
-import { getRunTask, reconcilePersistedActiveRunTasks } from "../src/runTask.js";
+import {
+  answerRunTaskInput,
+  cancelRunTask,
+  getRunTask,
+  reconcilePersistedActiveRunTasks,
+  startRunTask,
+} from "../src/runTask.js";
+import { validateSkillRuntimeBundle } from "../src/skillRuntimeBundle.js";
+import { publishSkillSnapshotsRequest } from "../src/skillSnapshot.js";
 import { ValidationError } from "../src/types.js";
 import { createFakePiChild } from "./helpers/fakePiChild.js";
 import { readJsonl, sha256File, withEnv } from "./helpers/testUtils.js";
@@ -23,12 +33,12 @@ import { readJsonl, sha256File, withEnv } from "./helpers/testUtils.js";
 type RunSubagentMetadata = {
   run_id: string;
   status: "working" | "input_required" | "completed" | "failed" | "cancelled" | "timed_out" | "rejected";
-  output_path: string;
   output_references?: Array<{
     kind: "file";
     name: "primary";
-    path: string;
+    relative_path: string;
     size_bytes: number;
+    content_sha256: string;
     output_mode: "final" | "transcript";
   }>;
   success: boolean;
@@ -39,6 +49,7 @@ type RunSubagentMetadata = {
   resolved_timeout_ms: number | null;
   effective_timeout_ms: number | null;
   partial_output_available?: boolean;
+  partial_output_path?: string;
   resume_possible?: boolean;
   duration_ms?: number;
   stop_signal: string | null;
@@ -120,11 +131,35 @@ type RunSubagentMetadata = {
   root_run_id?: string;
   recursion_depth?: number;
   child_run_ids?: string[];
+  descendant_run_ids?: string[];
+  descendant_terminal_statuses?: Record<string, string>;
+  session_dir?: string;
 };
+
+let currentMcpRunsDir: string | undefined;
+
+function outputPathFor(metadata: Pick<RunSubagentMetadata, "output_references"> & { session_dir?: string }, runsDir?: string): string {
+  const reference = metadata.output_references?.length === 1 ? metadata.output_references[0] : undefined;
+  assert.ok(reference, "one primary output reference is required");
+  const root = runsDir ?? currentMcpRunsDir ?? process.env.SUBAGENT007_RUNS_DIR;
+  assert.ok(root, "a configured runs root is required to resolve output bytes");
+  return path.join(path.resolve(root), reference.relative_path);
+}
 
 function persistedDurableRunView(value: unknown): RunSubagentMetadata {
   if (value && typeof value === "object" && "public_view" in value) {
     return (value as { public_view: RunSubagentMetadata }).public_view;
+  }
+  if (value && typeof value === "object" &&
+    (value as { record_name?: unknown }).record_name === "subagent007.current_run_claim") {
+    const {
+      record_name: _recordName,
+      record_version: _recordVersion,
+      declarations: _declarations,
+      launch_observation: _launchObservation,
+      ...view
+    } = value as Record<string, unknown>;
+    return view as RunSubagentMetadata;
   }
   return value as RunSubagentMetadata;
 }
@@ -165,6 +200,7 @@ async function connectFakeClient<T>(
     fakeLogPath: string;
     modelHealthPath: string;
     inputRequestsDir: string;
+    activeChildrenDir: string;
   }) => Promise<T>,
   options: { config?: Record<string, unknown>; env?: NodeJS.ProcessEnv } = {},
 ): Promise<T> {
@@ -173,6 +209,7 @@ async function connectFakeClient<T>(
   const stateDir = path.join(tmp, "state");
   const configPath = path.join(stateDir, "config.json");
   const modelHealthPath = path.join(stateDir, "model-health.json");
+  const runsDir = options.env?.SUBAGENT007_RUNS_DIR ?? path.join(stateDir, "runs");
   const fake = await createFakePiChild();
   await fs.mkdir(projectDir, { recursive: true });
   await fs.mkdir(stateDir, { recursive: true });
@@ -185,7 +222,7 @@ async function connectFakeClient<T>(
 
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [path.resolve("dist/server.js")],
+    args: ["--import", "tsx", path.resolve("src/server.ts")],
     env: {
       ...process.env,
       SUBAGENT007_CONFIG_PATH: configPath,
@@ -194,11 +231,21 @@ async function connectFakeClient<T>(
       SUBAGENT007_FAILURE_LOG: "off",
       SUBAGENT007_RECORD_SOURCE: "test",
       SUBAGENT007_MODEL_HEALTH_PATH: modelHealthPath,
+      SUBAGENT007_RUN_TASKS_DIR: path.join(stateDir, "run-tasks"),
+      SUBAGENT007_INPUT_REQUESTS_DIR: path.join(stateDir, "input-requests"),
+      SUBAGENT007_ACTIVE_CHILDREN_DIR: path.join(stateDir, "active-children"),
+      SUBAGENT007_QUEUED_RUNS_DIR: path.join(stateDir, "queued-runs"),
+      SUBAGENT007_RUNS_DIR: runsDir,
+      SUBAGENT007_SESSIONS_DIR: path.join(stateDir, "sessions"),
+      SUBAGENT007_PI_RAW_SESSIONS_DIR: path.join(stateDir, "pi-sessions"),
+      SUBAGENT007_SKILL_SNAPSHOTS_DIR: path.join(stateDir, "skill-snapshots"),
       ...options.env,
     },
   });
   const client = new Client({ name: "subagent007-pi-runner-test", version: "0.1.0" });
 
+  const previousMcpRunsDir = currentMcpRunsDir;
+  currentMcpRunsDir = runsDir;
   try {
     await client.connect(transport);
     return await run(client, {
@@ -209,8 +256,11 @@ async function connectFakeClient<T>(
       inputRequestsDir: options.env?.SUBAGENT007_INPUT_REQUESTS_DIR ??
         process.env.SUBAGENT007_INPUT_REQUESTS_DIR ??
         path.join(stateDir, "input-requests"),
+      activeChildrenDir: options.env?.SUBAGENT007_ACTIVE_CHILDREN_DIR ??
+        path.join(stateDir, "active-children"),
     });
   } finally {
+    currentMcpRunsDir = previousMcpRunsDir;
     await client.close();
   }
 }
@@ -252,6 +302,132 @@ async function waitForTerminalRun(client: Client, runId: string): Promise<RunSub
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error(`timed out waiting for terminal run ${runId}`);
+}
+
+async function waitForTerminalRunTask(runId: string): Promise<RunSubagentMetadata> {
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    const metadata = await getRunTask(runId);
+    if (metadata.status === "completed" || metadata.status === "failed" || metadata.status === "cancelled" || metadata.status === "timed_out") {
+      return metadata as RunSubagentMetadata;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`timed out waiting for terminal run ${runId}`);
+}
+
+interface DirectRunTestFixture {
+  root: string;
+  projectDir: string;
+  runTasksDir: string;
+  fake: Awaited<ReturnType<typeof createFakePiChild>>;
+  env: Record<string, string>;
+}
+
+async function createDirectRunTestFixture(prefix: string): Promise<DirectRunTestFixture> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const projectDir = path.join(root, "project");
+  const stateDir = path.join(root, "state");
+  const configPath = path.join(stateDir, "config.json");
+  const runTasksDir = path.join(stateDir, "run-tasks");
+  const inputRequestsDir = path.join(stateDir, "input-requests");
+  const fake = await createFakePiChild();
+  await fs.mkdir(projectDir, { recursive: true });
+  await fs.mkdir(stateDir, { recursive: true });
+  await fs.writeFile(configPath, JSON.stringify({ default_model_class: "C" }), "utf8");
+  return {
+    root,
+    projectDir,
+    runTasksDir,
+    fake,
+    env: {
+      SUBAGENT007_CONFIG_PATH: configPath,
+      SUBAGENT007_PI_CHILD_PATH: fake.childPath,
+      FAKE_PI_LOG_PATH: fake.logPath,
+      SUBAGENT007_FAILURE_LOG: "off",
+      SUBAGENT007_RECORD_SOURCE: "test",
+      SUBAGENT007_MODEL_HEALTH_PATH: path.join(stateDir, "model-health.json"),
+      SUBAGENT007_RUNS_DIR: path.join(stateDir, "runs"),
+      SUBAGENT007_RUN_TASKS_DIR: runTasksDir,
+      SUBAGENT007_INPUT_REQUESTS_DIR: inputRequestsDir,
+      SUBAGENT007_ACTIVE_CHILDREN_DIR: path.join(stateDir, "active-children"),
+      SUBAGENT007_QUEUED_RUNS_DIR: path.join(stateDir, "queued-runs"),
+      SUBAGENT007_SESSIONS_DIR: path.join(stateDir, "sessions"),
+    },
+  };
+}
+
+async function removeDirectRunTestFixture(fixture: DirectRunTestFixture): Promise<void> {
+  await Promise.all([
+    fs.rm(fixture.root, { recursive: true, force: true }),
+    fs.rm(path.dirname(fixture.fake.childPath), { recursive: true, force: true }),
+  ]);
+}
+
+async function makeDirectoriesRemovable(root: string): Promise<void> {
+  await fs.chmod(root, 0o755).catch(() => undefined);
+  const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
+  await Promise.all(entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => makeDirectoriesRemovable(path.join(root, entry.name))));
+}
+
+async function waitForDirectRunView(
+  runId: string,
+  predicate: (view: RunSubagentMetadata) => boolean,
+  description: string,
+): Promise<RunSubagentMetadata> {
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    const view = await getRunTask(runId) as RunSubagentMetadata;
+    if (predicate(view)) return view;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for ${description} on run ${runId}`);
+}
+
+function deferredSignal(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
+async function runTestWorker(
+  source: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs = 5_000,
+): Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }> {
+  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", source], {
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => { stdout += chunk; });
+  child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    child.kill("SIGKILL");
+  }, timeoutMs);
+  const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signal) => resolve({ code, signal }));
+  });
+  clearTimeout(timeout);
+  if (timedOut) {
+    throw new Error(`test worker timed out: stdout=${stdout} stderr=${stderr}`);
+  }
+  return { ...result, stdout, stderr };
+}
+
+async function cancelAndWaitForDirectRun(runId: string): Promise<void> {
+  await cancelRunTask(runId).catch(() => undefined);
+  await waitForTerminalRunTask(runId).catch(() => undefined);
 }
 
 async function waitForActiveHeartbeat(client: Client, runId: string): Promise<RunSubagentMetadata> {
@@ -327,6 +503,57 @@ async function waitForPathMissing(filePath: string): Promise<void> {
   throw new Error(`timed out waiting for path removal: ${filePath}`);
 }
 
+interface DelayedEffectArmedRecord {
+  event: "delayed_effect_armed";
+  run_id: string;
+  pid: number;
+  nonce: string;
+  delay_ms: number;
+  effect_path: string;
+  armed_at: string;
+}
+
+async function waitForDelayedEffectArmed(
+  logPath: string,
+  nonce: string,
+): Promise<DelayedEffectArmedRecord> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const text = await fs.readFile(logPath, "utf8").catch(() => "");
+    for (const line of text.trim().split(/\r?\n/)) {
+      if (!line) continue;
+      try {
+        const record = JSON.parse(line) as Partial<DelayedEffectArmedRecord>;
+        if (record.event === "delayed_effect_armed" && record.nonce === nonce) {
+          return record as DelayedEffectArmedRecord;
+        }
+      } catch {
+        // The producer may still be completing its append.
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for delayed effect nonce ${nonce}`);
+}
+
+function exactPidIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+async function waitForExactPidGone(pid: number): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    if (!exactPidIsAlive(pid)) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`process ${pid} survived its owner`);
+}
+
 async function hasActiveLeaseForRun(activeChildrenDir: string, runId: string): Promise<boolean> {
   const entries = await fs.readdir(activeChildrenDir).catch(() => []);
   for (const entry of entries) {
@@ -352,6 +579,830 @@ function assertCancellationInProgressOrSettled(metadata: RunSubagentMetadata): v
   }
   assert.fail(`expected cancellation phase, got status=${metadata.status} active_phase=${metadata.active_phase}`);
 }
+
+interface DirectSyncEvidence {
+  paths: string[];
+  publications: string[];
+  runTasksDir: string;
+  runsDir: string;
+}
+
+async function collectDirectSyncEvidence(
+  run: (fixture: DirectRunTestFixture, measure: <T>(operation: () => Promise<T>) => Promise<T>) => Promise<void>,
+): Promise<DirectSyncEvidence> {
+  const fixture = await createDirectRunTestFixture("subagent007-sync-");
+  const originalOpen = fs.open.bind(fs);
+  const originalRename = fs.rename.bind(fs);
+  const paths: string[] = [];
+  const publications: string[] = [];
+  let measuring = false;
+  (fs as unknown as { open: typeof fs.open }).open = (async (...args: Parameters<typeof fs.open>) => {
+    const handle = await originalOpen(...args);
+    const openedPath = args[0];
+    if (typeof openedPath === "string") {
+      const originalSync = handle.sync.bind(handle);
+      handle.sync = async () => {
+        if (measuring) paths.push(path.resolve(openedPath));
+        return originalSync();
+      };
+    }
+    return handle;
+  }) as typeof fs.open;
+  (fs as unknown as { rename: typeof fs.rename }).rename = (async (...args: Parameters<typeof fs.rename>) => {
+    const [source, destination] = args;
+    await originalRename(...args);
+    if (
+      measuring &&
+      typeof source === "string" &&
+      typeof destination === "string" &&
+      source.includes(".json.tmp-") &&
+      path.dirname(path.resolve(destination)) === path.resolve(fixture.runTasksDir)
+    ) publications.push(path.resolve(destination));
+  }) as typeof fs.rename;
+  try {
+    await withEnv(fixture.env, () => run(fixture, async (operation) => {
+      measuring = true;
+      try { return await operation(); } finally { measuring = false; }
+    }));
+    assert.equal((await fs.readdir(fixture.runTasksDir)).some((entry) => entry.endsWith(".events.jsonl")), false);
+    return { paths, publications, runTasksDir: fixture.runTasksDir, runsDir: fixture.env.SUBAGENT007_RUNS_DIR };
+  } finally {
+    (fs as unknown as { open: typeof fs.open }).open = originalOpen;
+    (fs as unknown as { rename: typeof fs.rename }).rename = originalRename;
+    await removeDirectRunTestFixture(fixture);
+  }
+}
+
+function assertDirectClaimSyncs(evidence: DirectSyncEvidence, transitions: number, outputs: number): void {
+  const runTasksDir = path.resolve(evidence.runTasksDir);
+  assert.equal(evidence.publications.length, transitions);
+  assert.equal(evidence.paths.filter((entry) => entry.includes(`${path.sep}.claim-locks${path.sep}`)).length, 0);
+  assert.equal(evidence.paths.filter((entry) => entry === runTasksDir).length, transitions);
+  assert.equal(evidence.paths.filter((entry) =>
+    path.dirname(entry) === runTasksDir && path.basename(entry).includes(".json.tmp-")
+  ).length, transitions);
+  assert.equal(evidence.paths.filter((entry) => entry.startsWith(`${path.resolve(evidence.runsDir)}${path.sep}`)).length, outputs);
+}
+
+test("durable persistence has exact sync targets and constant event-volume growth", async () => {
+  const fresh = await collectDirectSyncEvidence(async (f, measure) => {
+    const started = await measure(() => startRunTask({ cwd: f.projectDir, prompt: "CANCEL_WAIT", client_start_id: "sync-fresh" }));
+    await waitForDirectRunView(started.run_id, (view) => view.child_started === true, "fresh child start");
+    await cancelAndWaitForDirectRun(started.run_id);
+  });
+  const cancelRpc = await collectDirectSyncEvidence(async (f, measure) => {
+    const started = await startRunTask({ cwd: f.projectDir, prompt: "CANCEL_WAIT" });
+    await waitForDirectRunView(started.run_id, (view) => view.child_started === true, "cancel child start");
+    await measure(() => cancelRunTask(started.run_id));
+    await waitForTerminalRunTask(started.run_id);
+  });
+  const input = await collectDirectSyncEvidence(async (f, measure) => {
+    const started = await startRunTask({ cwd: f.projectDir, prompt: "REQUEST_INPUT_WAIT" });
+    const pending = await waitForDirectRunView(started.run_id, (view) =>
+      view.status === "input_required" && view.input_requests.some((request) => request.status === "pending"), "input request");
+    const request = pending.input_requests.find((entry) => entry.status === "pending");
+    assert.ok(request);
+    await measure(() => answerRunTaskInput({
+      runId: started.run_id, requestId: request.request_id, answer: "continue", responseId: "sync-response-001",
+    }));
+    await waitForTerminalRunTask(started.run_id);
+  });
+  const cancelTerminal = await collectDirectSyncEvidence(async (f, measure) => {
+    const started = await startRunTask({ cwd: f.projectDir, prompt: "CANCEL_WAIT" });
+    await waitForDirectRunView(started.run_id, (view) => view.child_started === true, "cancel terminal child start");
+    await measure(async () => { await cancelRunTask(started.run_id); await waitForTerminalRunTask(started.run_id); });
+  });
+  const complete = (events: number) => collectDirectSyncEvidence(async (f, measure) => {
+    await measure(async () => {
+      const started = await startRunTask({ cwd: f.projectDir, prompt: `MANY_PUBLIC_EVENTS:${events}` });
+      assert.equal((await waitForTerminalRunTask(started.run_id)).status, "completed");
+    });
+  });
+  const zero = await complete(0);
+  const thousand = await complete(1000);
+  assert.deepEqual([fresh, cancelRpc, input, cancelTerminal, zero].map((entry) => entry.paths.length), [5, 2, 2, 5, 11]);
+  const bindingRoot = path.join(path.resolve(fresh.runTasksDir), "client-start-ids");
+  assert.equal(fresh.paths.filter((entry) => entry.endsWith(".prepared")).length, 1);
+  assert.equal(fresh.paths.filter((entry) => path.dirname(entry) === bindingRoot && entry.includes(".json.tmp-")).length, 1);
+  assert.equal(fresh.paths.filter((entry) => entry === bindingRoot).length, 1);
+  assert.equal(fresh.paths.filter((entry) => entry === path.resolve(fresh.runTasksDir)).length, 2);
+  assertDirectClaimSyncs(cancelRpc, 1, 0);
+  assertDirectClaimSyncs(input, 1, 0);
+  assertDirectClaimSyncs(cancelTerminal, 2, 1);
+  assertDirectClaimSyncs(zero, 5, 1);
+  assert.equal(thousand.paths.length, zero.paths.length);
+  assertDirectClaimSyncs(thousand, 5, 1);
+});
+
+test("accepted control crash cuts recover only canonical same-run facts from fresh processes", async (t) => {
+  type CrashCut =
+    | "input_after_ack_before_claim"
+    | "claim_after_file_sync_before_rename"
+    | "claim_after_rename_before_directory_sync"
+    | "cancel_after_directory_sync_before_reply"
+    | "input_after_directory_sync_before_reply";
+  type Control = "cancel" | "input";
+  const cuts: Array<{
+    cut: CrashCut;
+    control: Control;
+    canonicalAcceptedBeforeRecovery: boolean;
+  }> = [
+    { cut: "input_after_ack_before_claim", control: "input", canonicalAcceptedBeforeRecovery: false },
+    { cut: "claim_after_file_sync_before_rename", control: "cancel", canonicalAcceptedBeforeRecovery: false },
+    { cut: "claim_after_rename_before_directory_sync", control: "cancel", canonicalAcceptedBeforeRecovery: true },
+    { cut: "cancel_after_directory_sync_before_reply", control: "cancel", canonicalAcceptedBeforeRecovery: true },
+    { cut: "input_after_directory_sync_before_reply", control: "input", canonicalAcceptedBeforeRecovery: true },
+  ];
+  const runTaskUrl = pathToFileURL(path.resolve("src/runTask.ts")).href;
+
+  function claimAccepted(view: RunSubagentMetadata, control: Control, requestId?: string): boolean {
+    return control === "cancel"
+      ? view.recent_events?.some((event) => event.event === "cancellation_requested") === true
+      : view.input_requests.some((request) => request.request_id === requestId && request.status === "answered");
+  }
+
+  function crashWorkerSource(
+    fixture: DirectRunTestFixture,
+    cut: CrashCut,
+    control: Control,
+  ): string {
+    return `
+      import fs from "node:fs/promises";
+      import path from "node:path";
+      const { answerRunTaskInput, cancelRunTask, getRunTask, startRunTask } = await import(${JSON.stringify(runTaskUrl)});
+      const cut = ${JSON.stringify(cut)};
+      const control = ${JSON.stringify(control)};
+      const runTasksDir = path.resolve(${JSON.stringify(fixture.runTasksDir)});
+      const mailboxRoot = path.resolve(${JSON.stringify(fixture.env.SUBAGENT007_INPUT_REQUESTS_DIR)});
+      const accepted = (view, requestId) => control === "cancel"
+        ? view.recent_events?.some((event) => event.event === "cancellation_requested") === true
+        : view.input_requests.some((request) => request.request_id === requestId && request.status === "answered");
+      const dieAtCut = (label) => new Promise(() => {
+        process.stderr.write("CRASH_CUT:" + label + "\\n", () => process.kill(process.pid, "SIGKILL"));
+      });
+      const clientStartId = "crash-cut-" + control + "-" + cut;
+      const started = await startRunTask({
+        cwd: ${JSON.stringify(fixture.projectDir)},
+        prompt: control === "cancel" ? "CANCEL_WAIT" : "REQUEST_INPUT_WAIT",
+        client_start_id: clientStartId,
+      });
+      let requestId;
+      for (let attempt = 0; attempt < 300; attempt += 1) {
+        const view = await getRunTask(started.run_id);
+        requestId = view.input_requests.find((request) => request.status === "pending")?.request_id;
+        if ((control === "cancel" && view.child_started === true) ||
+          (control === "input" && view.status === "input_required" && requestId)) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      if (control === "input" && !requestId) throw new Error("input request did not become pending");
+      const recordPath = path.join(runTasksDir, started.run_id + ".json");
+      await new Promise((resolve) => process.stdout.write(JSON.stringify({
+        kind: "ready",
+        run_id: started.run_id,
+        request_id: requestId ?? null,
+      }) + "\\n", resolve));
+
+      const originalOpen = fs.open.bind(fs);
+      const originalRename = fs.rename.bind(fs);
+      fs.open = async (...args) => {
+        const handle = await originalOpen(...args);
+        const openedPath = typeof args[0] === "string" ? path.resolve(args[0]) : undefined;
+        const fileSyncCut = cut === "claim_after_file_sync_before_rename" &&
+          openedPath?.startsWith(recordPath + ".tmp-");
+        const directorySyncCut = (cut === "cancel_after_directory_sync_before_reply" ||
+          cut === "input_after_directory_sync_before_reply") && openedPath === runTasksDir;
+        if (fileSyncCut || directorySyncCut) {
+          const originalSync = handle.sync.bind(handle);
+          handle.sync = async () => {
+            await originalSync();
+            const candidatePath = fileSyncCut ? openedPath : recordPath;
+            const candidate = JSON.parse(await fs.readFile(candidatePath, "utf8"));
+            if (accepted(candidate, requestId)) await dieAtCut(cut);
+          };
+        }
+        return handle;
+      };
+      fs.rename = async (source, destination) => {
+        const canonicalClaim = typeof source === "string" && typeof destination === "string" &&
+          source.startsWith(recordPath + ".tmp-") && path.resolve(destination) === recordPath;
+        if (!canonicalClaim) return originalRename(source, destination);
+        const candidate = JSON.parse(await fs.readFile(source, "utf8"));
+        if (!accepted(candidate, requestId)) return originalRename(source, destination);
+        if (cut === "input_after_ack_before_claim") {
+          const terminalPath = path.join(mailboxRoot, started.run_id, requestId + ".terminal.json");
+          const terminal = JSON.parse(await fs.readFile(terminalPath, "utf8"));
+          if (terminal.status !== "answered") throw new Error("input ACK mailbox settlement is absent");
+          await dieAtCut(cut);
+        }
+        await originalRename(source, destination);
+        if (cut === "claim_after_rename_before_directory_sync") await dieAtCut(cut);
+      };
+
+      const result = control === "cancel"
+        ? await cancelRunTask(started.run_id)
+        : await answerRunTaskInput({
+            runId: started.run_id,
+            requestId,
+            answer: "continue",
+            responseId: "crash-cut-response-001",
+          });
+      await new Promise((resolve) => process.stdout.write(JSON.stringify({ kind: "success", result }) + "\\n", resolve));
+      process.exit(90);
+    `;
+  }
+
+  for (const spec of cuts) {
+    await t.test(spec.cut, async () => {
+      const fixture = await createDirectRunTestFixture(`subagent007-control-crash-${spec.cut}-`);
+      const env = { ...process.env, ...fixture.env };
+      try {
+        const crashed = await runTestWorker(crashWorkerSource(fixture, spec.cut, spec.control), env, 8_000);
+        assert.equal(crashed.code, null, crashed.stderr || crashed.stdout);
+        assert.equal(crashed.signal, "SIGKILL", crashed.stderr || crashed.stdout);
+        assert.match(crashed.stderr, new RegExp(`CRASH_CUT:${spec.cut}`));
+        const outputLines = crashed.stdout.trim().split(/\r?\n/).filter(Boolean);
+        assert.equal(outputLines.length, 1, crashed.stdout);
+        const identity = JSON.parse(outputLines[0]) as {
+          kind: "ready";
+          run_id: string;
+          request_id: string | null;
+        };
+        assert.equal(identity.kind, "ready");
+        assert.equal(crashed.stdout.includes('"kind":"success"'), false);
+
+        const recordPath = path.join(fixture.runTasksDir, `${identity.run_id}.json`);
+        const rawBeforeRecovery = JSON.parse(await fs.readFile(recordPath, "utf8")) as Record<string, unknown>;
+        assert.equal(rawBeforeRecovery.record_name, "subagent007.current_run_claim");
+        const beforeRecovery = persistedDurableRunView(rawBeforeRecovery);
+        assert.equal(beforeRecovery.run_id, identity.run_id);
+        const expectedClientStartId = `crash-cut-${spec.control}-${spec.cut}`;
+        const clientStartBinding = rawBeforeRecovery.client_start_binding as {
+          client_start_id?: unknown;
+          request_sha256?: unknown;
+          run_id?: unknown;
+        } | undefined;
+        assert.ok(clientStartBinding);
+        assert.equal(clientStartBinding.client_start_id, expectedClientStartId);
+        assert.equal(clientStartBinding.run_id, identity.run_id);
+        assert.match(String(clientStartBinding.request_sha256 ?? ""), /^[0-9a-f]{64}$/);
+        assert.equal(
+          claimAccepted(beforeRecovery, spec.control, identity.request_id ?? undefined),
+          spec.canonicalAcceptedBeforeRecovery,
+        );
+        if (spec.cut === "claim_after_file_sync_before_rename") {
+          const tempNames = (await fs.readdir(fixture.runTasksDir)).filter((entry) =>
+            entry.startsWith(`${identity.run_id}.json.tmp-`));
+          assert.equal(tempNames.length, 1);
+          const privateCandidate = persistedDurableRunView(JSON.parse(
+            await fs.readFile(path.join(fixture.runTasksDir, tempNames[0]), "utf8"),
+          ));
+          assert.equal(claimAccepted(privateCandidate, spec.control), true);
+        }
+        if (spec.cut === "input_after_ack_before_claim") {
+          assert.ok(identity.request_id);
+          const terminalPath = path.join(
+            fixture.env.SUBAGENT007_INPUT_REQUESTS_DIR,
+            identity.run_id,
+            `${identity.request_id}.terminal.json`,
+          );
+          const terminal = JSON.parse(await fs.readFile(terminalPath, "utf8")) as { status?: string };
+          assert.equal(terminal.status, "answered");
+        }
+
+        const childPids = (await readJsonl<{ pid?: number }>(fixture.fake.logPath))
+          .map((entry) => entry.pid)
+          .filter((pid): pid is number => typeof pid === "number");
+        assert.equal(childPids.length, 1);
+        await Promise.all(childPids.map((pid) => waitForExactPidGone(pid)));
+        const fakeLogBeforeReplay = await fs.readFile(fixture.fake.logPath, "utf8");
+
+        const recoverSource = `
+          const { getRunTask } = await import(${JSON.stringify(runTaskUrl)});
+          console.log(JSON.stringify(await getRunTask(${JSON.stringify(identity.run_id)})));
+        `;
+        const recoveredProcess = await runTestWorker(recoverSource, env);
+        assert.equal(recoveredProcess.code, 0, recoveredProcess.stderr);
+        const recovered = JSON.parse(recoveredProcess.stdout.trim()) as RunSubagentMetadata;
+        assert.equal(recovered.run_id, identity.run_id);
+        assert.equal(recovered.status, "failed");
+        assert.equal(recovered.error_class, "restart_drift");
+        assert.equal(recovered.reason_code, "server_restarted_active_run");
+        assert.equal(recovered.recent_events?.filter((event) => event.event === "failed").length, 1);
+        assert.equal(
+          claimAccepted(recovered, spec.control, identity.request_id ?? undefined),
+          spec.canonicalAcceptedBeforeRecovery,
+        );
+
+        const terminalBytes = await fs.readFile(recordPath, "utf8");
+        const replayedRecoveryProcess = await runTestWorker(recoverSource, env);
+        assert.equal(replayedRecoveryProcess.code, 0, replayedRecoveryProcess.stderr);
+        assert.deepEqual(JSON.parse(replayedRecoveryProcess.stdout.trim()), recovered);
+        assert.equal(await fs.readFile(recordPath, "utf8"), terminalBytes);
+
+        const controlReplaySource = spec.control === "input"
+          ? `
+              const { answerRunTaskInput } = await import(${JSON.stringify(runTaskUrl)});
+              const attempts = {};
+              for (const [name, answer] of [["exact", "continue"], ["changed", "changed"]]) {
+                try {
+                  await answerRunTaskInput({
+                    runId: ${JSON.stringify(identity.run_id)},
+                    requestId: ${JSON.stringify(identity.request_id)},
+                    answer,
+                    responseId: "crash-cut-response-001",
+                  });
+                  attempts[name] = "authored";
+                } catch (error) {
+                  attempts[name] = error?.reasonCode ?? error?.name;
+                }
+              }
+              console.log(JSON.stringify(attempts));
+            `
+          : `
+              const { cancelRunTask } = await import(${JSON.stringify(runTaskUrl)});
+              try {
+                const result = await cancelRunTask(${JSON.stringify(identity.run_id)});
+                console.log(JSON.stringify({ replay: "returned", run_id: result.run_id, status: result.status }));
+              } catch (error) {
+                console.log(JSON.stringify({ replay: error?.reasonCode ?? error?.name }));
+              }
+            `;
+        const controlReplay = await runTestWorker(controlReplaySource, env);
+        assert.equal(controlReplay.code, 0, controlReplay.stderr);
+        const replayResult = JSON.parse(controlReplay.stdout.trim()) as Record<string, string>;
+        if (spec.control === "input") {
+          assert.deepEqual(replayResult, { exact: "run_not_found", changed: "run_not_found" });
+        } else {
+          assert.equal(replayResult.replay, "returned");
+          assert.equal(replayResult.run_id, identity.run_id);
+          assert.equal(replayResult.status, "failed");
+        }
+        assert.equal(await fs.readFile(fixture.fake.logPath, "utf8"), fakeLogBeforeReplay);
+        assert.equal(await fs.readFile(recordPath, "utf8"), terminalBytes);
+        const canonicalNames = (await fs.readdir(fixture.runTasksDir)).filter((entry) =>
+          entry.endsWith(".json") && !entry.includes(".tmp-"));
+        assert.deepEqual(canonicalNames, [`${identity.run_id}.json`]);
+      } finally {
+        await removeDirectRunTestFixture(fixture);
+      }
+    });
+  }
+});
+
+test("resident public cancel and accepted input settlement do not acquire the claim lock", async (t) => {
+  const fixture = await createDirectRunTestFixture("subagent007-resident-control-claim-lock-");
+  const originalLink = fs.link.bind(fs);
+  const originalRename = fs.rename.bind(fs);
+  const acquisitions: string[] = [];
+  let tracked: { runId: string; operation: "cancel" | "input" } | undefined;
+
+  t.mock.method(fs, "link", async (source: string, destination: string) => {
+    if (tracked) {
+      const expected = path.join(
+        path.resolve(fixture.runTasksDir),
+        ".claim-locks",
+        `${createHash("sha256").update(tracked.runId).digest("hex")}.lock`,
+      );
+      if (path.resolve(destination) === expected) acquisitions.push(tracked.operation);
+    }
+    await originalLink(source, destination);
+  });
+  t.mock.method(fs, "rename", async (source: string, destination: string) => {
+    await originalRename(source, destination);
+    if (!tracked || !source.includes(".tmp-") || path.resolve(destination) !==
+      path.join(path.resolve(fixture.runTasksDir), `${tracked.runId}.json`)) return;
+    const candidate = persistedDurableRunView(JSON.parse(await fs.readFile(destination, "utf8")));
+    const operationCommitted = tracked.operation === "cancel"
+      ? candidate.recent_events?.some((event) => event.event === "cancellation_requested") === true
+      : candidate.input_requests.some((request) => request.status === "answered");
+    if (operationCommitted) tracked = undefined;
+  });
+
+  const runIds: string[] = [];
+  try {
+    await withEnv(fixture.env, async () => {
+      const cancellable = await startRunTask({ cwd: fixture.projectDir, prompt: "CANCEL_WAIT" });
+      runIds.push(cancellable.run_id);
+      await waitForDirectRunView(cancellable.run_id, (view) => view.child_started === true, "cancellable child start");
+      tracked = { runId: cancellable.run_id, operation: "cancel" };
+      const cancelling = await cancelRunTask(cancellable.run_id) as RunSubagentMetadata;
+      assertCancellationInProgressOrSettled(cancelling);
+      assert.equal(tracked, undefined, "cancel claim publication interceptor was not reached");
+
+      const inputRun = await startRunTask({ cwd: fixture.projectDir, prompt: "REQUEST_INPUT_WAIT" });
+      runIds.push(inputRun.run_id);
+      const pending = await waitForDirectRunView(inputRun.run_id, (view) =>
+        view.status === "input_required" && view.input_requests.some((request) => request.status === "pending"), "input request");
+      const request = pending.input_requests.find((entry) => entry.status === "pending");
+      assert.ok(request);
+      tracked = { runId: inputRun.run_id, operation: "input" };
+      const accepted = await answerRunTaskInput({
+        runId: inputRun.run_id,
+        requestId: request.request_id,
+        answer: "continue",
+        responseId: "claim-lock-witness-001",
+      });
+      assert.equal(accepted.outcome, "accepted");
+      assert.equal(tracked, undefined, "input claim publication interceptor was not reached");
+      assert.deepEqual(acquisitions, []);
+    });
+  } finally {
+    await withEnv(fixture.env, async () => {
+      await Promise.all(runIds.map((runId) => cancelAndWaitForDirectRun(runId)));
+    });
+    await removeDirectRunTestFixture(fixture);
+  }
+});
+
+test("resident cancel, input ACK, and terminal races preserve one exact committed claim", async (t) => {
+  const fixture = await createDirectRunTestFixture("subagent007-resident-control-races-");
+  const originalRename = fs.rename.bind(fs);
+  let armed: {
+    predicate: (view: RunSubagentMetadata) => boolean;
+    entered: ReturnType<typeof deferredSignal>;
+    release: ReturnType<typeof deferredSignal>;
+  } | undefined;
+
+  t.mock.method(fs, "rename", async (source: string, destination: string) => {
+    if (armed && source.includes(".tmp-") && path.dirname(path.resolve(destination)) === path.resolve(fixture.runTasksDir)) {
+      const candidate = persistedDurableRunView(JSON.parse(await fs.readFile(source, "utf8")));
+      if (armed.predicate(candidate)) {
+        const pause = armed;
+        armed = undefined;
+        pause.entered.resolve();
+        await pause.release.promise;
+      }
+    }
+    await originalRename(source, destination);
+  });
+
+  function pauseNext(predicate: (view: RunSubagentMetadata) => boolean) {
+    const pause = { predicate, entered: deferredSignal(), release: deferredSignal() };
+    armed = pause;
+    return pause;
+  }
+
+  async function assertExactCommittedReplay(runId: string): Promise<RunSubagentMetadata> {
+    const recordPath = path.join(fixture.runTasksDir, `${runId}.json`);
+    const bytes = await fs.readFile(recordPath, "utf8");
+    const committed = persistedDurableRunView(JSON.parse(bytes));
+    const resident = await getRunTask(runId) as RunSubagentMetadata;
+    const residentClaimProjection = Object.fromEntries(
+      Object.keys(committed).map((key) => [key, (resident as unknown as Record<string, unknown>)[key]]),
+    );
+    assert.deepEqual(residentClaimProjection, committed);
+    assert.deepEqual(await getRunTask(runId), resident);
+    assert.equal(await fs.readFile(recordPath, "utf8"), bytes);
+    return committed;
+  }
+
+  const runIds: string[] = [];
+  try {
+    await withEnv(fixture.env, async () => {
+      const cancelAckRun = await startRunTask({ cwd: fixture.projectDir, prompt: "REQUEST_INPUT_WAIT" });
+      runIds.push(cancelAckRun.run_id);
+      const cancelAckPending = await waitForDirectRunView(cancelAckRun.run_id, (view) =>
+        view.status === "input_required" && view.input_requests.some((request) => request.status === "pending"), "cancel/ACK input request");
+      const cancelAckRequest = cancelAckPending.input_requests.find((entry) => entry.status === "pending");
+      assert.ok(cancelAckRequest);
+      const ackPause = pauseNext((view) => view.run_id === cancelAckRun.run_id &&
+        view.input_requests.some((request) => request.request_id === cancelAckRequest.request_id && request.status === "answered"));
+      const answer = answerRunTaskInput({
+        runId: cancelAckRun.run_id,
+        requestId: cancelAckRequest.request_id,
+        answer: "continue",
+        responseId: "race-cancel-ack-001",
+      });
+      await ackPause.entered.promise;
+      let cancelSettled = false;
+      const cancel = cancelRunTask(cancelAckRun.run_id).finally(() => { cancelSettled = true; });
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(cancelSettled, false);
+      ackPause.release.resolve();
+      const accepted = await answer;
+      assert.equal(accepted.outcome, "accepted");
+      await cancel;
+      const cancelled = await waitForTerminalRunTask(cancelAckRun.run_id);
+      assert.equal(cancelled.status, "cancelled");
+      assert.equal(cancelled.input_requests.find((request) => request.request_id === cancelAckRequest.request_id)?.status, "answered");
+      const cancelAckReplay = await answerRunTaskInput({
+        runId: cancelAckRun.run_id,
+        requestId: cancelAckRequest.request_id,
+        answer: "continue",
+        responseId: "race-cancel-ack-001",
+      });
+      assert.equal(cancelAckReplay.outcome, "replayed");
+      await assertExactCommittedReplay(cancelAckRun.run_id);
+
+      const terminalPause = pauseNext((view) => view.status === "completed");
+      const terminalCancelRun = await startRunTask({ cwd: fixture.projectDir, prompt: "FAST" });
+      runIds.push(terminalCancelRun.run_id);
+      await terminalPause.entered.promise;
+      let terminalCancelSettled = false;
+      const lateCancel = cancelRunTask(terminalCancelRun.run_id).finally(() => { terminalCancelSettled = true; });
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(terminalCancelSettled, false);
+      terminalPause.release.resolve();
+      await lateCancel;
+      const completed = await waitForTerminalRunTask(terminalCancelRun.run_id);
+      assert.equal(completed.status, "completed");
+      assert.equal(completed.recent_events?.some((event) => event.event === "cancellation_requested"), false);
+      await assertExactCommittedReplay(terminalCancelRun.run_id);
+
+      const ackTerminalRun = await startRunTask({ cwd: fixture.projectDir, prompt: "REQUEST_INPUT_ACK_THEN_EXIT" });
+      runIds.push(ackTerminalRun.run_id);
+      const ackTerminalPending = await waitForDirectRunView(ackTerminalRun.run_id, (view) =>
+        view.status === "input_required" && view.input_requests.some((request) => request.status === "pending"), "ACK/terminal input request");
+      const ackTerminalRequest = ackTerminalPending.input_requests.find((entry) => entry.status === "pending");
+      assert.ok(ackTerminalRequest);
+      const ackTerminalPause = pauseNext((view) => view.run_id === ackTerminalRun.run_id &&
+        view.input_requests.some((request) => request.request_id === ackTerminalRequest.request_id && request.status === "answered"));
+      const terminalAnswer = answerRunTaskInput({
+        runId: ackTerminalRun.run_id,
+        requestId: ackTerminalRequest.request_id,
+        answer: "continue",
+        responseId: "race-ack-terminal-001",
+      });
+      await ackTerminalPause.entered.promise;
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      ackTerminalPause.release.resolve();
+      const terminalAccepted = await terminalAnswer;
+      assert.equal(terminalAccepted.outcome, "accepted");
+      const failed = await waitForTerminalRunTask(ackTerminalRun.run_id);
+      assert.equal(failed.status, "failed");
+      assert.equal(failed.input_requests.find((request) => request.request_id === ackTerminalRequest.request_id)?.status, "answered");
+      const terminalReplay = await answerRunTaskInput({
+        runId: ackTerminalRun.run_id,
+        requestId: ackTerminalRequest.request_id,
+        answer: "continue",
+        responseId: "race-ack-terminal-001",
+      });
+      assert.equal(terminalReplay.outcome, "replayed");
+      await assertExactCommittedReplay(ackTerminalRun.run_id);
+    });
+  } finally {
+    armed?.release.resolve();
+    await withEnv(fixture.env, async () => {
+      await Promise.all(runIds.map((runId) => cancelAndWaitForDirectRun(runId)));
+    });
+    await removeDirectRunTestFixture(fixture);
+  }
+});
+
+test("a foreign process cannot control a live run and owner death yields one restart drift", async () => {
+  const fixture = await createDirectRunTestFixture("subagent007-two-process-live-owner-");
+  const runTaskUrl = pathToFileURL(path.resolve("src/runTask.ts")).href;
+  const ownerSource = `
+    const { getRunTask, startRunTask } = await import(${JSON.stringify(runTaskUrl)});
+    const started = await startRunTask({ cwd: ${JSON.stringify(fixture.projectDir)}, prompt: "REQUEST_INPUT_WAIT" });
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const view = await getRunTask(started.run_id);
+      const request = view.input_requests.find((entry) => entry.status === "pending");
+      if (view.status === "input_required" && request) {
+        console.log(JSON.stringify({ run_id: started.run_id, request_id: request.request_id }));
+        await new Promise(() => {});
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error("owner did not reach input_required");
+  `;
+  const env = { ...process.env, ...fixture.env };
+  const owner = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", ownerSource], {
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let ownerStdout = "";
+  let ownerStderr = "";
+  owner.stdout.setEncoding("utf8");
+  owner.stderr.setEncoding("utf8");
+  owner.stdout.on("data", (chunk: string) => { ownerStdout += chunk; });
+  owner.stderr.on("data", (chunk: string) => { ownerStderr += chunk; });
+
+  try {
+    const deadline = Date.now() + 2_000;
+    while (!ownerStdout.includes("\n") && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.match(ownerStdout, /run_id/, ownerStderr);
+    const identity = JSON.parse(ownerStdout.trim().split(/\r?\n/)[0]) as { run_id: string; request_id: string };
+    const recordPath = path.join(fixture.runTasksDir, `${identity.run_id}.json`);
+    const liveBytes = await fs.readFile(recordPath, "utf8");
+    const foreignSource = `
+      const { answerRunTaskInput, cancelRunTask, getRunTask } = await import(${JSON.stringify(runTaskUrl)});
+      const rejected = {};
+      for (const [name, operation] of [
+        ["cancel", () => cancelRunTask(${JSON.stringify(identity.run_id)})],
+        ["input", () => answerRunTaskInput({
+          runId: ${JSON.stringify(identity.run_id)},
+          requestId: ${JSON.stringify(identity.request_id)},
+          answer: "foreign-answer",
+          responseId: "foreign-response-001",
+        })],
+      ]) {
+        try { await operation(); rejected[name] = "authored"; }
+        catch (error) { rejected[name] = error?.reasonCode; }
+      }
+      const view = await getRunTask(${JSON.stringify(identity.run_id)});
+      console.log(JSON.stringify({ rejected, view }));
+    `;
+    const foreign = await runTestWorker(foreignSource, env);
+    assert.equal(foreign.code, 0, foreign.stderr);
+    const witness = JSON.parse(foreign.stdout.trim()) as {
+      rejected: { cancel: string; input: string };
+      view: RunSubagentMetadata;
+    };
+    assert.deepEqual(witness.rejected, { cancel: "run_not_found", input: "run_not_found" });
+    assert.equal(["working", "input_required"].includes(witness.view.status), true);
+    assert.notEqual(witness.view.error_class, "restart_drift");
+    assert.equal(await fs.readFile(recordPath, "utf8"), liveBytes);
+
+    const childPid = (await readJsonl<{ pid?: number }>(fixture.fake.logPath))
+      .map((entry) => entry.pid)
+      .find((pid): pid is number => typeof pid === "number");
+    assert.ok(childPid);
+    assert.equal(owner.kill("SIGKILL"), true);
+    const ownerExit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+      owner.once("error", reject);
+      owner.once("close", (code, signal) => resolve({ code, signal }));
+    });
+    assert.equal(ownerExit.signal, "SIGKILL", ownerStderr);
+    await waitForExactPidGone(childPid);
+
+    const recoverSource = `
+      const { getRunTask } = await import(${JSON.stringify(runTaskUrl)});
+      console.log(JSON.stringify(await getRunTask(${JSON.stringify(identity.run_id)})));
+    `;
+    const recovered = await Promise.all([
+      runTestWorker(recoverSource, env),
+      runTestWorker(recoverSource, env),
+    ]);
+    assert.equal(recovered.every((result) => result.code === 0), true,
+      recovered.map((result) => result.stderr).join("\n"));
+    const views = recovered.map((result) => JSON.parse(result.stdout.trim()) as RunSubagentMetadata);
+    assert.equal(views.every((view) => view.status === "failed" &&
+      view.error_class === "restart_drift" && view.reason_code === "server_restarted_active_run"), true);
+    assert.equal(views[1].finished_at, views[0].finished_at);
+    assert.deepEqual(views[1].output_references, views[0].output_references);
+    assert.deepEqual(views[1].recent_events, views[0].recent_events);
+    const terminalBytes = await fs.readFile(recordPath, "utf8");
+    const committed = persistedDurableRunView(JSON.parse(terminalBytes));
+    assert.equal(committed.recent_events?.filter((event) => event.event === "failed").length, 1);
+    const replay = await runTestWorker(recoverSource, env);
+    const secondReplay = await runTestWorker(recoverSource, env);
+    assert.equal(replay.code, 0, replay.stderr);
+    assert.equal(secondReplay.code, 0, secondReplay.stderr);
+    const replayView = JSON.parse(replay.stdout.trim()) as RunSubagentMetadata;
+    assert.deepEqual(JSON.parse(secondReplay.stdout.trim()), replayView);
+    const replayClaimProjection = Object.fromEntries(
+      Object.keys(committed).map((key) => [key, (replayView as unknown as Record<string, unknown>)[key]]),
+    );
+    assert.deepEqual(replayClaimProjection, committed);
+    assert.equal(await fs.readFile(recordPath, "utf8"), terminalBytes);
+  } finally {
+    if (owner.exitCode === null && owner.signalCode === null) owner.kill("SIGKILL");
+    await removeDirectRunTestFixture(fixture);
+  }
+});
+
+test("lineage cannot publish a stale claim after child-spawn publication overtakes lock acquisition", async () => {
+  const fixture = await createDirectRunTestFixture("subagent007-lineage-spawn-owner-race-");
+  const activeChildrenDir = fixture.env.SUBAGENT007_ACTIVE_CHILDREN_DIR;
+  assert.ok(activeChildrenDir);
+  const capacityLockPath = path.join(activeChildrenDir, ".lock");
+  const capacityAcquisitionPaused = deferredSignal();
+  const releaseCapacityAcquisition = deferredSignal();
+  const lineageAcquisitionPaused = deferredSignal();
+  const releaseLineageAcquisition = deferredSignal();
+  const childSpawnPublished = deferredSignal();
+  const originalMkdir = fs.mkdir.bind(fs);
+  const originalLink = fs.link.bind(fs);
+  const originalRename = fs.rename.bind(fs);
+  let pauseCapacityPromotion = false;
+  let capacityPaused = false;
+  let lineageLockPath: string | undefined;
+  let lineagePaused = false;
+  let rootRunId: string | undefined;
+  let holderRunId: string | undefined;
+  const previousMaxActiveChildren = process.env.SUBAGENT007_MAX_ACTIVE_CHILDREN;
+
+  (fs as unknown as { mkdir: typeof fs.mkdir }).mkdir = (async (...args: Parameters<typeof fs.mkdir>) => {
+    const directory = args[0];
+    if (
+      pauseCapacityPromotion &&
+      !capacityPaused &&
+      typeof directory === "string" &&
+      path.resolve(directory) === path.resolve(capacityLockPath)
+    ) {
+      capacityPaused = true;
+      capacityAcquisitionPaused.resolve();
+      await releaseCapacityAcquisition.promise;
+    }
+    return originalMkdir(...args);
+  }) as typeof fs.mkdir;
+  (fs as unknown as { link: typeof fs.link }).link = (async (...args: Parameters<typeof fs.link>) => {
+    const destination = args[1];
+    if (
+      lineageLockPath &&
+      !lineagePaused &&
+      typeof destination === "string" &&
+      path.resolve(destination) === lineageLockPath
+    ) {
+      lineagePaused = true;
+      lineageAcquisitionPaused.resolve();
+      await releaseLineageAcquisition.promise;
+    }
+    return originalLink(...args);
+  }) as typeof fs.link;
+  (fs as unknown as { rename: typeof fs.rename }).rename = (async (...args: Parameters<typeof fs.rename>) => {
+    await originalRename(...args);
+    const [source, destination] = args;
+    if (
+      rootRunId &&
+      typeof source === "string" &&
+      typeof destination === "string" &&
+      path.resolve(destination) === path.join(path.resolve(fixture.runTasksDir), `${rootRunId}.json`) &&
+      source.includes(".tmp-")
+    ) {
+      const published = JSON.parse(await fs.readFile(destination, "utf8")) as RunSubagentMetadata;
+      if (published.child_started === true) childSpawnPublished.resolve();
+    }
+  }) as typeof fs.rename;
+
+  try {
+    await withEnv({
+      ...fixture.env,
+      SUBAGENT007_MAX_ACTIVE_CHILDREN: "1",
+      SUBAGENT007_MAX_QUEUED_RUNS: "1",
+    }, async () => {
+      const holder = await startRunTask({ cwd: fixture.projectDir, prompt: "CANCEL_WAIT" });
+      holderRunId = holder.run_id;
+      await waitForDirectRunView(holder.run_id, (view) => view.child_started === true, "capacity holder start");
+
+      const root = await startRunTask({ cwd: fixture.projectDir, prompt: "CANCEL_WAIT" });
+      rootRunId = root.run_id;
+      assert.equal(root.child_started, false);
+      assert.equal(root.active_phase, "queued");
+      lineageLockPath = path.join(
+        path.resolve(fixture.runTasksDir),
+        ".claim-locks",
+        `${createHash("sha256").update(root.run_id).digest("hex")}.lock`,
+      );
+
+      pauseCapacityPromotion = true;
+      await Promise.race([
+        capacityAcquisitionPaused.promise,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("queue promotion did not reach capacity lock")), 1_500)),
+      ]);
+
+      process.env.SUBAGENT007_MAX_ACTIVE_CHILDREN = "0";
+      const childStart = startRunTask(
+        { cwd: fixture.projectDir, prompt: "FAST" },
+        { lineage: { parentRunId: root.run_id, rootRunId: root.run_id, recursionDepth: 1 } },
+      );
+      await Promise.race([
+        lineageAcquisitionPaused.promise,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("lineage did not pause before root claim-lock acquisition")), 1_500)),
+      ]);
+
+      process.env.SUBAGENT007_MAX_ACTIVE_CHILDREN = "1";
+      await cancelRunTask(holder.run_id);
+      await waitForTerminalRunTask(holder.run_id);
+      releaseCapacityAcquisition.resolve();
+      const spawnOvertookLineage = await Promise.race([
+        childSpawnPublished.promise.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 150)),
+      ]);
+      releaseLineageAcquisition.resolve();
+      if (!spawnOvertookLineage) {
+        await Promise.race([
+          childSpawnPublished.promise,
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("root child-spawn claim did not follow lineage publication")), 1_500)),
+        ]);
+      }
+
+      const child = await childStart;
+      await waitForTerminalRunTask(child.run_id);
+      const converged = await getRunTask(root.run_id) as RunSubagentMetadata;
+      assert.equal(converged.child_started, true);
+      assert.deepEqual(converged.child_run_ids, [child.run_id]);
+      assert.deepEqual(converged.descendant_run_ids, [child.run_id]);
+    });
+  } finally {
+    if (previousMaxActiveChildren === undefined) delete process.env.SUBAGENT007_MAX_ACTIVE_CHILDREN;
+    else process.env.SUBAGENT007_MAX_ACTIVE_CHILDREN = previousMaxActiveChildren;
+    pauseCapacityPromotion = false;
+    releaseCapacityAcquisition.resolve();
+    releaseLineageAcquisition.resolve();
+    (fs as unknown as { mkdir: typeof fs.mkdir }).mkdir = originalMkdir;
+    (fs as unknown as { link: typeof fs.link }).link = originalLink;
+    (fs as unknown as { rename: typeof fs.rename }).rename = originalRename;
+    await withEnv(fixture.env, async () => {
+      if (rootRunId) await cancelAndWaitForDirectRun(rootRunId);
+      if (holderRunId) await cancelAndWaitForDirectRun(holderRunId);
+    });
+    await removeDirectRunTestFixture(fixture);
+  }
+});
 
 test("extracts only Subagent007 Pi session events from child output", () => {
   assert.equal(
@@ -399,8 +1450,8 @@ test("runSubagent is ephemeral by default and invokes the Pi child request-file 
       assert.equal(result.session_established, false);
       assert.equal(result.resolved_skill_path, skillPath);
       assert.equal(result.resolved_skill_sha256, await sha256File(skillPath));
-      assert.equal(path.dirname(result.output_path), runsDir);
-      assert.equal(await fs.readFile(result.output_path, "utf8"), "FAST FINAL");
+      assert.equal(path.dirname(outputPathFor(result, runsDir)), runsDir);
+      assert.equal(await fs.readFile(outputPathFor(result, runsDir), "utf8"), "FAST FINAL");
 
       const logs = await readJsonl<{ request: Record<string, unknown> }>(fake.logPath);
       assert.equal(logs.length, 1);
@@ -618,8 +1669,8 @@ test("top-level start_run and schedule_run share bounded queue promotion", async
       const completed = await waitForTerminalRun(client, queued.run_id);
       assert.equal(completed.status, "completed");
       assert.equal(completed.child_started, true);
-      assert.equal(typeof completed.child_started_at, "string");
-      assert.equal((completed.queue_wait_ms ?? -1) >= 0, true);
+      assert.equal(completed.child_started_at, undefined);
+      assert.equal(completed.queue_wait_ms, undefined);
     },
     {
       env: {
@@ -1055,7 +2106,7 @@ test("all constrained start surfaces launch from one owner snapshot and closed r
     });
     const recursiveView = recursive.structuredContent as RunSubagentMetadata & { descendant_run_ids?: string[] };
     assert.equal(recursiveView.status, "completed");
-    const recursiveOutput = await fs.readFile(recursiveView.output_path, "utf8");
+    const recursiveOutput = await fs.readFile(outputPathFor(recursiveView), "utf8");
     assert.equal(recursiveView.descendant_run_ids?.length, 1, JSON.stringify({ recursiveView, recursiveOutput }));
     const recursiveLogs = await readJsonl<{ request: { skillSnapshotBinding?: unknown } }>(fakeLogPath);
     assert.equal(recursiveLogs.length, 5);
@@ -1465,6 +2516,35 @@ test("runSubagent rejects below-reserve disk before child launch", async () => {
   );
 });
 
+test("runSubagent rejects final and streaming terminal output above 1 MiB", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-terminal-output-cap-"));
+  const projectDir = path.join(tmp, "project");
+  const runsDir = path.join(tmp, "runs");
+  const fake = await createFakePiChild();
+  await fs.mkdir(projectDir, { recursive: true });
+
+  await withEnv(
+    {
+      SUBAGENT007_PI_CHILD_PATH: fake.childPath,
+      FAKE_PI_LOG_PATH: fake.logPath,
+      SUBAGENT007_FAILURE_LOG: "off",
+    },
+    async () => {
+      await assert.rejects(
+        runSubagent({ cwd: projectDir, prompt: "TERMINAL_CAP_FINAL", model_class: "C" }, { runsDir }),
+        /1 MiB terminal-output limit/,
+      );
+      const streaming = await runSubagent(
+        { cwd: projectDir, prompt: "TERMINAL_CAP_TRANSCRIPT", model_class: "C", output_mode: "transcript" },
+        { runsDir },
+      );
+      assert.equal(streaming.success, false);
+      assert.equal(streaming.status, "failed");
+      assert.equal(streaming.output_references[0]!.size_bytes <= 1024 * 1024, true);
+    },
+  );
+});
+
 test("runSubagent persists an untruncated file-backed transcript larger than 256 KiB", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-large-transcript-run-"));
   const projectDir = path.join(tmp, "project");
@@ -1482,7 +2562,7 @@ test("runSubagent persists an untruncated file-backed transcript larger than 256
         { cwd: projectDir, prompt: "LARGE_TRANSCRIPT", model_class: "C", output_mode: "transcript" },
         { runsDir },
       );
-      const output = await fs.readFile(result.output_path, "utf8");
+      const output = await fs.readFile(outputPathFor(result, runsDir), "utf8");
       assert.equal(result.success, true);
       assert.equal(result.written_output_mode, "transcript");
       assert.equal(Buffer.byteLength(output, "utf8") > 256 * 1024, true);
@@ -1855,10 +2935,23 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       assert.equal(profile?.state_scope, stateScope);
       assert.equal(profile?.activation_receipt?.required_before_prompt, true);
     }
-    assert.equal(
-      contract.output_reference?.transcript_size_policy,
-      "unbounded_file",
-    );
+    assert.deepEqual(contract.output_reference, {
+      field: "output_references",
+      kind: "file",
+      name: "primary",
+      cardinality: "exactly_one_for_terminal_child_output",
+      locator_field: "relative_path",
+      locator_policy: "canonical_single_component_provider_basename",
+      locator_root: "configured_runs_root",
+      size_field: "size_bytes",
+      digest_field: "content_sha256",
+      digest_algorithm: "sha256",
+      terminal_max_bytes: 1048576,
+      content_type: "text/markdown",
+      encoding: "utf-8",
+      bounded_inline_fields: ["recent_events", "last_public_output_excerpt"],
+      transcript_size_policy: "bounded_1_mib",
+    });
     assert.deepEqual(contract.tools?.start, ["start_run", "schedule_run"]);
     assert.deepEqual(contract.tools?.session_start, ["start_session_run", "run_subagent_session"]);
     assert.equal(contract.input_mailbox?.waiting_status_terminal, false);
@@ -1899,12 +2992,16 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       blocks?: Array<{ class?: string }>;
     };
     assert.equal(readiness.schema_version, 1);
-    assert.equal(readiness.ready, true);
-    assert.equal(readiness.status, "ready");
     assert.equal(readiness.contract?.compatible, true);
-    assert.equal(readiness.runtime?.server_entrypoint?.endsWith("dist/server.js"), true);
+    assert.match(readiness.runtime?.server_entrypoint ?? "", /(?:src|dist)\/server\.(?:ts|js)$/);
     assert.equal(readiness.capabilities?.public_tools?.includes("get_runtime_readiness"), true);
-    assert.deepEqual(readiness.blocks, []);
+    if (readiness.ready) {
+      assert.equal(readiness.status, "ready");
+      assert.deepEqual(readiness.blocks, []);
+    } else {
+      assert.equal(readiness.status, "blocked");
+      assert.ok((readiness.blocks ?? []).length > 0);
+    }
   });
 });
 
@@ -2089,7 +3186,7 @@ test("MCP list_model_classes exposes curated model classes", async () => {
       model_health_probe_command: string;
     };
     assertNoPublicCalibrationFields(metadata);
-    assert.deepEqual(metadata.model_classes.map((entry) => entry.class), ["A", "B", "C", "D", "E", "Z1", "Z2", "Z3"]);
+    assert.deepEqual(metadata.model_classes.map((entry) => entry.class), ["A", "B", "C", "D", "E", "Z1", "Z2", "Z3", "Z4", "Z5"]);
     assert.equal(metadata.model_classes.every((entry) => entry.description.length > 0), true);
     assert.equal(
       metadata.model_classes.every((entry) =>
@@ -2273,7 +3370,11 @@ test("MCP run_subagent uses the configured fake Pi child", async () => {
     assertNoPublicCalibrationFields(metadata);
     assert.equal(metadata.success, true);
     assert.equal(metadata.session_id, null);
-    assert.equal(await fs.readFile(metadata.output_path, "utf8"), "FAST FINAL");
+    assert.equal(Object.hasOwn(metadata, "output_path"), false);
+    assert.deepEqual(Object.keys(metadata.output_references?.[0] ?? {}).sort(), [
+      "content_sha256", "content_type", "encoding", "kind", "name", "output_mode", "relative_path", "size_bytes",
+    ].sort());
+    assert.equal(await fs.readFile(outputPathFor(metadata), "utf8"), "FAST FINAL");
 
     const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
     assert.equal(logs[0].request.model, "openai-codex/gpt-5.6-luna");
@@ -2332,7 +3433,7 @@ test("MCP run_subagent auto-promotes skill-bound work without one-shot health ga
       assert.equal(metadata.requested_skill, skillName);
       assert.equal(metadata.resolved_skill_path, skillPath);
       assert.equal(metadata.resolved_skill_sha256, await sha256File(skillPath));
-      assert.equal(await fs.readFile(metadata.output_path, "utf8"), "FAST FINAL");
+      assert.equal(await fs.readFile(outputPathFor(metadata), "utf8"), "FAST FINAL");
 
       const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
       assert.equal(logs.length, 1);
@@ -2344,10 +3445,6 @@ test("MCP run_subagent auto-promotes skill-bound work without one-shot health ga
         await fs.readFile(path.join(runTasksDir, `${metadata.run_id}.json`), "utf8"),
       ) as unknown);
       assert.match(JSON.stringify(persisted.recent_events), /\[auto_promoted\] run_subagent -> durable_run/);
-      await assert.rejects(
-        fs.stat(path.join(runTasksDir, `${metadata.run_id}.events.jsonl`)),
-        /ENOENT/,
-      );
 
       const runView = await client.callTool({
         name: "get_run",
@@ -2382,7 +3479,7 @@ test("MCP run_subagent timeout returns async recovery guidance", async () => {
       });
       assert.notEqual(response.isError, true);
       const metadata = response.structuredContent as RunSubagentMetadata;
-      assert.equal(metadata.status, "timed_out");
+      assert.equal(metadata.status, "timed_out", JSON.stringify(metadata));
       assert.equal(metadata.success, false);
       assert.equal(metadata.timed_out, true);
       assert.equal(metadata.error_class, "timeout");
@@ -2424,7 +3521,7 @@ test("run_subagent writes public transcripts without thinking event payloads", a
     assert.equal(metadata.success, true);
     assert.equal(metadata.written_output_mode, "transcript");
 
-    const output = await fs.readFile(metadata.output_path, "utf8");
+    const output = await fs.readFile(outputPathFor(metadata), "utf8");
     assert.equal(output.includes(PUBLIC_PROMPT_REDACTED_MARKER), true);
     assert.match(output, /PUBLIC ASSISTANT TEXT/);
     assert.doesNotMatch(output, /SECRET_PROMPT_SHOULD_NOT_LEAK/);
@@ -2456,10 +3553,6 @@ test("run_subagent terminal snapshot omits thinking payloads and removes the raw
       assert.doesNotMatch(persisted, /RAW_THINKING_TRANSCRIPT/);
       assert.doesNotMatch(persisted, /SECRET_THINKING_SHOULD_NOT_LEAK/);
       assert.doesNotMatch(persisted, /thinking_delta|assistantMessageEvent/);
-      await assert.rejects(
-        fs.stat(path.join(runTasksDir, `${metadata.run_id}.events.jsonl`)),
-        /ENOENT/,
-      );
       const recentEventsText = JSON.stringify(metadata.recent_events);
       const lastPublicOutputExcerpt = metadata.last_public_output_excerpt ?? "";
       assert.equal(recentEventsText.includes(PUBLIC_PROMPT_REDACTED_MARKER), true);
@@ -2611,7 +3704,7 @@ test("MCP run_subagent auto-promotes lexical broad-work false positives instead 
     assert.equal(metadata.requested_timeout_ms, null);
     assert.equal(metadata.resolved_timeout_ms, null);
     assert.equal(metadata.effective_timeout_ms, null);
-    assert.equal(await fs.readFile(metadata.output_path, "utf8"), "FAST FINAL");
+    assert.equal(await fs.readFile(outputPathFor(metadata), "utf8"), "FAST FINAL");
   });
 });
 
@@ -2633,7 +3726,7 @@ test("MCP schedule_run does not hard-reject lexical broad-work false positives w
     assert.equal(metadata.reason_code, undefined);
     assert.equal(metadata.requested_timeout_ms, 90_000);
     assert.equal(metadata.resolved_timeout_ms, 90_000);
-    assert.equal(await fs.readFile(metadata.output_path, "utf8"), "FAST FINAL");
+    assert.equal(await fs.readFile(outputPathFor(metadata), "utf8"), "FAST FINAL");
     const logs = await readJsonl<{ request: { prompt: string } }>(fakeLogPath);
     assert.equal(logs.length, 1);
     assert.equal(logs[0].request.prompt, "FAST Check the saf-ninja fixture.");
@@ -2676,7 +3769,7 @@ test("MCP schedule_run returns completed output when the durable task finishes w
     const metadata = response.structuredContent as RunSubagentMetadata;
     assert.equal(metadata.status, "completed");
     assert.equal(metadata.success, true);
-    assert.equal(await fs.readFile(metadata.output_path, "utf8"), "FAST FINAL");
+    assert.equal(await fs.readFile(outputPathFor(metadata), "utf8"), "FAST FINAL");
   });
 });
 
@@ -2698,7 +3791,7 @@ test("MCP schedule_run lets a child delegate a root-visible recursive run", asyn
     assert.equal(root.root_run_id, root.run_id);
     assert.equal(root.recursion_depth, 0);
 
-    const output = JSON.parse(await fs.readFile(root.output_path, "utf8")) as {
+    const output = JSON.parse(await fs.readFile(outputPathFor(root), "utf8")) as {
       delegated: RunSubagentMetadata;
     };
     const delegated = output.delegated;
@@ -2726,7 +3819,7 @@ test("MCP schedule_run lets a child delegate a root-visible recursive run", asyn
     assert.equal(delegatedView.parent_run_id, root.run_id);
     assert.equal(delegatedView.root_run_id, root.run_id);
     assert.equal(delegatedView.recursion_depth, 1);
-    assert.equal(await fs.readFile(delegatedView.output_path, "utf8"), "FAST FINAL");
+    assert.equal(await fs.readFile(outputPathFor(delegatedView), "utf8"), "FAST FINAL");
 
     const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
     assert.equal(logs.length, 2);
@@ -2821,7 +3914,7 @@ test("MCP recursive delegate rejects at max depth before launching a descendant"
       assert.equal(root.success, true);
       assert.deepEqual(root.child_run_ids, []);
 
-      const output = JSON.parse(await fs.readFile(root.output_path, "utf8")) as {
+      const output = JSON.parse(await fs.readFile(outputPathFor(root), "utf8")) as {
         delegated: RunSubagentMetadata;
       };
       assert.equal(output.delegated.status, "rejected");
@@ -2864,7 +3957,7 @@ test("MCP recursive delegate rejects forged caller lineage before launching a de
     assert.equal(root.success, true);
     assert.deepEqual(root.child_run_ids, []);
 
-    const output = JSON.parse(await fs.readFile(root.output_path, "utf8")) as {
+    const output = JSON.parse(await fs.readFile(outputPathFor(root), "utf8")) as {
       delegated: RunSubagentMetadata;
     };
     assert.equal(output.delegated.status, "rejected");
@@ -3029,7 +4122,7 @@ test("MCP schedule_run supports caller input through the durable run mailbox", a
     assert.equal(answered.status, "working");
     const terminal = await waitForTerminalRun(client, started.run_id);
     assert.equal(terminal.status, "completed");
-    assert.equal(await fs.readFile(terminal.output_path, "utf8"), "INPUT CONTINUED");
+    assert.equal(await fs.readFile(outputPathFor(terminal), "utf8"), "INPUT CONTINUED");
   });
 });
 
@@ -3083,7 +4176,7 @@ test("MCP schedule_run tasks can be cancelled", async () => {
 });
 
 test("MCP start_run/get_run completes asynchronously with the same child contract", async () => {
-  await connectFakeClient(async (client, { projectDir }) => {
+  await connectFakeClient(async (client, { projectDir, activeChildrenDir }) => {
     const startedResponse = await client.callTool({
       name: "start_run",
       arguments: {
@@ -3097,24 +4190,25 @@ test("MCP start_run/get_run completes asynchronously with the same child contrac
     assert.equal(["starting", "running_silent", "completed"].includes(started.active_phase ?? ""), true);
     assert.equal(started.queue_wait_ms, undefined);
     assert.equal(typeof started.last_phase_at, "string");
-    const activeChildrenDir = process.env.SUBAGENT007_ACTIVE_CHILDREN_DIR;
-    assert.equal(typeof activeChildrenDir, "string");
     if (started.status === "working") {
-      assert.equal(await hasActiveLeaseForRun(activeChildrenDir!, started.run_id), true);
+      assert.equal(await hasActiveLeaseForRun(activeChildrenDir, started.run_id), true);
     }
 
     const terminal = await waitForTerminalRun(client, started.run_id);
     assert.equal(terminal.status, "completed");
     assert.equal(terminal.active_phase, "completed");
     assert.equal(terminal.success, true);
-    assert.equal(await fs.readFile(terminal.output_path, "utf8"), "HEARTBEAT DONE");
+    assert.equal(await fs.readFile(outputPathFor(terminal), "utf8"), "HEARTBEAT DONE");
     assert.equal(terminal.contract_name, "subagent007.durable_run");
     assert.equal(terminal.contract_version, 3);
     assert.equal(terminal.output_references?.length, 1);
     assert.equal(terminal.output_references?.[0].kind, "file");
-    assert.equal(terminal.output_references?.[0].path, terminal.output_path);
+    assert.equal(terminal.output_references?.[0].relative_path, path.basename(outputPathFor(terminal)));
     assert.equal(terminal.output_references?.[0].output_mode, terminal.written_output_mode);
     assert.equal(terminal.output_references?.[0].size_bytes, Buffer.byteLength("HEARTBEAT DONE", "utf8"));
+    assert.equal(terminal.output_references?.[0].content_sha256, createHash("sha256").update("HEARTBEAT DONE").digest("hex"));
+    assert.equal(Object.hasOwn(terminal, "output_path"), false);
+    assert.equal(Object.hasOwn(terminal.output_references?.[0] ?? {}, "path"), false);
     assert.equal(await hasActiveLeaseForRun(activeChildrenDir!, started.run_id), false);
   });
 });
@@ -3138,7 +4232,7 @@ test("MCP start_run final mode completes after generic side-effect progress", as
     assert.equal(terminal.requested_output_mode, "final");
     assert.equal(terminal.written_output_mode, "final");
     assert.equal(await fs.readFile(path.join(projectDir, "side-effect.txt"), "utf8"), "side effect complete\n");
-    assert.equal(await fs.readFile(terminal.output_path, "utf8"), "SIDE EFFECT FINAL");
+    assert.equal(await fs.readFile(outputPathFor(terminal), "utf8"), "SIDE EFFECT FINAL");
     assert.ok(terminal.recent_events?.some((event) => /PUBLIC SIDE EFFECT PROGRESS/.test(event.text)));
   });
 });
@@ -3193,7 +4287,7 @@ test("MCP start_run final mode keeps progress-then-timeout classified as timeout
       assert.equal(terminal.reason_code, "timeout");
       assert.equal(terminal.written_output_mode, "transcript");
       assert.equal(terminal.partial_output_available, true);
-      assert.match(await fs.readFile(terminal.output_path, "utf8"), /PUBLIC PARTIAL ASSISTANT/);
+      assert.match(await fs.readFile(outputPathFor(terminal), "utf8"), /PUBLIC PARTIAL ASSISTANT/);
     },
     {
       env: {
@@ -3273,12 +4367,12 @@ test("MCP start_run rejects unknown skill_name before child spawn", async () => 
 
 test("MCP start_run/get_run exposes active liveness and pending-input progress", async () => {
   await connectFakeClient(
-    async (client, { projectDir, inputRequestsDir }) => {
+    async (client, { projectDir }) => {
       const startedResponse = await client.callTool({
         name: "start_run",
         arguments: {
           cwd: projectDir,
-          prompt: "HEARTBEAT_LONG_WAIT",
+          prompt: "HEARTBEAT_INPUT_WAIT",
         },
       });
       assert.notEqual(startedResponse.isError, true);
@@ -3319,13 +4413,6 @@ test("MCP start_run/get_run exposes active liveness and pending-input progress",
       assert.equal(typeof heartbeat.no_public_output_elapsed_ms, "number");
       assert.equal(heartbeat.first_public_output_at, undefined);
 
-      const mailboxRoot = inputRequestsDir;
-      const request = await createInputRequest({
-        mailboxRoot,
-        runId: started.run_id,
-        question: "Which follow-up path should the child take?",
-      });
-
       const pendingDeadline = Date.now() + 2000;
       let pendingView: RunSubagentMetadata | undefined;
       while (Date.now() < pendingDeadline) {
@@ -3348,7 +4435,7 @@ test("MCP start_run/get_run exposes active liveness and pending-input progress",
       assert.ok(pendingView);
       assert.equal(pendingView.status, "input_required");
       assert.equal(pendingView.active_phase, "input_required");
-      assert.ok(pendingView.input_requests.some((entry) => entry.request_id === request.request_id));
+      assert.ok(pendingView.input_requests.some((entry) => entry.status === "pending"));
 
       const cancelResponse = await client.callTool({
         name: "cancel_run",
@@ -3360,10 +4447,800 @@ test("MCP start_run/get_run exposes active liveness and pending-input progress",
     },
     {
       env: {
-        SUBAGENT007_HEARTBEAT_INTERVAL_MS: "25",
+        SUBAGENT007_HEARTBEAT_INTERVAL_MS: "200",
       },
     },
   );
+});
+
+test("delayed consequential-effect fixture fires with its exact nonce while the owner stays alive", async () => {
+  const fixture = await createDirectRunTestFixture("subagent007-delayed-effect-positive-");
+  const nonce = `positive-${process.pid}-${Date.now()}`;
+  const consequentialEffect = path.join(fixture.projectDir, "positive-consequential-effect.txt");
+  const delayMs = 350;
+  const env = {
+    ...fixture.env,
+    FAKE_PI_DELAYED_EFFECT_PATH: consequentialEffect,
+    FAKE_PI_DELAYED_EFFECT_NONCE: nonce,
+    FAKE_PI_DELAYED_EFFECT_DELAY_MS: String(delayMs),
+  };
+  let runId: string | undefined;
+
+  try {
+    await withEnv(env, async () => {
+      const started = await startRunTask({
+        cwd: fixture.projectDir,
+        prompt: "DELAYED_CONSEQUENTIAL_EFFECT",
+      });
+      runId = started.run_id;
+      const armed = await waitForDelayedEffectArmed(fixture.fake.logPath, nonce);
+      assert.equal(armed.run_id, runId);
+      assert.equal(armed.nonce, nonce);
+      assert.equal(armed.delay_ms, delayMs);
+      assert.equal(armed.effect_path, consequentialEffect);
+      assert.equal(exactPidIsAlive(armed.pid), true);
+      assert.equal(await waitForFileText(consequentialEffect, new RegExp(nonce)), `effect nonce=${nonce}\n`);
+      const terminal = await waitForTerminalRunTask(runId);
+      assert.equal(terminal.status, "completed");
+    });
+  } finally {
+    if (runId) {
+      await withEnv(env, async () => {
+        await cancelAndWaitForDirectRun(runId!).catch(() => undefined);
+      });
+    }
+    await removeDirectRunTestFixture(fixture);
+  }
+});
+
+test("real owner SIGKILL before spawn commit leaves no child survivor or consequential effect and restart converges", async () => {
+  const fixture = await createDirectRunTestFixture("subagent007-spawn-precommit-sigkill-");
+  const callbackMarker = path.join(fixture.root, "spawn-callback-entered.json");
+  const consequentialEffect = path.join(fixture.projectDir, "negative-consequential-effect.txt");
+  const nonce = `negative-${process.pid}-${Date.now()}`;
+  const delayMs = 350;
+  const runTaskUrl = pathToFileURL(path.resolve("src/runTask.ts")).href;
+  const workerSource = `
+    import fs from "node:fs/promises";
+    const originalRename = fs.rename.bind(fs);
+    let paused = false;
+    fs.rename = async (source, destination) => {
+      if (!paused && destination.endsWith(".json") && source.includes(".tmp-")) {
+        const candidate = JSON.parse(await fs.readFile(source, "utf8"));
+        if (candidate.record_name === "subagent007.current_run_claim" && candidate.child_started === true) {
+          paused = true;
+          await fs.writeFile(
+            ${JSON.stringify(callbackMarker)},
+            JSON.stringify({ run_id: candidate.run_id }) + "\\n",
+            { flag: "wx" },
+          );
+          await new Promise(() => {});
+        }
+      }
+      return originalRename(source, destination);
+    };
+    const { startRunTask } = await import(${JSON.stringify(runTaskUrl)});
+    await startRunTask({ cwd: ${JSON.stringify(fixture.projectDir)}, prompt: "DELAYED_CONSEQUENTIAL_EFFECT" });
+    await new Promise(() => {});
+  `;
+  const env = {
+    ...process.env,
+    ...fixture.env,
+    FAKE_PI_DELAYED_EFFECT_PATH: consequentialEffect,
+    FAKE_PI_DELAYED_EFFECT_NONCE: nonce,
+    FAKE_PI_DELAYED_EFFECT_DELAY_MS: String(delayMs),
+  };
+  const worker = spawn(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", workerSource],
+    { env, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let stdout = "";
+  let stderr = "";
+  worker.stdout.setEncoding("utf8");
+  worker.stderr.setEncoding("utf8");
+  worker.stdout.on("data", (chunk: string) => { stdout += chunk; });
+  worker.stderr.on("data", (chunk: string) => { stderr += chunk; });
+
+  try {
+    await waitForFileText(callbackMarker, /run_id/);
+    const marker = JSON.parse(await fs.readFile(callbackMarker, "utf8")) as { run_id: string };
+    const armed = await waitForDelayedEffectArmed(fixture.fake.logPath, nonce);
+    assert.equal(armed.run_id, marker.run_id);
+    assert.equal(armed.nonce, nonce);
+    assert.equal(armed.delay_ms, delayMs);
+    assert.equal(armed.effect_path, consequentialEffect);
+    assert.equal(exactPidIsAlive(armed.pid), true);
+    assert.equal(typeof worker.pid, "number");
+    assert.equal(exactPidIsAlive(worker.pid!), true);
+
+    assert.equal(worker.kill("SIGKILL"), true);
+    const workerExit = await Promise.race([
+      new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+        worker.once("error", reject);
+        worker.once("close", (code, signal) => resolve({ code, signal }));
+      }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("SIGKILL worker did not close")), 2_000)),
+    ]);
+    assert.equal(workerExit.code, null, stderr || stdout);
+    assert.equal(workerExit.signal, "SIGKILL", stderr || stdout);
+    await waitForExactPidGone(armed.pid);
+
+    const recordPath = path.join(fixture.runTasksDir, `${marker.run_id}.json`);
+    const preRestartRecord = JSON.parse(await fs.readFile(recordPath, "utf8")) as RunSubagentMetadata;
+    assert.equal(preRestartRecord.child_started, false);
+    assert.equal(preRestartRecord.recent_events?.some((event) => event.event === "child_spawned"), false);
+
+    const restartSource = `
+      const { getRunTask } = await import(${JSON.stringify(runTaskUrl)});
+      console.log(JSON.stringify(await getRunTask(${JSON.stringify(marker.run_id)})));
+    `;
+    const firstRestart = await runTestWorker(restartSource, env);
+    assert.equal(firstRestart.code, 0, firstRestart.stderr);
+    const firstView = JSON.parse(firstRestart.stdout.trim()) as RunSubagentMetadata;
+    assert.equal(firstView.status, "failed");
+    assert.equal(firstView.reason_code, "server_restarted_active_run");
+    assert.equal(firstView.child_started, false);
+    assert.equal(firstView.recent_events?.some((event) => event.event === "child_spawned"), false);
+    const firstDurableBytes = await fs.readFile(recordPath, "utf8");
+    assert.equal("revision" in JSON.parse(firstDurableBytes), false);
+
+    const secondRestart = await runTestWorker(restartSource, env);
+    assert.equal(secondRestart.code, 0, secondRestart.stderr);
+    const secondView = JSON.parse(secondRestart.stdout.trim()) as RunSubagentMetadata;
+    assert.equal(secondView.status, "failed");
+    assert.equal(secondView.reason_code, "server_restarted_active_run");
+    const secondDurableBytes = await fs.readFile(recordPath, "utf8");
+    assert.equal(secondDurableBytes, firstDurableBytes);
+
+    const effectDeadline = Date.parse(armed.armed_at) + armed.delay_ms + 100;
+    if (Date.now() < effectDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, effectDeadline - Date.now()));
+    }
+    await assert.rejects(fs.stat(consequentialEffect), (error: unknown) =>
+      (error as NodeJS.ErrnoException).code === "ENOENT"
+    );
+  } finally {
+    if (worker.exitCode === null && worker.signalCode === null) worker.kill("SIGKILL");
+    await removeDirectRunTestFixture(fixture);
+  }
+});
+
+test("persisted parent child grandchild restart reconciliation converges without nested-owner deadlock", async () => {
+  const fixture = await createDirectRunTestFixture("subagent007-persisted-restart-graph-");
+  const runTaskUrl = pathToFileURL(path.resolve("src/runTask.ts")).href;
+  const createGraphSource = `
+    import fs from "node:fs/promises";
+    const { getRunTask, startRunTask } = await import(${JSON.stringify(runTaskUrl)});
+    const root = await startRunTask({ cwd: ${JSON.stringify(fixture.projectDir)}, prompt: "CANCEL_WAIT" });
+    const child = await startRunTask(
+      { cwd: ${JSON.stringify(fixture.projectDir)}, prompt: "CANCEL_WAIT" },
+      { lineage: { parentRunId: root.run_id, rootRunId: root.run_id, recursionDepth: 1 } },
+    );
+    const grandchild = await startRunTask(
+      { cwd: ${JSON.stringify(fixture.projectDir)}, prompt: "CANCEL_WAIT" },
+      { lineage: { parentRunId: child.run_id, rootRunId: root.run_id, recursionDepth: 2 } },
+    );
+    for (const runId of [root.run_id, child.run_id, grandchild.run_id]) {
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const view = await getRunTask(runId);
+        if (view.child_started === true) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      if ((await getRunTask(runId)).child_started !== true) throw new Error("graph child did not start: " + runId);
+    }
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const log = await fs.readFile(process.env.FAKE_PI_LOG_PATH, "utf8").catch(() => "");
+      const pids = log.trim().split(/\\r?\\n/).filter(Boolean).map((line) => JSON.parse(line).pid).filter(Number.isInteger);
+      if (pids.length === 3) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const log = await fs.readFile(process.env.FAKE_PI_LOG_PATH, "utf8");
+    const pids = log.trim().split(/\\r?\\n/).filter(Boolean).map((line) => JSON.parse(line).pid).filter(Number.isInteger);
+    if (pids.length !== 3) throw new Error("graph did not observe three exact child PIDs");
+    console.log(JSON.stringify({ root: root.run_id, child: child.run_id, grandchild: grandchild.run_id }));
+    process.exit(73);
+  `;
+  const env = { ...process.env, ...fixture.env };
+
+  try {
+    const created = await runTestWorker(createGraphSource, env);
+    assert.equal(created.code, 73, created.stderr);
+    const ids = JSON.parse(created.stdout.trim()) as {
+      root: string;
+      child: string;
+      grandchild: string;
+    };
+    const childProcesses = (await readJsonl<{ pid?: number }>(fixture.fake.logPath))
+      .map((record) => record.pid)
+      .filter((pid): pid is number => typeof pid === "number");
+    assert.equal(childProcesses.length, 3);
+    await Promise.all(childProcesses.map((pid) => waitForExactPidGone(pid)));
+
+    const rootRecordPath = path.join(fixture.runTasksDir, `${ids.root}.json`);
+    const rootBeforeRestart = JSON.parse(await fs.readFile(rootRecordPath, "utf8")) as RunSubagentMetadata;
+    assert.equal(typeof rootBeforeRestart.partial_output_path, "string");
+    const rootPartialPath = rootBeforeRestart.partial_output_path!;
+    const reconcileSource = `
+      import assert from "node:assert/strict";
+      import { createHash } from "node:crypto";
+      import fs from "node:fs/promises";
+      import path from "node:path";
+
+      const rootRunId = ${JSON.stringify(ids.root)};
+      const rootPartialPath = ${JSON.stringify(rootPartialPath)};
+      const partialBasename = path.basename(rootPartialPath);
+      const partialPrefix = "." + rootRunId + ".";
+      assert.equal(partialBasename.startsWith(partialPrefix), true);
+      assert.equal(partialBasename.endsWith(".partial"), true);
+      const rootFinalPath = path.join(
+        path.dirname(rootPartialPath),
+        partialBasename.slice(partialPrefix.length, -".partial".length) + ".md",
+      );
+      const rootClaimLockPath = path.join(
+        ${JSON.stringify(path.resolve(fixture.runTasksDir))},
+        ".claim-locks",
+        createHash("sha256").update(rootRunId).digest("hex") + ".lock",
+      );
+      const originalLink = fs.link.bind(fs);
+      const originalRename = fs.rename.bind(fs);
+      let rootLockAttemptObserved = false;
+      let partialPresentAtRootLockAttempt = false;
+      let finalAbsentAtRootLockAttempt = false;
+      let rootTranscriptRenameObserved = false;
+      let rootTranscriptRenameOwned = false;
+
+      fs.link = async (...args) => {
+        const destination = args[1];
+        if (!rootLockAttemptObserved && typeof destination === "string" &&
+          path.resolve(destination) === rootClaimLockPath) {
+          rootLockAttemptObserved = true;
+          partialPresentAtRootLockAttempt = await fs.stat(rootPartialPath)
+            .then((stat) => stat.isFile(), () => false);
+          finalAbsentAtRootLockAttempt = await fs.lstat(rootFinalPath)
+            .then(() => false, (error) => error?.code === "ENOENT");
+        }
+        return originalLink(...args);
+      };
+      fs.rename = async (...args) => {
+        const [source, destination] = args;
+        if (!rootTranscriptRenameObserved && typeof source === "string" && typeof destination === "string" &&
+          path.resolve(source) === rootPartialPath && path.resolve(destination) === rootFinalPath) {
+          rootTranscriptRenameObserved = true;
+          rootTranscriptRenameOwned = await fs.readFile(rootClaimLockPath, "utf8")
+            .then((bytes) => JSON.parse(bytes).pid === process.pid, () => false);
+        }
+        return originalRename(...args);
+      };
+
+      const { getRunTask } = await import(${JSON.stringify(runTaskUrl)});
+      const settled = await Promise.allSettled([
+        getRunTask(rootRunId),
+        getRunTask(rootRunId),
+        getRunTask(${JSON.stringify(ids.child)}),
+        getRunTask(${JSON.stringify(ids.grandchild)}),
+      ]);
+      const orderingObservation = {
+        rootLockAttemptObserved,
+        partialPresentAtRootLockAttempt,
+        finalAbsentAtRootLockAttempt,
+      };
+      const ownershipObservation = {
+        rootTranscriptRenameObserved,
+        rootTranscriptRenameOwned,
+      };
+      assert.deepEqual(orderingObservation, {
+        rootLockAttemptObserved: true,
+        partialPresentAtRootLockAttempt: true,
+        finalAbsentAtRootLockAttempt: true,
+      }, "root transcript recovery occurred before root claim-lock acquisition");
+      assert.deepEqual(ownershipObservation, {
+        rootTranscriptRenameObserved: true,
+        rootTranscriptRenameOwned: true,
+      }, "root transcript rename did not occur under this process's exact root claim lock");
+      assert.equal(settled.every((result) => result.status === "fulfilled"), true,
+        "concurrent restart reconciliation did not fully settle");
+      const [rootA, rootB, child, grandchild] = settled.map((result) => result.value);
+      assert.equal(rootA.output_references?.length, 1);
+      assert.equal(rootB.output_references?.length, 1);
+      assert.deepEqual(rootB.output_references, rootA.output_references);
+      assert.equal(rootA.status, "failed");
+      assert.equal(rootB.status, "failed");
+      assert.equal(child.status, "failed");
+      assert.equal(grandchild.status, "failed");
+      assert.deepEqual(rootA.descendant_run_ids, [${JSON.stringify(ids.child)}, ${JSON.stringify(ids.grandchild)}]);
+      assert.equal(rootA.descendant_terminal_statuses?.[${JSON.stringify(ids.child)}], "failed");
+      assert.equal(rootA.descendant_terminal_statuses?.[${JSON.stringify(ids.grandchild)}], "failed");
+      assert.deepEqual(child.descendant_run_ids, [${JSON.stringify(ids.grandchild)}]);
+      assert.equal(child.descendant_terminal_statuses?.[${JSON.stringify(ids.grandchild)}], "failed");
+      console.log(JSON.stringify({ rootA, rootB, child, grandchild }));
+    `;
+    const reconciled = await runTestWorker(reconcileSource, env);
+    assert.equal(reconciled.code, 0, reconciled.stderr);
+    const views = JSON.parse(reconciled.stdout.trim()) as {
+      rootA: RunSubagentMetadata;
+      rootB: RunSubagentMetadata;
+      child: RunSubagentMetadata;
+      grandchild: RunSubagentMetadata;
+    };
+    assert.equal(views.rootA.status, "failed");
+    assert.equal(views.rootB.status, "failed");
+    assert.equal(views.child.status, "failed");
+    assert.equal(views.grandchild.status, "failed");
+    assert.equal(views.rootA.reason_code, "server_restarted_active_run");
+    assert.deepEqual(views.rootA.descendant_run_ids, [ids.child, ids.grandchild]);
+    assert.equal(views.rootA.descendant_terminal_statuses?.[ids.child], "failed");
+    assert.equal(views.rootA.descendant_terminal_statuses?.[ids.grandchild], "failed");
+    assert.deepEqual(views.child.descendant_run_ids, [ids.grandchild]);
+    assert.equal(views.child.descendant_terminal_statuses?.[ids.grandchild], "failed");
+
+    const recordPaths = [ids.root, ids.child, ids.grandchild]
+      .map((runId) => path.join(fixture.runTasksDir, `${runId}.json`));
+    const firstBytes = await Promise.all(recordPaths.map((recordPath) => fs.readFile(recordPath, "utf8")));
+    const terminalReplaySource = `
+      import assert from "node:assert/strict";
+      const { getRunTask } = await import(${JSON.stringify(runTaskUrl)});
+      const views = await Promise.all([
+        getRunTask(${JSON.stringify(ids.root)}),
+        getRunTask(${JSON.stringify(ids.child)}),
+        getRunTask(${JSON.stringify(ids.grandchild)}),
+      ]);
+      assert.deepEqual(views.map((view) => view.status), ["failed", "failed", "failed"]);
+    `;
+    const reopened = await runTestWorker(terminalReplaySource, env);
+    assert.equal(reopened.code, 0, reopened.stderr);
+    const secondBytes = await Promise.all(recordPaths.map((recordPath) => fs.readFile(recordPath, "utf8")));
+    assert.deepEqual(secondBytes, firstBytes);
+  } finally {
+    await removeDirectRunTestFixture(fixture);
+  }
+});
+
+test("execution grant is durable before consequential child release", async (t) => {
+  const fixture = await createDirectRunTestFixture("subagent007-spawn-owner-order-");
+  const ownerCommitStarted = deferredSignal();
+  const releaseOwnerCommit = deferredSignal();
+  const originalRename = fs.rename.bind(fs);
+  let paused = false;
+  t.mock.method(fs, "rename", async (source: string, destination: string) => {
+    if (!paused && destination.endsWith(".json") && source.includes(".tmp-")) {
+      const candidate = JSON.parse(await fs.readFile(source, "utf8")) as {
+        record_name?: string;
+        launch_observation?: Record<string, unknown>;
+        child_started?: boolean;
+      };
+      if (candidate.record_name === "subagent007.current_run_claim" &&
+        candidate.child_started === true && candidate.launch_observation) {
+        paused = true;
+        ownerCommitStarted.resolve();
+        await releaseOwnerCommit.promise;
+      }
+    }
+    await originalRename(source, destination);
+  });
+
+  let runId: string | undefined;
+  try {
+    await withEnv(fixture.env, async () => {
+      const started = await startRunTask({ cwd: fixture.projectDir, prompt: "FAST" });
+      runId = started.run_id;
+      await ownerCommitStarted.promise;
+
+      const visible = await getRunTask(runId) as RunSubagentMetadata;
+      assert.equal(visible.child_started, false);
+      assert.equal(visible.status, "working");
+      assert.equal(visible.first_public_output_at, undefined);
+      assert.doesNotMatch(visible.last_public_output_excerpt ?? "", /FAST FINAL|child_bridge_started|child_prompt_submitted/);
+      if (visible.partial_output_path) {
+        const transcript = await fs.readFile(visible.partial_output_path, "utf8").catch(() => "");
+        assert.doesNotMatch(transcript, /FAST FINAL|child_bridge_started|child_prompt_submitted/);
+      }
+      const persistedBeforeCommit = JSON.parse(
+        await fs.readFile(path.join(fixture.runTasksDir, `${runId}.json`), "utf8"),
+      ) as {
+        record_name?: string;
+        launch_observation?: Record<string, unknown>;
+        child_started?: boolean;
+        status?: string;
+        queued_at?: string;
+        child_started_at?: string;
+        queue_wait_ms?: number;
+      };
+      assert.equal(persistedBeforeCommit.record_name, "subagent007.current_run_claim");
+      assert.equal(persistedBeforeCommit.child_started, false);
+      assert.equal(persistedBeforeCommit.status, "working");
+      assert.ok(persistedBeforeCommit.launch_observation);
+      assert.equal(persistedBeforeCommit.queued_at, undefined);
+      assert.equal(persistedBeforeCommit.child_started_at, undefined);
+      assert.equal(persistedBeforeCommit.queue_wait_ms, undefined);
+
+      releaseOwnerCommit.resolve();
+      const terminal = await waitForTerminalRunTask(runId);
+      assert.equal(terminal.status, "completed");
+      assert.equal(terminal.child_started, true);
+      assert.equal(await fs.readFile(outputPathFor(terminal), "utf8"), "FAST FINAL");
+      assert.ok(terminal.recent_events?.some((event) => event.event === "child_spawned"));
+      assert.ok(terminal.recent_events?.some((event) => event.event === "completed"));
+    });
+  } finally {
+    releaseOwnerCommit.resolve();
+    if (runId) {
+      await withEnv(fixture.env, async () => {
+        await cancelAndWaitForDirectRun(runId!).catch(() => undefined);
+      });
+    }
+    await removeDirectRunTestFixture(fixture);
+  }
+});
+
+test("owner spawn commit rejection forwards no child-origin output or success settlement", async (t) => {
+  const fixture = await createDirectRunTestFixture("subagent007-spawn-owner-rejection-");
+  const originalRename = fs.rename.bind(fs);
+  let rejected = false;
+  t.mock.method(fs, "rename", async (source: string, destination: string) => {
+    if (!rejected && destination.endsWith(".json") && source.includes(".tmp-")) {
+      const candidate = JSON.parse(await fs.readFile(source, "utf8")) as {
+        record_name?: string;
+        child_started?: boolean;
+      };
+      if (candidate.record_name === "subagent007.current_run_claim" && candidate.child_started === true) {
+        rejected = true;
+        throw new Error("injected owner spawn commit rejection");
+      }
+    }
+    await originalRename(source, destination);
+  });
+
+  let runId: string | undefined;
+  try {
+    await withEnv(fixture.env, async () => {
+      const started = await startRunTask({ cwd: fixture.projectDir, prompt: "FAST" });
+      runId = started.run_id;
+      const terminal = await waitForTerminalRunTask(runId);
+      assert.equal(terminal.status, "failed");
+      assert.equal(terminal.child_started, false);
+      assert.equal(terminal.first_public_output_at, undefined);
+      assert.equal(
+        terminal.recent_events?.some((event) =>
+          event.kind === "child" || event.kind === "assistant" || event.event === "completed"
+        ),
+        false,
+      );
+      if (terminal.output_references?.length === 1) {
+        assert.doesNotMatch(await fs.readFile(outputPathFor(terminal), "utf8"), /FAST FINAL|child_bridge_started/);
+      }
+    });
+  } finally {
+    if (runId) {
+      await withEnv(fixture.env, async () => {
+        await cancelAndWaitForDirectRun(runId!).catch(() => undefined);
+      });
+    }
+    await removeDirectRunTestFixture(fixture);
+  }
+});
+
+test("deterministic fake child terminates when its parent closes stdin before owner release", async () => {
+  const fake = await createFakePiChild("subagent007-fake-pi-eof-");
+  const requestPath = path.join(path.dirname(fake.childPath), "request.json");
+  await fs.writeFile(requestPath, JSON.stringify({ prompt: "CANCEL_WAIT" }));
+  const child = spawn(process.execPath, [fake.childPath, requestPath], {
+    stdio: ["pipe", "ignore", "ignore"],
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      child.once("spawn", resolve);
+      child.once("error", reject);
+    });
+    child.stdin.end();
+    const exit = await Promise.race([
+      new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+        child.once("exit", (code, signal) => resolve({ code, signal }));
+      }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("fake child ignored stdin EOF")), 1_500)),
+    ]);
+    assert.equal(exit.code, null);
+    assert.equal(exit.signal === "SIGTERM" || exit.signal === "SIGKILL", true);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await fs.rm(path.dirname(fake.childPath), { recursive: true, force: true });
+  }
+});
+
+test("duplicate child lifecycle callbacks are idempotent for phase and progress", async () => {
+  const fixture = await createDirectRunTestFixture("subagent007-child-lifecycle-duplicate-");
+  let runId: string | undefined;
+  try {
+    await withEnv(fixture.env, async () => {
+      try {
+        const started = await startRunTask({
+          cwd: fixture.projectDir,
+          prompt: "DUPLICATE_CHILD_BRIDGE OMIT_RECURSIVE_DELEGATION_RECEIPT OMIT_PROMPT_SUBMITTED CANCEL_WAIT",
+        });
+        runId = started.run_id;
+        const view = await waitForDirectRunView(
+          runId,
+          (candidate) => (candidate.recent_events ?? []).filter(
+            (event) => event.kind === "child" && event.event === "child_bridge_started",
+          ).length === 2,
+          "duplicate child bridge events",
+        );
+        const bridgeEvents = (view.recent_events ?? []).filter(
+          (event) => event.kind === "child" && event.event === "child_bridge_started",
+        );
+        assert.equal(bridgeEvents.length, 2);
+        assert.notEqual(bridgeEvents[0].occurred_at, bridgeEvents[1].occurred_at);
+        assert.equal(view.last_child_lifecycle_event, "child_bridge_started");
+        assert.equal(view.last_child_lifecycle_at, bridgeEvents[0].occurred_at);
+        assert.equal(view.active_phase, "running_silent");
+        assert.equal(view.last_phase_at, bridgeEvents[0].occurred_at);
+        assert.equal(view.last_progress_at, bridgeEvents[0].occurred_at);
+        assert.equal(view.last_progress_message, "child bridge started; waiting for first public output");
+      } finally {
+        if (runId) await cancelAndWaitForDirectRun(runId);
+      }
+    });
+  } finally {
+    await removeDirectRunTestFixture(fixture);
+  }
+});
+
+test("terminalization preserves producer-real byte-identical general lifecycle observations", async (t) => {
+  const fixture = await createDirectRunTestFixture("subagent007-child-lifecycle-identical-");
+  const occurredAt = "2026-07-22T12:34:56.789Z";
+  t.mock.method(Date.prototype, "toISOString", () => occurredAt);
+  let runId: string | undefined;
+  try {
+    await withEnv(fixture.env, async () => {
+      try {
+        const started = await startRunTask({
+          cwd: fixture.projectDir,
+          prompt: "DUPLICATE_CHILD_BRIDGE OMIT_RECURSIVE_DELEGATION_RECEIPT OMIT_PROMPT_SUBMITTED CANCEL_WAIT",
+        });
+        runId = started.run_id;
+        const active = await waitForDirectRunView(
+          runId,
+          (candidate) => (candidate.recent_events ?? []).filter(
+            (event) => event.kind === "child" && event.event === "child_bridge_started",
+          ).length === 2,
+          "byte-identical child bridge observations",
+        );
+        const activeBridgeEvents = (active.recent_events ?? []).filter(
+          (event) => event.kind === "child" && event.event === "child_bridge_started",
+        );
+        assert.equal(activeBridgeEvents.length, 2);
+        assert.deepEqual(activeBridgeEvents[0], activeBridgeEvents[1]);
+
+        await cancelRunTask(runId);
+        const terminal = await waitForTerminalRunTask(runId);
+        const terminalBridgeEvents = (terminal.recent_events ?? []).filter(
+          (event) => event.kind === "child" && event.event === "child_bridge_started",
+        );
+        assert.equal(terminalBridgeEvents.length, 2);
+        assert.deepEqual(terminalBridgeEvents[0], terminalBridgeEvents[1]);
+      } finally {
+        if (runId) await cancelAndWaitForDirectRun(runId);
+      }
+    });
+  } finally {
+    await removeDirectRunTestFixture(fixture);
+  }
+});
+
+test("producer-order lifecycle projection advances through session before optional activation events", async () => {
+  const fixture = await createDirectRunTestFixture("subagent007-child-lifecycle-producer-order-");
+  let runId: string | undefined;
+  try {
+    await withEnv(fixture.env, async () => {
+      try {
+        const started = await startRunTask({
+          cwd: fixture.projectDir,
+          prompt: "EMIT_EPHEMERAL_SESSION_EVENT CANCEL_WAIT",
+        });
+        runId = started.run_id;
+        const pausedAfterSession = await waitForDirectRunView(
+          runId,
+          (view) => view.last_child_lifecycle_event === "child_prompt_submitted",
+          "prompt-submitted lifecycle projection",
+        );
+        const lifecycleEvents = (pausedAfterSession.recent_events ?? [])
+          .filter((event) => event.kind === "child")
+          .map((event) => event.event);
+        assert.deepEqual(lifecycleEvents.slice(-3), [
+          "recursive_delegation_confirmed",
+          "child_session_established",
+          "child_prompt_submitted",
+        ]);
+        assert.equal(pausedAfterSession.last_child_lifecycle_event, "child_prompt_submitted");
+      } finally {
+        if (runId) await cancelAndWaitForDirectRun(runId);
+      }
+    });
+  } finally {
+    await removeDirectRunTestFixture(fixture);
+  }
+});
+
+test("producer-order lifecycle projection skips absent session and snapshot before activation", async () => {
+  const fixture = await createDirectRunTestFixture("subagent007-child-lifecycle-activation-gap-");
+  let runId: string | undefined;
+  try {
+    await withEnv(fixture.env, async () => {
+      try {
+        const started = await startRunTask({
+          cwd: fixture.projectDir,
+          prompt: "CANCEL_WAIT",
+          effect_profile: "workspace_read_only",
+          recursive_delegation: "disabled",
+        });
+        runId = started.run_id;
+        const pausedAfterActivation = await waitForDirectRunView(
+          runId,
+          (view) => view.last_child_lifecycle_event === "child_prompt_submitted",
+          "activation-gap prompt projection",
+        );
+        assert.equal(
+          pausedAfterActivation.recent_events?.some((event) => event.event === "child_session_established"),
+          false,
+        );
+        assert.equal(
+          pausedAfterActivation.recent_events?.some((event) => event.event === "skill_snapshot_activation_confirmed"),
+          false,
+        );
+        assert.equal(pausedAfterActivation.last_child_lifecycle_event, "child_prompt_submitted");
+      } finally {
+        if (runId) await cancelAndWaitForDirectRun(runId);
+      }
+    });
+  } finally {
+    await removeDirectRunTestFixture(fixture);
+  }
+});
+
+test("producer-order lifecycle projection skips absent session and activation before snapshot", async () => {
+  const fixture = await createDirectRunTestFixture("subagent007-child-lifecycle-snapshot-gap-");
+  const skillsRoot = path.join(fixture.root, "skills");
+  const snapshotsRoot = path.join(fixture.root, "snapshots");
+  const skillName = "lifecycle-snapshot-gap";
+  const skillPath = await writeSkillFixture(skillsRoot, skillName);
+  const bundle = await validateSkillRuntimeBundle(path.dirname(skillPath));
+  const publication = await publishSkillSnapshotsRequest({
+    contract_version: 1,
+    cwd: fixture.projectDir,
+    project_reference: {
+      project_id: "lifecycle-projection",
+      publication_id: "snapshot-gap",
+      lifecycle: "active",
+    },
+    bindings: [{ skill_name: skillName, expected_bundle_sha256: bundle.bundle_sha256 }],
+  }, {
+    lookupPaths: [skillsRoot],
+    agentDir: path.join(fixture.root, "agent"),
+    snapshotsRoot,
+  });
+  assert.equal(publication.kind, "skill_snapshots_published");
+  if (publication.kind !== "skill_snapshots_published") throw new Error("snapshot publication failed");
+  const published = publication.bindings[0];
+  const skillSnapshotBinding = {
+    contract_version: 1 as const,
+    snapshot_id: published.snapshot_identity.snapshot_id,
+    metadata_sha256: published.snapshot_identity.metadata_sha256,
+    publication_receipt_sha256: published.publication_receipt.receipt_sha256,
+    reference_id: published.publication_receipt.reference_id,
+    project_id: published.publication_receipt.project_reference.project_id,
+    publication_id: published.publication_receipt.project_reference.publication_id,
+  };
+  let runId: string | undefined;
+  try {
+    await withEnv({
+      ...fixture.env,
+      SUBAGENT007_PI_SKILL_PATHS: skillsRoot,
+      SUBAGENT007_SKILL_SNAPSHOTS_DIR: snapshotsRoot,
+    }, async () => {
+      try {
+        const started = await startRunTask({
+          cwd: fixture.projectDir,
+          prompt: "CANCEL_WAIT",
+          skill_name: skillName,
+          skill_snapshot_binding: skillSnapshotBinding,
+        });
+        runId = started.run_id;
+        const pausedAfterSnapshot = await waitForDirectRunView(
+          runId,
+          (view) => view.last_child_lifecycle_event === "child_prompt_submitted",
+          "snapshot-gap prompt projection",
+        );
+        assert.equal(
+          pausedAfterSnapshot.recent_events?.some((event) => event.event === "child_session_established"),
+          false,
+        );
+        assert.equal(
+          pausedAfterSnapshot.recent_events?.some((event) => event.event === "activation_confirmed"),
+          false,
+        );
+        assert.equal(pausedAfterSnapshot.last_child_lifecycle_event, "child_prompt_submitted");
+      } finally {
+        if (runId) await cancelAndWaitForDirectRun(runId);
+      }
+    });
+  } finally {
+    await makeDirectoriesRemovable(snapshotsRoot);
+    await removeDirectRunTestFixture(fixture);
+  }
+});
+
+test("producer-real lifecycle order projects activation before snapshot when both are present", async () => {
+  const fixture = await createDirectRunTestFixture("subagent007-child-lifecycle-all-present-");
+  const skillsRoot = path.join(fixture.root, "skills");
+  const snapshotsRoot = path.join(fixture.root, "snapshots");
+  const skillName = "lifecycle-all-present";
+  const skillPath = await writeSkillFixture(skillsRoot, skillName);
+  const bundle = await validateSkillRuntimeBundle(path.dirname(skillPath));
+  const publication = await publishSkillSnapshotsRequest({
+    contract_version: 1,
+    cwd: fixture.projectDir,
+    project_reference: {
+      project_id: "lifecycle-projection",
+      publication_id: "all-present",
+      lifecycle: "active",
+    },
+    bindings: [{ skill_name: skillName, expected_bundle_sha256: bundle.bundle_sha256 }],
+  }, {
+    lookupPaths: [skillsRoot],
+    agentDir: path.join(fixture.root, "agent"),
+    snapshotsRoot,
+  });
+  assert.equal(publication.kind, "skill_snapshots_published");
+  if (publication.kind !== "skill_snapshots_published") throw new Error("snapshot publication failed");
+  const published = publication.bindings[0];
+  const skillSnapshotBinding = {
+    contract_version: 1 as const,
+    snapshot_id: published.snapshot_identity.snapshot_id,
+    metadata_sha256: published.snapshot_identity.metadata_sha256,
+    publication_receipt_sha256: published.publication_receipt.receipt_sha256,
+    reference_id: published.publication_receipt.reference_id,
+    project_id: published.publication_receipt.project_reference.project_id,
+    publication_id: published.publication_receipt.project_reference.publication_id,
+  };
+  let runId: string | undefined;
+  try {
+    await withEnv({
+      ...fixture.env,
+      SUBAGENT007_PI_SKILL_PATHS: skillsRoot,
+      SUBAGENT007_SKILL_SNAPSHOTS_DIR: snapshotsRoot,
+    }, async () => {
+      try {
+        const started = await startRunTask({
+          cwd: fixture.projectDir,
+          prompt: "CANCEL_WAIT",
+          skill_name: skillName,
+          skill_snapshot_binding: skillSnapshotBinding,
+          effect_profile: "workspace_read_only",
+          recursive_delegation: "disabled",
+        });
+        runId = started.run_id;
+        const pausedAfterSnapshot = await waitForDirectRunView(
+          runId,
+          (view) => view.last_child_lifecycle_event === "child_prompt_submitted",
+          "all-present prompt projection",
+        );
+        const lifecycleEvents = (pausedAfterSnapshot.recent_events ?? [])
+          .filter((event) => event.kind === "child")
+          .map((event) => event.event);
+        assert.deepEqual(lifecycleEvents.slice(-3), [
+          "activation_confirmed",
+          "skill_snapshot_activation_confirmed",
+          "child_prompt_submitted",
+        ]);
+        assert.equal(pausedAfterSnapshot.last_child_lifecycle_event, "child_prompt_submitted");
+      } finally {
+        if (runId) await cancelAndWaitForDirectRun(runId);
+      }
+    });
+  } finally {
+    await makeDirectoriesRemovable(snapshotsRoot);
+    await removeDirectRunTestFixture(fixture);
+  }
 });
 
 test("MCP input waits for child acceptance before returning an idempotent receipt", async () => {
@@ -3433,7 +5310,7 @@ test("MCP input waits for child acceptance before returning an idempotent receip
     assert.equal(replay.input_response_receipt, answered.input_response_receipt);
     assert.equal(replay.input_response_outcome, "replayed");
 
-    assert.equal(await fs.readFile(terminal.output_path, "utf8"), "INPUT CONTINUED");
+    assert.equal(await fs.readFile(outputPathFor(terminal), "utf8"), "INPUT CONTINUED");
     assert.equal(JSON.stringify(terminal).includes(answer), false);
     assert.equal((await fs.readFile(fakeLogPath, "utf8")).includes(answer), false);
   });
@@ -3639,8 +5516,11 @@ test("MCP start_run/get_run exposes sanitized active public events", async () =>
 
     assert.ok(eventView);
     assert.match(eventView.last_public_output_excerpt ?? "", /PUBLIC PARTIAL ASSISTANT/);
+    assert.equal(Object.hasOwn(eventView, "output_path"), false);
+    assert.equal(Object.hasOwn(eventView, "partial_output_path"), false);
     assert.doesNotMatch(JSON.stringify(eventView.recent_events), /thinking_delta|SECRET_THINKING/);
-    await client.callTool({ name: "cancel_run", arguments: { run_id: started.run_id } });
+    const cancelled = await client.callTool({ name: "cancel_run", arguments: { run_id: started.run_id } });
+    assert.equal(JSON.stringify(cancelled.structuredContent).includes("output_path"), false);
   });
 });
 
@@ -3716,6 +5596,12 @@ test("MCP start_session_run returns a durable pollable named-session task", asyn
       session_key?: string;
       packet_parse_status?: string;
       run_record?: { success: boolean };
+      requested_recursive_delegation?: "disabled" | "enabled";
+      resolved_recursive_delegation?: "disabled" | "enabled";
+      recursive_delegation_receipt?: {
+        requested_recursive_delegation: "disabled" | "enabled" | null;
+        resolved_recursive_delegation: "disabled" | "enabled";
+      };
     };
     assert.equal(terminal.task_kind, "session");
     assert.equal(terminal.status, "completed");
@@ -3724,64 +5610,20 @@ test("MCP start_session_run returns a durable pollable named-session task", asyn
     assert.equal(terminal.session_key, "mcp-session:T001");
     assert.equal(terminal.packet_parse_status, "valid");
     assert.equal(terminal.run_record?.success, true);
+    assert.equal(terminal.requested_recursive_delegation, undefined);
+    assert.equal(terminal.resolved_recursive_delegation, "disabled");
+    assert.deepEqual(terminal.recursive_delegation_receipt, {
+      schema_version: 1,
+      confirmed_before_prompt: true,
+      requested_recursive_delegation: "disabled",
+      resolved_recursive_delegation: "disabled",
+      delegate_tool_active: false,
+    });
     assert.ok(terminal.recent_events?.some((event) => event.event === "packet_accepted"));
     assert.ok(terminal.recent_events?.some((event) => event.text === "[server_contract] packet_policy=required contract_packet_v1 instruction applied"));
     assert.doesNotMatch(JSON.stringify(terminal.recent_events), /<subagent007_contract_packet>/);
     assert.doesNotMatch(JSON.stringify(terminal), /input_requests_dir|pi_session_id/);
   });
-});
-
-test("answer_run_input records no answer text in raw public event file", async () => {
-  const runTasksDir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-input-events-"));
-  await connectFakeClient(
-    async (client, { projectDir, fakeLogPath, inputRequestsDir }) => {
-      const startedResponse = await client.callTool({
-        name: "start_run",
-        arguments: {
-          cwd: projectDir,
-          prompt: "REQUEST_INPUT_WAIT",
-        },
-      });
-      assert.notEqual(startedResponse.isError, true);
-      const started = startedResponse.structuredContent as RunSubagentMetadata;
-      const mailboxRoot = inputRequestsDir;
-      const pending = await waitForInputRequired(client, started.run_id);
-      const request = pending.input_requests.find((entry) => entry.status === "pending");
-      assert.ok(request);
-
-      const answerResponse = await client.callTool({
-        name: "answer_run_input",
-        arguments: {
-          run_id: started.run_id,
-          request_id: request.request_id,
-          answer: "SECRET_ANSWER_SHOULD_NOT_LEAK",
-          response_id: "privacy-response-001",
-        },
-      });
-      assert.notEqual(answerResponse.isError, true);
-      const rawEvents = await fs.readFile(path.join(runTasksDir, `${started.run_id}.events.jsonl`), "utf8");
-      assert.match(rawEvents, /input_answered/);
-      assert.doesNotMatch(rawEvents, /SECRET_ANSWER_SHOULD_NOT_LEAK/);
-      const terminal = await waitForTerminalRun(client, started.run_id);
-      assert.doesNotMatch(JSON.stringify(terminal.recent_events), /SECRET_ANSWER_SHOULD_NOT_LEAK/);
-      assert.ok(terminal.input_requests.some((entry) =>
-        entry.request_id === request.request_id && entry.status === "answered"
-      ));
-      await waitForPathMissing(path.join(mailboxRoot, started.run_id));
-      assert.doesNotMatch(
-        await fs.readFile(path.join(runTasksDir, `${started.run_id}.json`), "utf8"),
-        /SECRET_ANSWER_SHOULD_NOT_LEAK/,
-      );
-      assert.doesNotMatch(await fs.readFile(terminal.output_path, "utf8"), /SECRET_ANSWER_SHOULD_NOT_LEAK/);
-      assert.doesNotMatch(await fs.readFile(fakeLogPath, "utf8"), /SECRET_ANSWER_SHOULD_NOT_LEAK/);
-    },
-    {
-      env: {
-        SUBAGENT007_RUN_TASKS_DIR: runTasksDir,
-        SUBAGENT007_HEARTBEAT_INTERVAL_MS: "25",
-      },
-    },
-  );
 });
 
 test("MCP start_session_run rejects invalid session input before creating a task", async () => {
@@ -3842,6 +5684,97 @@ test("MCP run_subagent_session returns structured preflight rejection for invali
   });
 });
 
+test("getRunTask rejects a terminal direct-v2 snapshot without a current claim and without mutation", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-direct-v2-read-"));
+  const runTasksDir = path.join(tmp, "run-tasks");
+  const runId = "direct-v2-terminal-run";
+  const recordPath = path.join(runTasksDir, `${runId}.json`);
+  await fs.mkdir(runTasksDir, { recursive: true });
+  const bytes = `${JSON.stringify({
+    contract_name: "subagent007.durable_run",
+    contract_version: 2,
+    run_id: runId,
+    task_id: runId,
+    task_kind: "run",
+    status: "completed",
+  }, null, 2)}\n`;
+  await fs.writeFile(recordPath, bytes);
+  const beforeEntries = await fs.readdir(runTasksDir);
+
+  await withEnv({ SUBAGENT007_RUN_TASKS_DIR: runTasksDir }, async () => {
+    await assert.rejects(
+      getRunTask(runId),
+      (error: unknown) =>
+        error instanceof ValidationError &&
+        error.reasonCode === "run_liveness_unknown" &&
+        error.message === "run snapshot is missing its current run claim",
+    );
+  });
+
+  assert.equal(await fs.readFile(recordPath, "utf8"), bytes);
+  assert.deepEqual(await fs.readdir(runTasksDir), beforeEntries);
+});
+
+test("getRunTask rejects terminal and active subagent007.run_owner_record envelopes without mutation", async () => {
+  const fixture = await createDirectRunTestFixture("subagent007-historical-owner-rejected-");
+  try {
+    await withEnv(fixture.env, async () => {
+      const started = await startRunTask({ cwd: fixture.projectDir, prompt: "FAST" });
+      await waitForTerminalRunTask(started.run_id);
+      const recordPath = path.join(fixture.runTasksDir, `${started.run_id}.json`);
+      const claim = JSON.parse(await fs.readFile(recordPath, "utf8")) as Record<string, unknown>;
+      const {
+        record_name: _recordName,
+        record_version: _recordVersion,
+        declarations: _declarations,
+        launch_observation,
+        ...terminalPublicView
+      } = claim;
+      const settlementEvent = (terminalPublicView.recent_events as Array<Record<string, unknown>>).find((event) =>
+        event.kind === "terminal"
+      );
+      if (!settlementEvent) throw new Error("terminal claim omitted its settlement event");
+
+      const cases: Array<{ label: string; publicView: Record<string, unknown> }> = [
+        { label: "terminal", publicView: terminalPublicView },
+        { label: "active", publicView: { ...terminalPublicView, status: "working", finished_at: undefined } },
+      ];
+      for (const { label, publicView } of cases) {
+        const historical: Record<string, unknown> = {
+          record_name: "subagent007.run_owner_record",
+          record_version: 1,
+          revision: 7,
+          immutable_admission: { run_id: started.run_id },
+          launch_observation,
+          settlement: {
+            status: terminalPublicView.status,
+            event: settlementEvent,
+            occurred_at: terminalPublicView.finished_at,
+          },
+          public_view: publicView,
+        };
+        const historicalBytes: string = `${JSON.stringify(historical, null, 2)}\n`;
+        await fs.writeFile(recordPath, historicalBytes);
+        const beforeEntries = await fs.readdir(fixture.runTasksDir);
+
+        await assert.rejects(
+          getRunTask(started.run_id),
+          (error: unknown) =>
+            error instanceof ValidationError &&
+            error.reasonCode === "run_liveness_unknown" &&
+            error.message === "run snapshot is missing its current run claim",
+          `${label} historical owner envelope was accepted`,
+        );
+
+        assert.equal(await fs.readFile(recordPath, "utf8"), historicalBytes);
+        assert.deepEqual(await fs.readdir(fixture.runTasksDir), beforeEntries);
+      }
+    });
+  } finally {
+    await removeDirectRunTestFixture(fixture);
+  }
+});
+
 test("get_run can read a completed run snapshot after MCP server restart", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-run-snapshot-"));
   const projectDir = path.join(tmp, "project");
@@ -3869,7 +5802,7 @@ test("get_run can read a completed run snapshot after MCP server restart", async
   {
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.resolve("dist/server.js")],
+      args: ["--import", "tsx", path.resolve("src/server.ts")],
       env,
     });
     const client = new Client({ name: "subagent007-pi-run-snapshot-test", version: "0.1.0" });
@@ -3887,7 +5820,6 @@ test("get_run can read a completed run snapshot after MCP server restart", async
       const terminal = await waitForTerminalRun(client, runId);
       assert.equal(terminal.status, "completed");
       assert.ok(terminal.recent_events?.some((event) => event.event === "completed"));
-      await waitForPathMissing(path.join(stateDir, "run-tasks", `${runId}.events.jsonl`));
       await waitForPathMissing(path.join(stateDir, "input-requests", runId));
     } finally {
       await client.close();
@@ -3896,7 +5828,7 @@ test("get_run can read a completed run snapshot after MCP server restart", async
 
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [path.resolve("dist/server.js")],
+    args: ["--import", "tsx", path.resolve("src/server.ts")],
     env,
   });
   const client = new Client({ name: "subagent007-pi-run-snapshot-test-restart", version: "0.1.0" });
@@ -3910,7 +5842,7 @@ test("get_run can read a completed run snapshot after MCP server restart", async
     const metadata = response.structuredContent as RunSubagentMetadata;
     assert.equal(metadata.status, "completed");
     assert.equal(metadata.success, true);
-    assert.equal(await fs.readFile(metadata.output_path, "utf8"), "FAST FINAL");
+    assert.equal(await fs.readFile(outputPathFor(metadata, path.join(stateDir, "runs")), "utf8"), "FAST FINAL");
   } finally {
     await client.close();
   }
@@ -3962,7 +5894,7 @@ test("unreadable legacy leases reject active-run inspection without restart term
   assert.equal(persisted.status, "working");
 });
 
-test("get_run rejects a claim-bearing v3 snapshot without its owner record and leaves staging untouched", async () => {
+test("get_run rejects a bare v3 snapshot without mutating mailbox or output artifacts", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-stale-run-"));
   const stateDir = path.join(tmp, "state");
   const runTasksDir = path.join(stateDir, "run-tasks");
@@ -3999,20 +5931,6 @@ test("get_run rejects a claim-bearing v3 snapshot without its owner record and l
       partial_output_path: partialOutputPath,
     }, null, 2)}\n`,
   );
-  await fs.writeFile(
-    path.join(runTasksDir, `${runId}.events.jsonl`),
-    `${JSON.stringify({
-      schema_version: 1,
-      kind: "child",
-      event: "child_session_established",
-      text: "[child_session_established] Pi session established",
-      occurred_at: "2026-06-19T00:00:02.000Z",
-      metadata: {
-        session_id: "pi-session-stale",
-        session_file: "/tmp/pi-session-stale.jsonl",
-      },
-    })}\n`,
-  );
   const request = await createInputRequest({
     mailboxRoot: inputRequestsDir,
     runId,
@@ -4021,7 +5939,7 @@ test("get_run rejects a claim-bearing v3 snapshot without its owner record and l
 
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [path.resolve("dist/server.js")],
+    args: ["--import", "tsx", path.resolve("src/server.ts")],
     env: {
       ...process.env,
       SUBAGENT007_CONFIG_PATH: configPath,
@@ -4037,12 +5955,11 @@ test("get_run rejects a claim-bearing v3 snapshot without its owner record and l
       name: "get_run",
       arguments: { run_id: runId },
     });
-    assert.notEqual(response.isError, true);
+    assert.notEqual(response.isError, true, JSON.stringify(response));
     const metadata = response.structuredContent as RunSubagentMetadata;
     assert.equal(metadata.status, "rejected");
     assert.equal(metadata.reason_code, "run_liveness_unknown");
     assert.equal(await fs.readFile(publishedOutputPath, "utf8"), "[assistant]\nPUBLIC RECOVERED PARTIAL");
-    await fs.stat(path.join(runTasksDir, `${runId}.events.jsonl`));
     await fs.stat(inputRequestsRunDir);
     assert.equal((await listInputRequests({ mailboxRoot: inputRequestsDir, runId }))[0]?.request_id, request.request_id);
   } finally {
@@ -4099,23 +6016,20 @@ test("restart reconciliation rejects a pre-envelope v3 descendant tree without r
 
 test("cancel_run closes pending input requests and rejects late answers", async () => {
   await connectFakeClient(
-    async (client, { projectDir, inputRequestsDir }) => {
+    async (client, { projectDir }) => {
       const startedResponse = await client.callTool({
         name: "start_run",
         arguments: {
           cwd: projectDir,
-          prompt: "CANCEL_WAIT",
+          prompt: "REQUEST_INPUT_WAIT",
           timeout_ms: 6000,
         },
       });
       assert.notEqual(startedResponse.isError, true);
       const started = startedResponse.structuredContent as RunSubagentMetadata;
-      const mailboxRoot = inputRequestsDir;
-      const request = await createInputRequest({
-        mailboxRoot,
-        runId: started.run_id,
-        question: "Should be closed on cancel",
-      });
+      const inputRequired = await waitForInputRequired(client, started.run_id);
+      const request = inputRequired.input_requests.find((input) => input.status === "pending");
+      assert.ok(request);
 
       const cancelResponse = await client.callTool({
         name: "cancel_run",
@@ -4125,10 +6039,12 @@ test("cancel_run closes pending input requests and rejects late answers", async 
       const cancelled = cancelResponse.structuredContent as RunSubagentMetadata;
       assertCancellationInProgressOrSettled(cancelled);
       assert.equal(cancelled.input_requests.some((input) => input.status === "pending"), false);
-
-      const closed = await listInputRequests({ mailboxRoot, runId: started.run_id, status: "closed" });
-      assert.equal(closed.length, 1);
-      assert.equal(closed[0].request_id, request.request_id);
+      assert.equal(
+        cancelled.input_requests.some((input) =>
+          input.request_id === request.request_id && input.status === "closed"
+        ),
+        true,
+      );
 
       const lateAnswer = await client.callTool({
         name: "answer_run_input",

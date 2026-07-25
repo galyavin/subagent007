@@ -15,6 +15,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { createInputRequest } from "./inputMailbox.js";
 import { terminateOwnedProcessGroupOnControlLoss } from "./controlChannel.js";
+import { CHILD_OWNER_COMMIT_RELEASE_FRAME } from "./processRunner.js";
 import { resolvePiAgentDir } from "./piAgentDir.js";
 import { createRecursiveDelegateTool } from "./recursiveDelegateTool.js";
 import { createSkillScopedResourceLoader } from "./skillResources.js";
@@ -157,6 +158,7 @@ interface InputResponse {
 }
 
 interface InputControl {
+  waitForOwnerCommitRelease(): Promise<void>;
   waitForResponse(requestId: string, timeoutMs: number): Promise<InputResponse>;
   dispose(): void;
 }
@@ -165,6 +167,11 @@ function createInputControl(runId: string): InputControl {
   const buffered = new Map<string, InputResponse>();
   const waiters = new Map<string, (response: InputResponse) => void>();
   const reader = createInterface({ input: process.stdin, crlfDelay: Infinity });
+  let releaseOwnerCommit!: () => void;
+  const ownerCommitRelease = new Promise<void>((resolve) => {
+    releaseOwnerCommit = resolve;
+  });
+  let ownerCommitReleased = false;
   let disposed = false;
   reader.on("close", () => {
     if (!disposed) {
@@ -179,6 +186,14 @@ function createInputControl(runId: string): InputControl {
         response_id?: unknown;
         answer?: unknown;
       };
+      if (
+        !ownerCommitReleased &&
+        `${line}\n` === CHILD_OWNER_COMMIT_RELEASE_FRAME
+      ) {
+        ownerCommitReleased = true;
+        releaseOwnerCommit();
+        return;
+      }
       if (
         message.type !== "subagent007.input_response" ||
         typeof message.request_id !== "string" ||
@@ -206,6 +221,9 @@ function createInputControl(runId: string): InputControl {
   });
 
   return {
+    waitForOwnerCommitRelease() {
+      return ownerCommitRelease;
+    },
     waitForResponse(requestId, timeoutMs) {
       const accept = (response: InputResponse): InputResponse => {
         writeEvent({
@@ -386,7 +404,9 @@ async function readRequest(): Promise<PiChildRequest> {
 async function main(): Promise<void> {
   const request = await readRequest();
   const inputControl = createInputControl(request.runId);
-  writeEvent({ type: "subagent007.lifecycle", event: "child_bridge_started" });
+  try {
+    await inputControl.waitForOwnerCommitRelease();
+    writeEvent({ type: "subagent007.lifecycle", event: "child_bridge_started" });
   let expectedSnapshotReceipt: SkillSnapshotActivationReceipt | null = null;
   if (request.skillSnapshotBinding) {
     if (!request.skill) {
@@ -661,8 +681,10 @@ async function main(): Promise<void> {
     }
   } finally {
     unsubscribe();
-    inputControl.dispose();
     session.dispose();
+  }
+  } finally {
+    inputControl.dispose();
   }
 }
 

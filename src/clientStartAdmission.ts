@@ -132,9 +132,12 @@ function bindingsDir(): string {
   return path.join(defaultSubagentStatePath("SUBAGENT007_RUN_TASKS_DIR", "run-tasks"), "client-start-ids");
 }
 
+function clientStartBindingFilename(clientStartId: string): string {
+  return `${createHash("sha256").update(clientStartId).digest("hex")}.json`;
+}
+
 function bindingPath(clientStartId: string): string {
-  const idSha256 = createHash("sha256").update(clientStartId).digest("hex");
-  return path.join(bindingsDir(), `${idSha256}.json`);
+  return path.join(bindingsDir(), clientStartBindingFilename(clientStartId));
 }
 
 function validatePersistedBinding(value: unknown, clientStartId: string): PersistedClientStartBinding {
@@ -263,7 +266,6 @@ export async function claimClientStartAdmission(
     }
   } finally {
     await fs.rm(tempPath, { force: true });
-    if (created) await fsyncDirectory(path.dirname(filePath));
   }
   const authoritative = created ? record : await readBinding(filePath, request.client_start_id);
   if (authoritative.request_sha256 !== requestSha256) {

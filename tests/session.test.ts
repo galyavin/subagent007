@@ -13,6 +13,7 @@ import { readJsonl, sha256File, withEnv } from "./helpers/testUtils.js";
 async function createSessionFixture(): Promise<{
   projectDir: string;
   sessionsDir: string;
+  runsDir: string;
   failureLogPath: string;
   fakeChildPath: string;
   fakeLogPath: string;
@@ -22,6 +23,7 @@ async function createSessionFixture(): Promise<{
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-session-"));
   const projectDir = path.join(tmp, "project");
   const sessionsDir = path.join(tmp, "sessions");
+  const runsDir = path.join(tmp, "runs");
   const failureLogPath = path.join(tmp, "failures.jsonl");
   const skillsRoot = path.join(tmp, "skills");
   const sessionSkillPath = await writeSkillFixture(skillsRoot, "session-audit-skill");
@@ -30,6 +32,7 @@ async function createSessionFixture(): Promise<{
   return {
     projectDir,
     sessionsDir,
+    runsDir,
     failureLogPath,
     fakeChildPath: fake.childPath,
     fakeLogPath: fake.logPath,
@@ -114,7 +117,7 @@ test("run_subagent_session rejects raw session_id", async () => {
             model_class: "C",
             session_id: "raw",
           } as Parameters<typeof runSubagentSession>[0] & { session_id: string },
-          { sessionsDir: fixture.sessionsDir },
+          { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
         ),
         /session_id is not supported by run_subagent_session/,
       );
@@ -140,7 +143,7 @@ test("run_subagent_session rejects raw continuity", async () => {
             model_class: "C",
             continuity: { mode: "fresh" },
           } as Parameters<typeof runSubagentSession>[0] & { continuity: { mode: "fresh" } },
-          { sessionsDir: fixture.sessionsDir },
+          { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
         ),
         /continuity is not supported by run_subagent_session/,
       );
@@ -166,6 +169,7 @@ test("named-session APIs reject effect_profile instead of silently widening", as
           effect_profile: "workspace_read_only",
         } as Parameters<typeof runSubagentSession>[0] & { effect_profile: string }, {
           sessionsDir: fixture.sessionsDir,
+          runsDir: fixture.runsDir,
         }),
         /effect_profile is not supported by named-session APIs/,
       );
@@ -200,7 +204,7 @@ test("named-session APIs reject recursive_delegation instead of widening", async
       prompt: "FAST",
       session_key: "recursive:unsupported",
       recursive_delegation: "enabled",
-    } as Parameters<typeof runSubagentSession>[0] & { recursive_delegation: string }, { sessionsDir: fixture.sessionsDir }),
+    } as Parameters<typeof runSubagentSession>[0] & { recursive_delegation: string }, { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir }),
     /recursive_delegation is not supported/,
   );
   await withMcpSessionClient(async (client, mcpFixture) => {
@@ -232,7 +236,7 @@ test("run_subagent_session rejects invalid resume mode and packet policy", async
             model_class: "C",
             resume_mode: "invalid" as never,
           },
-          { sessionsDir: fixture.sessionsDir },
+          { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
         ),
         /resume_mode must be one of: new, resume_or_new, require_existing/,
       );
@@ -246,7 +250,7 @@ test("run_subagent_session rejects invalid resume mode and packet policy", async
             model_class: "C",
             packet_policy: "invalid" as never,
           },
-          { sessionsDir: fixture.sessionsDir },
+          { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
         ),
         /packet_policy must be one of: none, required, best_effort/,
       );
@@ -319,7 +323,7 @@ test("run_subagent_session creates, resumes, and appends an auditable Pi ledger"
           resume_mode: "new",
           model_class: "C",
         },
-        { sessionsDir: fixture.sessionsDir },
+        { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
       );
 
       assert.equal(created.success, true);
@@ -352,7 +356,7 @@ test("run_subagent_session creates, resumes, and appends an auditable Pi ledger"
           session_key: "coherent-execution:T001",
           model_class: "C",
         },
-        { sessionsDir: fixture.sessionsDir },
+        { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
       );
 
       assert.equal(resumedLegacy.success, true);
@@ -373,7 +377,7 @@ test("run_subagent_session creates, resumes, and appends an auditable Pi ledger"
           session_key: "coherent-execution:T001",
           model_class: "C",
         },
-        { sessionsDir: fixture.sessionsDir },
+        { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
       );
 
       assert.equal(resumed.success, true);
@@ -430,7 +434,7 @@ test("run_subagent_session fails closed on invalid persisted session state", asy
           session_key: "coherent-execution:T002",
           model_class: "C",
         },
-        { sessionsDir: fixture.sessionsDir },
+        { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
       );
       const manifest = JSON.parse(await fs.readFile(created.manifest_path, "utf8")) as Record<string, unknown>;
       delete manifest.subagent_session_id;
@@ -444,7 +448,7 @@ test("run_subagent_session fails closed on invalid persisted session state", asy
             session_key: "coherent-execution:T002",
             model_class: "C",
           },
-          { sessionsDir: fixture.sessionsDir },
+          { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
         ),
         /session manifest is invalid/,
       );
@@ -456,7 +460,7 @@ test("run_subagent_session fails closed on invalid persisted session state", asy
           session_key: "coherent-execution:T002-invalid-class",
           model_class: "C",
         },
-        { sessionsDir: fixture.sessionsDir },
+        { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
       );
       const invalidClassManifest = JSON.parse(
         await fs.readFile(invalidClass.manifest_path, "utf8"),
@@ -472,7 +476,7 @@ test("run_subagent_session fails closed on invalid persisted session state", asy
             session_key: "coherent-execution:T002-invalid-class",
             model_class: "C",
           },
-          { sessionsDir: fixture.sessionsDir },
+          { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
         ),
         /session manifest is invalid/,
       );
@@ -484,7 +488,7 @@ test("run_subagent_session fails closed on invalid persisted session state", asy
           session_key: "coherent-execution:T002-invalid-ledger",
           model_class: "C",
         },
-        { sessionsDir: fixture.sessionsDir },
+        { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
       );
       const records = await readJsonl<Record<string, unknown>>(invalidLedger.ledger_path);
       records[0].resolved_model_class = "Z";
@@ -501,7 +505,7 @@ test("run_subagent_session fails closed on invalid persisted session state", asy
             session_key: "coherent-execution:T002-invalid-ledger",
             model_class: "C",
           },
-          { sessionsDir: fixture.sessionsDir },
+          { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
         ),
         /session ledger is invalid/,
       );
@@ -527,7 +531,7 @@ test("run_subagent_session records an attempt and failure log when Pi omits the 
           resume_mode: "new",
           model_class: "C",
         },
-        { sessionsDir: fixture.sessionsDir },
+        { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
       );
 
       assert.equal(failed.success, false);
@@ -574,7 +578,7 @@ test("run_subagent_session enforces cwd identity and immutable skill binding", a
           skill_name: "session-audit-skill",
           model_class: "C",
         },
-        { sessionsDir: fixture.sessionsDir },
+        { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
       );
       assert.equal(created.requested_skill, "session-audit-skill");
       assert.equal(created.resolved_skill_path, fixture.sessionSkillPath);
@@ -593,7 +597,7 @@ test("run_subagent_session enforces cwd identity and immutable skill binding", a
             skill_name: "session-audit-skill",
             model_class: "C",
           },
-          { sessionsDir: fixture.sessionsDir },
+          { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
         ),
         /session does not exist/,
       );
@@ -605,7 +609,7 @@ test("run_subagent_session enforces cwd identity and immutable skill binding", a
             session_key: "coherent-execution:T004",
             model_class: "C",
           },
-          { sessionsDir: fixture.sessionsDir },
+          { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
         ),
         /session skill mismatch/,
       );
@@ -629,7 +633,7 @@ test("run_subagent_session recovers only definitely stale local locks", async ()
           session_key: "coherent-execution:T005",
           model_class: "C",
         },
-        { sessionsDir: fixture.sessionsDir },
+        { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
       );
       const lockPath = path.join(created.session_dir, "run.lock");
       await fs.writeFile(
@@ -644,7 +648,7 @@ test("run_subagent_session recovers only definitely stale local locks", async ()
           session_key: "coherent-execution:T005",
           model_class: "C",
         },
-        { sessionsDir: fixture.sessionsDir },
+        { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
       );
       assert.equal(resumed.success, true);
 
@@ -660,7 +664,7 @@ test("run_subagent_session recovers only definitely stale local locks", async ()
             session_key: "coherent-execution:T005",
             model_class: "C",
           },
-          { sessionsDir: fixture.sessionsDir },
+          { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
         ),
         /session is already running/,
       );
@@ -683,7 +687,7 @@ test("run_subagent_session recovers only definitely stale local locks", async ()
             session_key: "coherent-execution:T005",
             model_class: "C",
           },
-          { sessionsDir: fixture.sessionsDir },
+          { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
         ),
         /session is already running/,
       );
@@ -709,7 +713,7 @@ test("run_subagent_session recovers pending commits across every publication bou
             session_key: `coherent-execution:commit-${phase}`,
             model_class: "C",
           },
-          { sessionsDir: fixture.sessionsDir },
+          { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
         );
         await assert.rejects(
           runSubagentSession(
@@ -721,6 +725,7 @@ test("run_subagent_session recovers pending commits across every publication bou
             },
             {
               sessionsDir: fixture.sessionsDir,
+              runsDir: fixture.runsDir,
               onSessionCommitPhase: (currentPhase) => {
                 if (currentPhase === phase) {
                   throw new Error(`fault after ${phase}`);
@@ -739,7 +744,7 @@ test("run_subagent_session recovers pending commits across every publication bou
             session_key: `coherent-execution:commit-${phase}`,
             model_class: "C",
           },
-          { sessionsDir: fixture.sessionsDir },
+          { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
         );
         assert.equal(recovered.success, true);
         assert.equal(recovered.subagent_session_id, created.subagent_session_id);
@@ -772,7 +777,7 @@ test("run_subagent_session can require packets without making packet logic part 
           packet_policy: "required",
           model_class: "C",
         },
-        { sessionsDir: fixture.sessionsDir },
+        { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
       );
       assert.equal(missing.success, false);
       assert.equal(missing.packet_parse_status, "missing");
@@ -797,7 +802,7 @@ test("run_subagent_session can require packets without making packet logic part 
           packet_policy: "required",
           model_class: "C",
         },
-        { sessionsDir: fixture.sessionsDir },
+        { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
       );
       assert.equal(valid.success, true);
       assert.equal(valid.packet_parse_status, "valid");
@@ -816,7 +821,7 @@ test("run_subagent_session can require packets without making packet logic part 
           packet_policy: "required",
           model_class: "C",
         },
-        { sessionsDir: fixture.sessionsDir },
+        { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
       );
       assert.equal(validWithClosure.success, true);
       assert.equal(validWithClosure.packet_parse_status, "valid");
@@ -833,7 +838,7 @@ test("run_subagent_session can require packets without making packet logic part 
           packet_policy: "required",
           model_class: "C",
         },
-        { sessionsDir: fixture.sessionsDir },
+        { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
       );
       assert.equal(invalidClosure.success, false);
       assert.equal(invalidClosure.created_or_resumed, "not_created");
@@ -878,7 +883,7 @@ test("run_subagent_session can require packets without making packet logic part 
             packet_policy: "required",
             model_class: "C",
           },
-          { sessionsDir: fixture.sessionsDir },
+          { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
         );
         assert.equal(failed.success, false);
         assert.equal(failed.created_or_resumed, "not_created");
@@ -916,7 +921,7 @@ test("run_subagent_session timeout does not emit one-shot recovery guidance", as
           timeout_ms: 260,
           model_class: "C",
         },
-        { sessionsDir: fixture.sessionsDir },
+        { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
       );
 
       assert.equal(failed.success, false);
@@ -942,7 +947,7 @@ test("run_subagent_session does not commit failed packet resumes", async () => {
           session_key: "coherent-execution:T007",
           model_class: "C",
         },
-        { sessionsDir: fixture.sessionsDir },
+        { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
       );
       assert.equal(created.success, true);
 
@@ -954,7 +959,7 @@ test("run_subagent_session does not commit failed packet resumes", async () => {
           packet_policy: "required",
           model_class: "C",
         },
-        { sessionsDir: fixture.sessionsDir },
+        { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
       );
 
       assert.equal(failed.success, false);
@@ -963,7 +968,7 @@ test("run_subagent_session does not commit failed packet resumes", async () => {
 
       const manifest = JSON.parse(await fs.readFile(created.manifest_path, "utf8")) as SessionManifest;
       assert.equal(manifest.run_count, 1);
-      assert.equal(manifest.last_output_path, created.output_path);
+      assert.deepEqual(manifest.last_output_reference, created.output_references[0]);
 
       const ledger = await readJsonl<SessionRunRecord>(created.ledger_path);
       assert.equal(ledger.length, 1);
@@ -994,7 +999,7 @@ test("run_subagent_session does not commit non-ready required packet resumes", a
           packet_policy: "required",
           model_class: "C",
         },
-        { sessionsDir: fixture.sessionsDir },
+        { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
       );
       assert.equal(created.success, true);
 
@@ -1006,7 +1011,7 @@ test("run_subagent_session does not commit non-ready required packet resumes", a
           packet_policy: "required",
           model_class: "C",
         },
-        { sessionsDir: fixture.sessionsDir },
+        { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
       );
 
       assert.equal(failed.success, false);
@@ -1021,7 +1026,7 @@ test("run_subagent_session does not commit non-ready required packet resumes", a
 
       const manifest = JSON.parse(await fs.readFile(created.manifest_path, "utf8")) as SessionManifest;
       assert.equal(manifest.run_count, 1);
-      assert.equal(manifest.last_output_path, created.output_path);
+      assert.deepEqual(manifest.last_output_reference, created.output_references[0]);
 
       const ledger = await readJsonl<SessionRunRecord>(created.ledger_path);
       assert.equal(ledger.length, 1);

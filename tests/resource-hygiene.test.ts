@@ -11,7 +11,7 @@ import {
   hasLiveActiveChildLease,
 } from "../src/activeChildLease.js";
 import { reconcileOwnedTemporaryArtifacts } from "../src/ownedTemporaryArtifact.js";
-import { createStreamingRunTranscript, recoverStreamingRunTranscript } from "../src/output.js";
+import { createStreamingRunTranscript, recoverStreamingRunTranscript, runOutputPath } from "../src/output.js";
 import { reconcileRunTaskSnapshotTemps } from "../src/runTask.js";
 import { withEnv } from "./helpers/testUtils.js";
 
@@ -24,9 +24,9 @@ test("streaming transcripts preserve output beyond the former 256 KiB boundary",
     message: { role: "assistant", content: [{ type: "text", text: assistantText }] },
   }));
   const output = await writer.finalize();
-  const text = await fs.readFile(output.outputPath, "utf8");
+  const text = await fs.readFile(runOutputPath(output.reference, runsDir), "utf8");
   assert.equal(text.includes(assistantText), true);
-  assert.equal(output.sizeBytes > 256 * 1024, true);
+  assert.equal(output.reference.size_bytes > 256 * 1024, true);
   assert.doesNotMatch(text, /transcript truncated/);
   assert.equal(output.hasPublicAssistantText, true);
 });
@@ -40,7 +40,7 @@ test("streaming transcripts discard raw fallback after structured public events 
     message: { role: "assistant", content: [{ type: "text", text: "PUBLIC ANSWER" }] },
   }));
   const output = await writer.finalize();
-  const text = await fs.readFile(output.outputPath, "utf8");
+  const text = await fs.readFile(runOutputPath(output.reference, runsDir), "utf8");
   assert.doesNotMatch(text, /PRIVATE RAW PREFIX/);
   assert.match(text, /PUBLIC ANSWER/);
 });
@@ -55,7 +55,7 @@ test("transcript recovery converges after staging was already published", async 
 
   assert.deepEqual(
     await recoverStreamingRunTranscript(stagingPath, runId),
-    { outputPath: published.outputPath, sizeBytes: published.sizeBytes },
+    published.reference,
   );
   assert.equal(await recoverStreamingRunTranscript(stagingPath, "other-run"), undefined);
   assert.equal(
@@ -189,7 +189,7 @@ test("temporary-artifact reconciliation removes only owned artifacts whose proce
   await assert.rejects(fs.stat(staleDir), (error: NodeJS.ErrnoException) => error.code === "ENOENT");
 });
 
-test("run-task snapshot reconciliation recovers a valid dead-owner successor and preserves live writes", async () => {
+test("run-task snapshot reconciliation removes unsupported dead-owner temps and preserves canonical and live writes", async () => {
   const runTasksDir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-run-task-temps-"));
   const deadPid = 2_000_000_000;
   const recoverRunId = "recover-run";
@@ -204,10 +204,10 @@ test("run-task snapshot reconciliation recovers a valid dead-owner successor and
   await fs.writeFile(liveTemp, JSON.stringify({ run_id: liveRunId, status: "working" }));
 
   await withEnv({ SUBAGENT007_RUN_TASKS_DIR: runTasksDir }, async () => {
-    assert.equal(await reconcileRunTaskSnapshotTemps(), 3);
+    assert.equal(await reconcileRunTaskSnapshotTemps(), 2);
   });
 
-  assert.equal(JSON.parse(await fs.readFile(path.join(runTasksDir, `${recoverRunId}.json`), "utf8")).status, "completed");
+  await assert.rejects(fs.stat(path.join(runTasksDir, `${recoverRunId}.json`)), /ENOENT/);
   assert.equal(JSON.parse(await fs.readFile(path.join(runTasksDir, `${existingRunId}.json`), "utf8")).marker, "canonical");
   await assert.rejects(fs.stat(recoverTemp), /ENOENT/);
   await assert.rejects(fs.stat(existingTemp), /ENOENT/);

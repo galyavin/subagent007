@@ -394,6 +394,7 @@ export function validatedActivationReceipt(input: {
 }): ActivationReceipt | undefined {
   const receipt = record(input.value);
   const requiresEffectScope = isEffectScopedAuthoringProfile(input.effectProfile);
+  const requiresResearchStateDiscovery = input.effectProfile === "researcher_bounded_v1";
   if (requiresEffectScope !== Boolean(input.expectedEffectScopeBinding)) {
     return undefined;
   }
@@ -407,12 +408,13 @@ export function validatedActivationReceipt(input: {
     "toolset_sha256",
     "skill_binding",
     ...(requiresEffectScope ? ["effect_scope_binding"] : []),
+    ...(requiresResearchStateDiscovery ? ["controller_state_discovery"] : []),
   ];
   if (!receipt || !exactKeys(receipt, expectedKeys)) {
     return undefined;
   }
   if (
-    receipt.schema_version !== (requiresEffectScope ? 2 : 1) ||
+    receipt.schema_version !== (requiresResearchStateDiscovery ? 3 : requiresEffectScope ? 2 : 1) ||
     receipt.confirmed_before_prompt !== true
   ) {
     return undefined;
@@ -493,6 +495,12 @@ export function validatedActivationReceipt(input: {
     ) {
       return undefined;
     }
+  }
+  if (
+    requiresResearchStateDiscovery &&
+    receipt.controller_state_discovery !== "researchctl_state_paths_v1"
+  ) {
+    return undefined;
   }
   const rawSkillBinding = receipt.skill_binding;
   if (input.skillBinding === null) {
@@ -650,9 +658,8 @@ export function boundedAuthoringActivationReceipt(input: {
     throw new Error("bounded activation receipt effect scope does not match its profile");
   }
   const activeToolNames = [...effectProfileToolNames(input.effectProfile)];
-  return {
-    schema_version: 2,
-    confirmed_before_prompt: true,
+  const common = {
+    confirmed_before_prompt: true as const,
     requested_effect_profile: input.effectProfile,
     resolved_effect_profile: input.effectProfile,
     active_tool_names: activeToolNames,
@@ -665,6 +672,14 @@ export function boundedAuthoringActivationReceipt(input: {
     skill_binding: input.skillBinding,
     effect_scope_binding: input.effectScopeBinding,
   };
+  if (input.effectProfile === "researcher_bounded_v1") {
+    return {
+      ...common,
+      schema_version: 3,
+      controller_state_discovery: "researchctl_state_paths_v1",
+    };
+  }
+  return { ...common, schema_version: 2 };
 }
 
 export function skillOnlyActivationReceipt(skillBinding: ActivationSkillBinding): ActivationReceipt {

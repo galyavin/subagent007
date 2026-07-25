@@ -5,6 +5,9 @@ import { DEFAULT_HEARTBEAT_INTERVAL_MS, type HeartbeatNotify } from "./progress.
 import type { TimeoutBudget } from "./timeoutBudget.js";
 import type { RunStopReason } from "./types.js";
 
+export const CHILD_OWNER_COMMIT_RELEASE_FRAME =
+  `${JSON.stringify({ type: "subagent007.owner_commit_release", version: 1 })}\n`;
+
 export interface DiskReserveGuard {
   path: string;
   minimumFreeBytes: number;
@@ -25,7 +28,7 @@ interface ProcessRunOptions {
   diskReserve?: DiskReserveGuard;
   onOutputLine?: (line: string) => void | Promise<void>;
   onControlReady?: (send: (message: string) => boolean) => void;
-  onChildSpawned?: () => void | Promise<void>;
+  onChildSpawned?: (occurredAt: string) => void | Promise<void>;
 }
 
 interface ProcessRunResult {
@@ -66,16 +69,47 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
     };
   }
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const child = spawn(options.command, options.args, {
       cwd: options.cwd,
       detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],
     });
-    child.once("spawn", () => {
-      void Promise.resolve(options.onChildSpawned?.()).catch(() => {
-        // Spawn reporting is observational; process supervision remains authoritative.
+    let resolveSpawnObservation!: () => void;
+    let rejectSpawnObservation!: (error: Error) => void;
+    let spawnObservationError: Error | undefined;
+    const spawnObservation = new Promise<void>((resolve, reject) => {
+      resolveSpawnObservation = resolve;
+      rejectSpawnObservation = reject;
+    });
+    void spawnObservation.catch(() => undefined);
+    const releaseChildAfterOwnerCommit = (): Promise<void> => new Promise((release, reject) => {
+      if (child.stdin.destroyed || !child.stdin.writable) {
+        reject(new Error("child control pipe closed before owner commit release"));
+        return;
+      }
+      child.stdin.write(CHILD_OWNER_COMMIT_RELEASE_FRAME, (error) => {
+        if (error) {
+          reject(error);
+        } else {
+          release();
+        }
       });
+    });
+    child.once("spawn", () => {
+      const occurredAt = new Date().toISOString();
+      void Promise.resolve()
+        .then(() => options.onChildSpawned?.(occurredAt))
+        .then(releaseChildAfterOwnerCommit)
+        .then(
+        () => resolveSpawnObservation(),
+        (error: unknown) => {
+          spawnObservationError = error instanceof Error ? error : new Error(String(error));
+          outputError ??= spawnObservationError;
+          startGracefulTermination();
+          rejectSpawnObservation(spawnObservationError);
+        },
+      );
     });
 
     child.stdin.on("error", () => {
@@ -112,7 +146,7 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
     let cleanupOnParentExit: (() => void) | undefined;
     let terminationStarted = false;
     let lastSignalSent: NodeJS.Signals | null = null;
-    let outputChain: Promise<void> = Promise.resolve();
+    let outputChain: Promise<void> = spawnObservation;
     const forceFinishDelayMs = options.timeoutBudget.killGraceMs + options.timeoutBudget.forceGraceMs;
 
     const clearTimers = () => {
@@ -174,7 +208,18 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
         stopReason,
         durationMs: Date.now() - startedAt,
       };
-      void outputChain.finally(() => resolve(result));
+      void outputChain.then(
+        () => {
+          if (spawnObservationError) {
+            reject(spawnObservationError);
+          } else {
+            resolve(result);
+          }
+        },
+        (error: unknown) => reject(
+          spawnObservationError ?? (error instanceof Error ? error : new Error(String(error))),
+        ),
+      );
     };
 
     const startGracefulTermination = () => {
@@ -197,6 +242,7 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
 
     const queueOutputLine = (line: string): Promise<void> => {
       const operation = outputChain.then(async () => {
+        if (spawnObservationError) throw spawnObservationError;
         await options.onOutputLine?.(line);
       });
       outputChain = operation.catch((error: unknown) => {
@@ -328,6 +374,7 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
 
     child.on("error", (error) => {
       spawnError = error;
+      resolveSpawnObservation();
       appendControlMarker(`[spawn error] ${error.message}`);
     });
     child.on("close", (code, signal) => {

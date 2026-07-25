@@ -13,6 +13,7 @@ import {
 } from "../src/failureLog.js";
 import { ValidationError } from "../src/types.js";
 import { appendFailureRecord } from "../src/failureStorage.js";
+import { processIsDefinitelyGone } from "../src/processLiveness.js";
 import { createFakePiChild } from "./helpers/fakePiChild.js";
 import { readJsonl, withEnv } from "./helpers/testUtils.js";
 
@@ -30,7 +31,6 @@ type FailureRecord = {
   cwd?: string;
   run_id?: string;
   task_kind?: "run" | "session";
-  output_path?: string;
   session_key?: string;
   session_dir?: string;
   success?: boolean;
@@ -63,6 +63,14 @@ type FailureRecord = {
 };
 
 const TIMESTAMPED_EVENT_ID_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{9}Z-[0-9a-f]{12}$/;
+
+async function waitForProcessExit(pid: number): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (processIsDefinitelyGone(pid)) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(processIsDefinitelyGone(pid), true, `expected owner process ${pid} to be gone`);
+}
 
 test("disk-reserve exhaustion remains typed ahead of exit and signal fallbacks", () => {
   const processFailure = {
@@ -177,7 +185,7 @@ async function withFakeClient<T>(
 
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [path.resolve("dist/server.js")],
+    args: ["--import", "tsx", path.resolve("src/server.ts")],
     env: {
       ...process.env,
       SUBAGENT007_CONFIG_PATH: configPath,
@@ -257,7 +265,7 @@ test("run_subagent appends one central record for a nonzero child failure", asyn
     assert.equal(Object.hasOwn(failures[0], "model"), false);
     assert.equal(Object.hasOwn(failures[0], "thinking_level"), false);
     assert.equal(failures[0].output_mode, "transcript");
-    assert.equal(typeof failures[0].output_path, "string");
+    assert.equal(Object.hasOwn(failures[0], "output_path"), false);
     assert.doesNotMatch(JSON.stringify(failures[0]), /do not log this prompt/);
   });
 });
@@ -509,14 +517,14 @@ test("restart drift is logged once after the owner process exits", async () => {
 
   const transportA = new StdioClientTransport({
     command: process.execPath,
-    args: [path.resolve("dist/server.js")],
+    args: ["--import", "tsx", path.resolve("src/server.ts")],
     env: sharedEnv,
   });
   const clientA = new Client({ name: "subagent007-pi-restart-drift-owner", version: "0.1.0" });
 
   const transportB = new StdioClientTransport({
     command: process.execPath,
-    args: [path.resolve("dist/server.js")],
+    args: ["--import", "tsx", path.resolve("src/server.ts")],
     env: sharedEnv,
   });
   const clientB = new Client({ name: "subagent007-pi-restart-drift-reader", version: "0.1.0" });
@@ -540,7 +548,9 @@ test("restart drift is logged once after the owner process exits", async () => {
     assert.equal(typeof ownerPid, "number");
     process.kill(ownerPid!, "SIGKILL");
     await clientA.close().catch(() => {});
+    await waitForProcessExit(ownerPid!);
     await clientB.connect(transportB);
+    await waitForRunStatus(clientB, started.run_id, "failed");
     const driftResponse = await clientB.callTool({
       name: "get_run",
       arguments: { run_id: started.run_id },

@@ -8,6 +8,8 @@ import {
 import { MODEL_CLASSES, OUTPUT_MODES } from "./types.js";
 import type { ModelClass, OutputMode } from "./types.js";
 
+const DEFAULT_RECURSIVE_DELEGATE_WAIT_MS = 30_000;
+
 const recursiveDelegateParameters = Type.Object({
   prompt: Type.String({ minLength: 1 }),
   cwd: Type.Optional(Type.String({ minLength: 1 })),
@@ -18,10 +20,7 @@ const recursiveDelegateParameters = Type.Object({
   timeout_ms: Type.Optional(Type.Number({ minimum: 1 })),
 });
 
-function optionalInteger(value: unknown, field: string): number | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
+function integer(value: unknown, field: string): number {
   if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value)) {
     throw new Error(`${field} must be an integer`);
   }
@@ -46,8 +45,10 @@ function normalizeDelegateParams(
     ...(params.model_class ? { model_class: params.model_class as ModelClass } : {}),
     ...(params.skill_name !== undefined ? { skill_name: params.skill_name } : {}),
     ...(params.output_mode ? { output_mode: params.output_mode as OutputMode } : {}),
-    ...(params.wait_ms !== undefined ? { wait_ms: optionalInteger(params.wait_ms, "wait_ms") } : {}),
-    ...(params.timeout_ms !== undefined ? { timeout_ms: optionalInteger(params.timeout_ms, "timeout_ms") } : {}),
+    wait_ms: params.wait_ms === undefined
+      ? DEFAULT_RECURSIVE_DELEGATE_WAIT_MS
+      : integer(params.wait_ms, "wait_ms"),
+    ...(params.timeout_ms !== undefined ? { timeout_ms: integer(params.timeout_ms, "timeout_ms") } : {}),
   };
 }
 
@@ -63,12 +64,15 @@ export function createRecursiveDelegateTool(input: {
     name: "delegate",
     label: "Delegate",
     description:
-      "Delegate an independent subtask to another Subagent007 child through the original parent server.",
-    promptSnippet: "Use delegate to spawn a durable Subagent007 subtask when independent work can proceed in parallel.",
+      "Delegate a bounded subtask through the original parent server. Omission waits up to 30,000 ms for a usable result, subject to any lower server wait ceiling; wait_ms:0 returns immediately.",
+    promptSnippet: "Use delegate to spawn a durable Subagent007 subtask and consume its returned result.",
     promptGuidelines: [
       "Use delegate for independent subtasks that benefit from another Subagent007 child.",
       "Omit cwd to use the current run's cwd.",
-      "The parent server owns the descendant run; use the returned run_id/status/output details directly.",
+      "When you need the child's answer before concluding, omit wait_ms and use the returned terminal result directly.",
+      "Set wait_ms:0 only when you intentionally want the parent to continue other work in parallel; the parent server still owns the descendant and waits for its subtree before terminal publication, so use the returned run_id/status/output details directly.",
+      "If the bounded wait returns status working, do not claim the child answered or retry the same work; this child-facing tool currently has no polling operation.",
+      "timeout_ms is the descendant's hard kill cap, not the response wait.",
       "Do not pass secrets or private control data; the tool already carries the private recursive capability.",
     ],
     parameters: recursiveDelegateParameters,

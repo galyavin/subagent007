@@ -17,6 +17,7 @@ type RunView = {
   run_id: string;
   kind?: string;
   status: string;
+  output_path?: string;
   started_at?: string;
   child_started?: boolean;
   success?: boolean;
@@ -32,8 +33,21 @@ type RunView = {
   error_class?: string;
   finished_at?: string;
   active_phase?: string;
+  queued_at?: string;
+  child_started_at?: string;
+  queue_wait_ms?: number;
   client_start_binding?: { client_start_id: string; request_sha256: string; run_id: string };
-  recent_events?: Array<{ event?: string; metadata?: Record<string, unknown> }>;
+  recent_events?: Array<{
+    kind?: string;
+    event?: string;
+    occurred_at: string;
+    metadata?: Record<string, unknown>;
+  }>;
+};
+
+type RunOwnerRecord = RunView & {
+  record_name?: string;
+  launch_observation?: Record<string, unknown>;
 };
 
 function persistedRunView(value: unknown): RunView {
@@ -47,6 +61,10 @@ async function readPersistedRunView(filePath: string): Promise<RunView> {
   return persistedRunView(JSON.parse(await fs.readFile(filePath, "utf8")));
 }
 
+async function readRunOwnerRecord(filePath: string): Promise<RunOwnerRecord> {
+  return JSON.parse(await fs.readFile(filePath, "utf8")) as RunOwnerRecord;
+}
+
 async function withServer<T>(
   fixture: { root: string; project: string; config: string; fakeChild: string; fakeLog: string },
   run: (client: Client) => Promise<T>,
@@ -55,7 +73,7 @@ async function withServer<T>(
   const state = path.join(fixture.root, "state");
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [path.resolve("dist/server.js")],
+    args: ["--import", "tsx", path.resolve("src/server.ts")],
     env: {
       ...process.env,
       SUBAGENT007_CONFIG_PATH: fixture.config,
@@ -203,8 +221,13 @@ test("current durable client-start snapshots obey one lifecycle/result invariant
     timeout_headroom_ms: 0,
     kill_grace_ms: 0,
     force_grace_ms: 0,
-    output_path: "/tmp/output.md",
-    output_references: [],
+    output_references: [{
+      kind: "file", name: "primary",
+      relative_path: "2026-07-24T213913724Z-aaaaaaaaaaaa.md",
+      size_bytes: 0,
+      content_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      content_type: "text/markdown", encoding: "utf-8", output_mode: "final",
+    }],
     size_bytes: 0,
     resolved_model_class: "C",
     requested_skill: null,
@@ -268,7 +291,7 @@ test("current durable client-start snapshots obey one lifecycle/result invariant
         attempt_subagent_session_id: "/tmp/session/attempt/pi.json",
         attempt_session_established: true,
         resume_mode: "new",
-        output_path: "/tmp/output.md",
+        output_reference: terminalEvidence.output_references[0],
         packet_path: "/tmp/session/packet.json",
         packet_policy: "required",
         success: false,
@@ -348,9 +371,10 @@ test("current durable client-start snapshots obey one lifecycle/result invariant
     }],
   });
   const restartDrift = (withRecoveredOutput: boolean) => {
-    const outputPath = withRecoveredOutput ? "/tmp/recovered-transcript.md" : undefined;
-    const outputReferences = outputPath ? [{
-      kind: "file", name: "primary", path: outputPath, size_bytes: 12,
+    const outputReferences = withRecoveredOutput ? [{
+      kind: "file", name: "primary",
+      relative_path: "2026-07-24T213913724Z-bbbbbbbbbbbb.md", size_bytes: 12,
+      content_sha256: "c".repeat(64),
       content_type: "text/markdown", encoding: "utf-8", output_mode: "transcript",
     }] : [];
     const metadata = {
@@ -375,7 +399,6 @@ test("current durable client-start snapshots obey one lifecycle/result invariant
       error_class: "restart_drift",
       reason_code: "server_restarted_active_run",
       partial_output_available: withRecoveredOutput,
-      ...(outputPath ? { output_path: outputPath } : {}),
       output_references: outputReferences,
       recent_events: [{
         kind: "terminal", event: "failed", text: "[failed] run is not active after MCP server restart",
@@ -576,14 +599,20 @@ test("current durable client-start snapshots obey one lifecycle/result invariant
     { name: "owner requires matching session established", valid: false, view: { ...ownerCancellation, session_established: true } },
     { name: "owner requires exact duration", valid: false, view: { ...ownerCancellation, duration_ms: 1 } },
     { name: "owner requires terminal phase timestamp", valid: false, view: { ...ownerCancellation, last_phase_at: admission.admitted_at } },
+    { name: "completed child result requires one primary reference", valid: false, view: { ...terminal("completed", {}), output_references: [] } },
+    { name: "completed child result rejects duplicate primary references", valid: false, view: { ...terminal("completed", {}), output_references: [terminalEvidence.output_references[0], terminalEvidence.output_references[0]] } },
+    { name: "completed child result rejects declared size mismatch", valid: false, view: { ...terminal("completed", {}), output_references: [{ ...terminalEvidence.output_references[0], size_bytes: 1 }] } },
     { name: "owner forbids provider residue", valid: false, view: { ...ownerCancellation, provider_error_message: "residue" } },
     { name: "owner forbids timeout recovery residue", valid: false, view: { ...ownerCancellation, timeout_recovery_hint: "resume" } },
     { name: "owner forbids nonrestart output", valid: false, view: { ...ownerCancellation, output_path: "/tmp/residue", output_references: [] } },
     { name: "owner typed cancellation requires error taxonomy", valid: false, view: { ...ownerTerminal("cancelled", "validation_error", "invalid_skill", "cancelled"), error: undefined, error_class: undefined, reason_code: undefined } },
     { name: "owner failure rejects invented taxonomy", valid: false, view: { ...ownerTerminal("failed", "unknown_error", "invalid_skill", "mismatch") } },
     { name: "restart drift requires fixed message", valid: false, view: { ...restartDrift(false), error: "other" } },
-    { name: "restart drift rejects absent recovered output", valid: false, view: { ...restartDrift(true), output_path: undefined } },
-    { name: "restart drift rejects mismatched reference", valid: false, view: { ...restartDrift(true), output_references: [{ ...restartDrift(true).output_references[0], path: "/tmp/other" }] } },
+    { name: "restart drift rejects absent recovered output", valid: false, view: { ...restartDrift(true), output_references: [] } },
+    { name: "path-only v3 output is rejected", valid: false, view: { ...restartDrift(true), output_references: [{ kind: "file", name: "primary", path: "/tmp/old.md", size_bytes: 12, content_type: "text/markdown", encoding: "utf-8", output_mode: "transcript" }] } },
+    { name: "restart drift rejects mismatched reference digest", valid: false, view: { ...restartDrift(true), output_references: [{ ...restartDrift(true).output_references[0], content_sha256: "A".repeat(64) }] } },
+    { name: "restart drift rejects missing reference digest", valid: false, view: { ...restartDrift(true), output_references: [{ ...restartDrift(true).output_references[0], content_sha256: undefined }] } },
+    { name: "restart drift rejects multiple primary references", valid: false, view: { ...restartDrift(true), output_references: [restartDrift(true).output_references[0], restartDrift(true).output_references[0]] } },
     { name: "promotion is all or none", valid: false, view: { ...ownerTerminal("failed", "validation_error", "invalid_skill", "partial promotion"), auto_promoted_from: "run_subagent" } },
     { name: "extra completed settlement rejects owner terminal", valid: false, view: { ...ownerCancellation, recent_events: [...ownerCancellation.recent_events, { kind: "terminal", event: "completed", text: "[completed] run completed", occurred_at: terminalEvidence.finished_at, metadata: {} }] } },
     { name: "extra timeout settlement rejects owner terminal", valid: false, view: { ...ownerCancellation, recent_events: [...ownerCancellation.recent_events, { kind: "terminal", event: "timeout", text: "[timeout] run timed out", occurred_at: terminalEvidence.finished_at, metadata: {} }] } },
@@ -599,7 +628,7 @@ test("current durable client-start snapshots obey one lifecycle/result invariant
     { name: "pre-child declaration forbids child timing residue", valid: false, view: { ...ownerCancellation, requested_effect_profile: "workspace_read_only", child_started_at: admission.admitted_at } },
     { name: "promotion rejects session owner", valid: false, view: { ...promotedOwnerFailure, task_kind: "session", session_key: "promoted-session" } },
     { name: "promotion rejects client-start owner", valid: false, view: { ...promotedOwnerFailure, client_start_binding: binding } },
-    { name: "restart drift rejects relative recovered path", valid: false, view: { ...restartDrift(true), output_path: "relative.md", output_references: [{ ...restartDrift(true).output_references[0], path: "relative.md" }] } },
+    { name: "restart drift rejects slash locator", valid: false, view: { ...restartDrift(true), output_references: [{ ...restartDrift(true).output_references[0], relative_path: "nested/output.md" }] } },
     { name: "restart drift rejects extra reference keys", valid: false, view: { ...restartDrift(true), output_references: [{ ...restartDrift(true).output_references[0], forged: true }] } },
     { name: "pre-child restart drift forbids session identity", valid: false, view: { ...restartDrift(false), child_started: false, session_id: "/tmp/forged-session.json", session_established: true } },
     { name: "expected digest and snapshot declarations are exclusive", valid: false, view: { ...ownerCancellation, expected_skill_sha256: expectedSkillSha256, skill_snapshot_binding: snapshotBinding } },
@@ -839,9 +868,15 @@ test("constrained client start cancelled during capacity scan durably settles de
       const published = await waitForClientStartSnapshot(runTasksDir, request.client_start_id);
       assert.equal(published.child_started, false);
       assert.equal(published.active_phase, "starting");
-      await waitForPath(path.join(runTasksDir, `${published.run_id}.events.jsonl`));
-
-      await cancelRunTask(published.run_id);
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        try {
+          await cancelRunTask(published.run_id);
+          break;
+        } catch (error) {
+          if ((error as { reasonCode?: string }).reasonCode !== "run_not_found" || attempt === 199) throw error;
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+      }
 
       await ownerStart;
       const terminal = await waitTerminalTask(published.run_id);
@@ -856,6 +891,12 @@ test("constrained client start cancelled during capacity scan durably settles de
       assert.equal(terminal.requested_timeout_ms, null);
       assert.equal(terminal.resolved_timeout_ms, null);
       assert.equal(terminal.effective_timeout_ms, null);
+      assert.equal(
+        terminal.recent_events?.some((event) =>
+          event.kind === "child" && event.event === "child_spawned"
+        ),
+        false,
+      );
       assert.deepEqual(terminal.input_requests?.filter((request) => request.status === "pending"), []);
       const settled = terminal.recent_events?.find((event) => event.event === "cancellation_settled");
       assert.ok(settled);
@@ -869,6 +910,10 @@ test("constrained client start cancelled during capacity scan durably settles de
       assert.equal(persisted.success, false);
       assert.equal(persisted.exit_code, null);
       assert.equal(persisted.timed_out, false);
+      assert.equal(persisted.child_started_at, undefined);
+      assert.equal(persisted.queue_wait_ms, undefined);
+      const ownerRecord = await readRunOwnerRecord(path.join(runTasksDir, `${published.run_id}.json`));
+      assert.equal(ownerRecord.launch_observation, undefined);
 
       const readback = await getRunTask(published.run_id) as RunView;
       const repeatedCancellation = await cancelRunTask(published.run_id) as RunView;
@@ -882,7 +927,36 @@ test("constrained client start cancelled during capacity scan durably settles de
   }
 });
 
-test("owner record retains independently captured authoring evidence and rejects a forged public projection", async () => {
+test("queue timing remains resident and is absent from the persisted run claim", async () => {
+  const f = await fixture();
+  const runTasksDir = path.join(f.root, "state", "run-tasks");
+  try {
+    await withEnv({
+      SUBAGENT007_CONFIG_PATH: f.config,
+      SUBAGENT007_PI_CHILD_PATH: f.fakeChild,
+      FAKE_PI_LOG_PATH: f.fakeLog,
+      SUBAGENT007_FAILURE_LOG: "off",
+      SUBAGENT007_RUN_TASKS_DIR: runTasksDir,
+      SUBAGENT007_INPUT_REQUESTS_DIR: path.join(f.root, "state", "input-requests"),
+      SUBAGENT007_ACTIVE_CHILDREN_DIR: path.join(f.root, "state", "active-children"),
+      SUBAGENT007_QUEUED_RUNS_DIR: path.join(f.root, "state", "queued-runs"),
+    }, async () => {
+      const started = await startRunTask({ cwd: f.project, prompt: "FAST", client_start_id: "resident-queue-timing" });
+      const terminal = await waitTerminalTask(started.run_id);
+      assert.equal(terminal.status, "completed");
+      const claim = await readRunOwnerRecord(path.join(runTasksDir, `${started.run_id}.json`));
+      assert.equal(claim.record_name, "subagent007.current_run_claim");
+      assert.equal(claim.queued_at, undefined);
+      assert.equal(claim.child_started_at, undefined);
+      assert.equal(claim.queue_wait_ms, undefined);
+      assert.equal("revision" in claim, false);
+    });
+  } finally {
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test("current claim retains launch grant evidence and rejects forged accepted controls", async () => {
   const f = await fixture();
   const runTasksDir = path.join(f.root, "state", "run-tasks");
   try {
@@ -904,40 +978,32 @@ test("owner record retains independently captured authoring evidence and rejects
         allowed_output_paths: [],
         recursive_delegation: "disabled",
       });
-      const terminal = await waitTerminalTask(started.run_id);
+      await waitTerminalTask(started.run_id);
       const recordPath = path.join(runTasksDir, `${started.run_id}.json`);
       const record = JSON.parse(await fs.readFile(recordPath, "utf8")) as {
         record_name?: unknown;
         record_version?: unknown;
-        immutable_admission?: { run_id?: unknown; request_bytes?: unknown; request_sha256?: unknown };
+        run_id?: unknown;
         launch_observation?: { effect_scope_binding_bytes?: unknown; effect_scope_binding_sha256?: unknown };
-        settlement?: { status?: unknown; event?: unknown; occurred_at?: unknown };
-        public_view?: Record<string, unknown>;
-      };
-
-      assert.equal(record.record_name, "subagent007.run_owner_record");
-      assert.equal(record.record_version, 1);
-      assert.equal(record.immutable_admission?.run_id, started.run_id);
-      assert.equal(typeof record.immutable_admission?.request_bytes, "string");
-      assert.doesNotMatch(record.immutable_admission?.request_bytes as string, /OWNER_RECORD_SECRET_PROMPT/);
-      assert.match(record.immutable_admission?.request_bytes as string, /prompt_sha256/);
-      assert.match(record.immutable_admission?.request_sha256 as string, /^[0-9a-f]{64}$/);
-      assert.equal(typeof record.launch_observation?.effect_scope_binding_bytes, "string");
-      assert.match(record.launch_observation?.effect_scope_binding_sha256 as string, /^[0-9a-f]{64}$/);
-      assert.equal(record.settlement?.status, terminal.status);
-      assert.equal(record.settlement?.occurred_at, terminal.finished_at);
-      assert.ok(record.settlement?.event);
-
-      const forged = structuredClone(record);
-      const publicView = forged.public_view as {
         activation_receipt?: { effect_scope_binding?: { immutable_tree_sha256?: string } };
       };
-      assert.ok(publicView.activation_receipt?.effect_scope_binding);
-      publicView.activation_receipt.effect_scope_binding.immutable_tree_sha256 = "f".repeat(64);
+
+      assert.equal(record.record_name, "subagent007.current_run_claim");
+      assert.equal(record.record_version, 1);
+      assert.equal(record.run_id, started.run_id);
+      assert.equal("immutable_admission" in record, false);
+      assert.doesNotMatch(JSON.stringify(record), /OWNER_RECORD_SECRET_PROMPT/);
+      assert.equal(typeof record.launch_observation?.effect_scope_binding_bytes, "string");
+      assert.match(record.launch_observation?.effect_scope_binding_sha256 as string, /^[0-9a-f]{64}$/);
+      assert.equal("settlement" in record, false);
+
+      const forged = structuredClone(record);
+      assert.ok(forged.activation_receipt?.effect_scope_binding);
+      forged.activation_receipt.effect_scope_binding.immutable_tree_sha256 = "f".repeat(64);
       await fs.writeFile(recordPath, `${JSON.stringify(forged, null, 2)}\n`);
       await assert.rejects(
         () => getRunTask(started.run_id),
-        /owner record|run_liveness_unknown|client_start_id_conflict|snapshot/i,
+        /run claim|owner record|run_liveness_unknown|client_start_id_conflict|snapshot/i,
       );
     });
   } finally {
@@ -1307,12 +1373,9 @@ test("replay rejects an exact-binding canonical target with an inconsistent life
       const canonicalPath = path.join(runTasksDir, `${candidate.run_id}.json`);
       await fs.writeFile(canonicalPath, `${JSON.stringify({
         ...candidateRecord,
-        public_view: {
-          ...candidate,
-          status: "completed",
-          active_phase: "completed",
-          finished_at: "",
-        },
+        status: "completed",
+        active_phase: "completed",
+        finished_at: "",
       })}\n`);
       await fs.writeFile(`${replayBarrier}.continue`, "continue\n");
 
@@ -1476,8 +1539,10 @@ test("full-capacity queued client-start run stays prompt and single-owner across
         assert.equal(replay.run_id, queued.run_id);
         assert.equal(observed.status, "working", JSON.stringify(observed));
         assert.equal(replay.status, "working", JSON.stringify(replay));
-        assert.equal(observed.active_phase, "queued");
-        assert.equal(replay.active_phase, "queued");
+        assert.equal(observed.active_phase, "starting");
+        assert.equal(replay.active_phase, "starting");
+        assert.equal(observed.queued_at, undefined);
+        assert.equal(replay.queued_at, undefined);
         assert.equal(observed.child_started, false);
         assert.equal(replay.child_started, false);
         assert.equal((await readFakeLog(f.fakeLog)).length, 1);

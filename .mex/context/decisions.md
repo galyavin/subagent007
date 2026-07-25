@@ -12,10 +12,17 @@ edges:
     condition: when a decision relates to system structure
   - target: context/stack.md
     condition: when a decision relates to technology choice
-last_updated: 2026-07-22
+last_updated: 2026-07-25
 ---
 
 # Decisions
+
+### Runs are execution attempts, not caller missions
+**Date:** 2026-07-23
+**Status:** Active
+**Decision:** Subagent007 is a universal execution-attempt substrate. One `run_id` denotes one concrete attempt from exact admission through live observation/control to durable terminal evidence. `client_start_id` binds one exact normalized start request; it is not an objective or retry-series key. `session_id` carries semantic context only. The current execution owner is the only live custodian, and definite owner loss closes the same run honestly as terminal `restart_drift` rather than claiming reattachment. Callers retain durable objective identity, canon/workflow state, replacement authorization, reconciliation, and external-effect safety.
+**Reasoning:** “Same work” and whether it may be tried again are domain decisions that a universal runner cannot infer from a prompt, session, process exit, or elapsed time. Making every run survive process loss would require a real persistent job custodian, not extra status fields or caller-specific policy inside this local MCP server. Separating the durable logical obligation from the durable attempt record keeps Subagent007 minimal and lets Bendum and other callers compose their own semantics without turning this repository into a pet workflow engine.
+**Consequences:** Exact ambiguous-start replay uses caller-persisted `client_start_id` and identical request bytes to recover the same `run_id`. A replacement always receives a fresh attempt identity after the caller settles prior terminal/descendant evidence and ambiguous effects. No Bendum-specific objective state, retry controller, speculative lifetime enum, second run store, or second control plane is added. Stronger live custody is a future additive capability only if a current universal requirement names an owner that can actually enforce it.
 
 ### Scoped authoring binds exact outputs or one fresh state subtree
 **Date:** 2026-07-21
@@ -26,12 +33,33 @@ last_updated: 2026-07-22
 
 ## Decision Log
 
+### Recursive delegate omission waits at the caller-without-poll boundary
+**Date:** 2026-07-25
+**Status:** Active
+**Decision:** Only the private child-facing `delegate` adapter normalizes omitted `wait_ms` to 30000 ms. Explicit zero and positive values remain exact before the existing scheduler ceiling, and public `schedule_run` keeps its 1000 ms omission default. No polling/cancellation tool or second lifecycle owner is added.
+**Reasoning:** Public scheduler callers can recover an active result through `get_run`; recursive children receive one sequential `delegate` response and cannot poll. The former shared one-second default returned `working` for an observed 15.6-second child that later completed, leaving the parent unable to consume the answer. A bounded private default is the smallest owner-observable repair.
+**Consequences:** Ordinary descendants settling within the effective bound return usable terminal evidence to the same tool call. `wait_ms:0` remains intentional parallel work but does not detach descendant ownership. Configured lower ceilings may truncate omission, and children exceeding the effective bound can still return `working`; that survivor does not authorize retrying the same attempt or claiming an answer.
+
+### Terminal output identity is issued by the descriptor finalizer
+**Date:** 2026-07-24
+**Status:** Active
+**Decision:** Durable-run v3 terminal child output has exactly one primary file reference containing only one canonical provider basename, exact bounded size, lowercase SHA-256, fixed Markdown/UTF-8 metadata, and output mode. Public top-level `output_path`, reference `path`, active partial-output locators, and failure-log output paths are absent. One 1 MiB no-follow regular single-link descriptor finalizer owns normal write, streaming publication, and restart recovery: it captures an exact retained descriptor tuple before the pre-rename hook, requires exact descriptor/path identity after it, renames, captures post-rename `S0`, hashes exactly `S0.size` descriptor bytes with a hard ceiling and short-read rejection, requires exact regular single-link `S1`, and verifies the final pathname names `S1` before emitting only `S1` size/SHA-256.
+**Reasoning:** A pre-rename hash cannot describe a rewrite in the rename window; a post-rename descriptor hash directly attests the bounded finalized bytes while avoiding pathname reopen authority. Cross-rename ctime reasoning describes filesystem behavior rather than the public evidence. Persisting or returning an output root would create another authority distinction; the configured runs root plus one relative basename is sufficient.
+**Consequences:** This is a bounded point-in-time final-state witness, not prevention of arbitrary later mutation; callers such as Bendum recapture from their configured runs root. Path-only current-v3 records fail closed and are neither migrated nor assigned a synthesized digest. Terminal documents larger than 1 MiB fail. Current owner/copy inspection accepts only the exact reference and compares copied bytes to provider size/SHA-256. Transcript streaming/backpressure, final-only semantics, restart drift, sessions, and one-claim owner transitions remain on their existing owners. No lock, copy, store, state machine, durable distinction, or compatibility path is added. Declared authoring-artifact count/size changes are outside this decision.
+
+### Durable runs have one per-run state owner
+**Date:** 2026-07-22
+**Status:** Active
+**Decision:** Reuse the existing per-run owner for every claim-bearing transition. Resident state is the only live semantic source; otherwise the durable owner record is. Producers submit named operations, never complete snapshots. Under the owner, read fresh truth, apply to a private draft, derive/validate the unchanged v3 public view, commit the next revision, and synchronously publish. Construct canonical events once in the draft and append the same bytes only after owner commit as non-authoritative JSONL staging. Keep mailbox I/O, waits, failure logging, and cross-run work outside locks. Reconcile descendants by parent read/release, descendant inspection, then fresh parent reacquisition and semantic reassessment.
+**Reasoning:** Multiple full-view writers and JSONL overlays could each overwrite facts they did not freshly observe. Nested parent/descendant ownership could deadlock, while rejecting every changed revision would let unrelated heartbeats starve restart convergence. One observable owner can enforce terminal absorption, event-specific idempotency, and exact persistence/projection joins without adding a reducer framework or new schema.
+**Consequences:** Spawn, heartbeat/progress, input, cancellation, output/session/lifecycle evidence, terminalization, and restart reconciliation cannot stale-roll back one another. JSONL/input files remain staging and telemetry, never repair authority. Stable events may exact-no-op; general evidence remains observable. The valid SIGKILL control required one pre-authorized gate on the existing stdin pipe, so consequential child work waits for the post-owner-commit release and EOF exits. Public durable-run v3 bytes remain unchanged; no parallel store, queue, controller, or lifecycle field was added.
+
 ### Durable start identity is owner-bound before execution admission
 **Date:** 2026-07-21
 **Status:** Active
 **Decision:** Durable-run contract v3 adds optional `client_start_id` only to `start_run`. One strict schema-normalized canonical request identity excludes only that key and uses deterministic code-point key ordering. The existing run-task store atomically persists and fsyncs key to request-hash/run-id before queue or child admission; replay does not rerun mutable launch preflights.
 **Reasoning:** Bendum must survive ambiguous transport/process loss without creating a second run, but a caller key cannot authorize a changed body or counterfeit reattachment.
-**Consequences:** Exact replay returns the same run across processes, changed bodies reject as `client_start_id_conflict`, and live concurrent admission reads the already-promoted canonical run promptly without polling. If another promoter removed the private candidate, the join re-resolves the authoritative key/request digest and accepts that exact canonical run in any valid current lifecycle state, including child-started work or terminal completion. One shared run-task validator now guards current-v3 snapshot publication/readback and the replay join, rejecting impossible active/result/error combinations while preserving historical v2 readback. For owner terminals it derives declaration-only, observed, and settled phases from existing fields: declarations remain valid before child launch, observations reuse the existing strict receipt validators after prompt submission, and one exact final settlement event is required. A process-zero result may still be a typed durable failure when post-run contract validation fails. Definitely lost execution ownership produces the existing owner-issued terminal restart drift. No lookup tool, queue, service, or second run store was added.
+**Consequences:** Exact replay returns the same run across processes, changed bodies reject as `client_start_id_conflict`, and live concurrent admission reads the already-promoted canonical run promptly without polling. If another promoter removed the private candidate, the join re-resolves the authoritative key/request digest and accepts that exact canonical run in any valid current lifecycle state, including child-started work or terminal completion. One shared run-task validator now guards current-v3 snapshot publication/readback and the replay join, rejecting impossible active/result/error combinations. Configured runtime persisted-run reads accept only `subagent007.current_run_claim`; direct-v2, bare-v3, and historical owner envelopes fail without mutation. For owner terminals it derives declaration-only, observed, and settled phases from existing fields: declarations remain valid before child launch, observations reuse the existing strict receipt validators after prompt submission, and one exact final settlement event is required. A process-zero result may still be a typed durable failure when post-run contract validation fails. Definitely lost execution ownership produces the existing owner-issued terminal restart drift. No lookup tool, queue, service, or second run store was added.
 
 ### Retained snapshot source resolution stays inside the snapshot owner
 **Date:** 2026-07-21
@@ -64,7 +92,7 @@ last_updated: 2026-07-22
 
 ### Complete public transcripts replace raw child spools
 **Date:** 2026-07-12
-**Status:** Active
+**Status:** Superseded only for the terminal byte bound by the 2026-07-24 descriptor-finalizer decision
 **Decision:** Child output is parsed incrementally and written directly to one sanitized public transcript staging file. Canonical transcript files have no per-artifact byte cap; bounded MCP events and excerpts remain separate projections. A protected free-space reserve stops a run cleanly before host exhaustion instead of silently truncating its transcript.
 **Reasoning:** The former 256 KiB render cap discarded useful output but did not constrain the unbounded private `combined-output.log` files that exhausted the disk. Removing the redundant raw spool eliminates the dangerous accumulation path and makes backpressure, publication, and cleanup share one observable owner.
 **Consequences:** Resource exhaustion is a typed `resource_exhausted` / `disk_reserve_exhausted` failure across run results, sessions, and failure telemetry. Canonical transcripts are durable outputs, not default retention targets. Public partial transcript files are named by run ownership; recovery converges on the same referenced output whether interruption occurs before or after the atomic `.partial` to `.md` rename.
@@ -189,7 +217,7 @@ last_updated: 2026-07-22
 ### Public model input is model_class, not concrete model ids
 **Date:** 2026-06-25
 **Status:** Active
-**Decision:** Callers choose capability classes `A` through `E` or external expert classes `Z1` through `Z3`; concrete model ids and thinking levels remain internal calibration.
+**Decision:** Callers choose capability classes `A` through `E` or external expert classes `Z1` through `Z5`; concrete model ids and thinking levels remain internal calibration.
 **Reasoning:** Model/provider inventory changes independently of the public API, and class names keep callers from depending on volatile concrete ids.
 **Alternatives considered:** Public `model` and `thinking_level` inputs (rejected because they leak calibration and make migrations harder).
 **Consequences:** Config migration, model reconciliation, and model-health probing must preserve the class abstraction. Public MCP results, failure logs, session ledgers, observed-campaign summaries, and README should expose model classes and class-level health/migration actions, not concrete model IDs or thinking-level calibration values.
@@ -217,3 +245,12 @@ last_updated: 2026-07-22
 **Reasoning:** Run state must be useful for polling/debugging without leaking private reasoning or sensitive caller input.
 **Alternatives considered:** Storing raw child streams directly in public events (rejected because it would conflate auditability with disclosure).
 **Consequences:** Changes to transcript, event, and failure-log code need tests for what is omitted as well as what is included.
+
+### Researcher state discovery and completion proof are adapter-owned
+
+**Date:** 2026-07-24
+**Status:** Active
+**Decision:** `researcher_bounded_v1` activation receipt v3 advertises `researchctl_state_paths_v1`. Its native controller returns the exact bound job and input paths through read-only `state-paths`. After child settlement, Subagent007 may emit `controller_terminal_receipt` only when the exact snapshot controller validates and full-renders an unchanged job whose state is `complete`.
+**Reasoning:** A confined child cannot reliably infer a hidden adapter-owned state root, and a clean child exit cannot prove that the Researcher workflow reached its controller-defined terminal state.
+**Alternatives considered:** Exposing the hidden path only in prose (rejected as non-authoritative), letting the child search or derive it (rejected as brittle and confinement-hostile), changing generic `success` semantics (rejected because Subagent007 is an attempt substrate), and trusting the child’s prose claim (rejected because it cannot enforce controller state).
+**Consequences:** Direct CLI Researcher runs keep their existing `${TMPDIR:-/tmp}` path. Bounded Researcher workers must discover native state before the first controller command. Workflow callers such as Bendum require the controller receipt for Researcher completion; generic callers may continue treating `success` as transport/process success. AJ remains on bounded activation receipt v2.

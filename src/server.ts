@@ -138,8 +138,9 @@ function withRunFailureLogging<TRequest, TResult>(
 ) => Promise<TResult | ReturnType<typeof jsonToolResult<Record<string, unknown>>>> {
   return async (request, extra) => {
     const runId = runIdFromRequest(request);
-    const context = runId ? await resolveRunOperationContext(runId) : undefined;
+    let context: Awaited<ReturnType<typeof resolveRunOperationContext>> | undefined;
     try {
+      context = runId ? await resolveRunOperationContext(runId) : undefined;
       return await handler(request, extra);
     } catch (error) {
       const reasonCode = failureReasonCodeForError(error);
@@ -268,7 +269,8 @@ function sanitizePublicResultValue(value: unknown): unknown {
   }
   return Object.fromEntries(
     Object.entries(value).flatMap(([key, child]) =>
-      key === "input_requests_dir" || key === "pi_session_id"
+      key === "input_requests_dir" || key === "pi_session_id" ||
+      key === "output_path" || key === "partial_output_path" || key === "last_output_path"
         ? []
         : [[key, sanitizePublicResultValue(child)]],
     ),
@@ -309,7 +311,7 @@ const continuitySchema = z.discriminatedUnion("mode", [
 const modelClassSchema = z
   .enum(MODEL_CLASSES)
   .optional()
-  .describe("Capability class A-E, or external expert class Z1-Z3 for maximum-difficulty work. A is simplest; E is highest-abstraction/deepest technical work.");
+  .describe("Capability class A-E, or external expert class Z1-Z5 for maximum-difficulty work. A is simplest; E is highest-abstraction/deepest technical work.");
 
 const skillNameInputSchema = z
   .string()

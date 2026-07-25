@@ -19,6 +19,8 @@
     "start_session_run-async-polling",
     "start_session_run-resume",
     "start_session_run-packet-failure",
+    "start_session_run-packet-missing",
+    "start_session_run-packet-invalid",
     "start_session_run-require-existing-missing",
     "get_run-run-not-found",
     "answer_run_input-caller-input",
@@ -27,8 +29,14 @@
     "cancel_run-cancellation-settlement",
     "cancel_run-terminal-idempotency",
     "get_run-restart-drift",
+    "start_run-client-start-id-replay",
+    "skill-binding-roundtrip",
+    "skill-runtime-bundle-roundtrip",
+    "skill-snapshot-lifecycle",
     "transcript-redaction",
     "run_subagent_session-packet-failure",
+    "run_subagent_session-packet-missing",
+    "run_subagent_session-packet-invalid",
     "run_subagent_session-valid-packet-closure",
     "run_subagent_session-invalid-packet-closure",
     "run_subagent_session-require-existing-missing",
@@ -60,6 +68,8 @@
     "start_session_run-async-polling": { "evidence_classes": ["protocol-deterministic"] },
     "start_session_run-resume": { "evidence_classes": ["protocol-deterministic"] },
     "start_session_run-packet-failure": { "evidence_classes": ["protocol-deterministic"] },
+    "start_session_run-packet-missing": { "evidence_classes": ["protocol-deterministic"] },
+    "start_session_run-packet-invalid": { "evidence_classes": ["protocol-deterministic"] },
     "start_session_run-require-existing-missing": { "evidence_classes": ["protocol-deterministic"] },
     "get_run-run-not-found": { "evidence_classes": ["protocol-deterministic"] },
     "answer_run_input-caller-input": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
@@ -68,8 +78,14 @@
     "cancel_run-cancellation-settlement": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
     "cancel_run-terminal-idempotency": { "evidence_classes": ["protocol-deterministic"] },
     "get_run-restart-drift": { "evidence_classes": ["protocol-deterministic"] },
+    "start_run-client-start-id-replay": { "evidence_classes": ["protocol-deterministic"] },
+    "skill-binding-roundtrip": { "evidence_classes": ["protocol-deterministic"] },
+    "skill-runtime-bundle-roundtrip": { "evidence_classes": ["protocol-deterministic"] },
+    "skill-snapshot-lifecycle": { "evidence_classes": ["protocol-deterministic"] },
     "transcript-redaction": { "evidence_classes": ["protocol-deterministic"] },
     "run_subagent_session-packet-failure": { "evidence_classes": ["protocol-deterministic"] },
+    "run_subagent_session-packet-missing": { "evidence_classes": ["protocol-deterministic"] },
+    "run_subagent_session-packet-invalid": { "evidence_classes": ["protocol-deterministic"] },
     "run_subagent_session-valid-packet-closure": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
     "run_subagent_session-invalid-packet-closure": { "evidence_classes": ["protocol-deterministic"] },
     "run_subagent_session-require-existing-missing": { "evidence_classes": ["protocol-deterministic"] },
@@ -107,6 +123,21 @@
       "result_classes": ["runtime_ready"],
       "surfaces": ["runtime-readiness"]
     },
+    "skill-binding-roundtrip": {
+      "tool": "resolve_skill_bindings+verify_skill_bindings",
+      "result_classes": ["skill_binding_roundtrip"],
+      "surfaces": ["skill-binding-roundtrip"]
+    },
+    "skill-runtime-bundle-roundtrip": {
+      "tool": "validate_skill_runtime_bundle+resolve_skill_runtime_bundles",
+      "result_classes": ["skill_runtime_bundle_roundtrip"],
+      "surfaces": ["skill-runtime-bundle-roundtrip"]
+    },
+    "skill-snapshot-lifecycle": {
+      "tool": "skill-snapshot-lifecycle",
+      "result_classes": ["skill_snapshot_lifecycle"],
+      "surfaces": ["skill-snapshot-lifecycle"]
+    },
     "success": {
       "tool": "run_subagent",
       "result_classes": ["run_success"],
@@ -137,6 +168,16 @@
       "result_classes": ["packet_required_not_ready"],
       "surfaces": ["run_subagent_session-packet-failure"]
     },
+    "packet-missing": {
+      "tool": "run_subagent_session",
+      "result_classes": ["packet_required_missing"],
+      "surfaces": ["run_subagent_session-packet-missing"]
+    },
+    "packet-invalid": {
+      "tool": "run_subagent_session",
+      "result_classes": ["packet_required_invalid"],
+      "surfaces": ["run_subagent_session-packet-invalid"]
+    },
     "transcript-redaction": {
       "tool": "run_subagent",
       "result_classes": ["transcript_redacted"],
@@ -151,6 +192,11 @@
       "tool": "start_run",
       "result_classes": ["async_polling"],
       "surfaces": ["start_run-async-polling"]
+    },
+    "client-start-id-replay": {
+      "tool": "start_run",
+      "result_classes": ["client_start_id_replay"],
+      "surfaces": ["start_run-client-start-id-replay"]
     },
     "missing-final-output": {
       "tool": "start_run",
@@ -181,6 +227,16 @@
       "tool": "start_session_run",
       "result_classes": ["start_session_packet_failure_logged"],
       "surfaces": ["start_session_run-packet-failure"]
+    },
+    "start-session-packet-missing": {
+      "tool": "start_session_run",
+      "result_classes": ["start_session_packet_missing_logged"],
+      "surfaces": ["start_session_run-packet-missing"]
+    },
+    "start-session-packet-invalid": {
+      "tool": "start_session_run",
+      "result_classes": ["start_session_packet_invalid_logged"],
+      "surfaces": ["start_session_run-packet-invalid"]
     },
     "start-session-require-existing-missing": {
       "tool": "start_session_run",
@@ -301,6 +357,9 @@
         "run-contract",
         "model-listing",
         "model-listing-alias",
+        "skill-binding-roundtrip",
+        "skill-runtime-bundle-roundtrip",
+        "skill-snapshot-lifecycle",
         "success",
         "auto-promotion",
         "schema-error",
@@ -309,12 +368,15 @@
         "timeout-recovery",
         "schedule-run-durable-first",
         "start-run-async-polling",
+        "client-start-id-replay",
         "missing-final-output",
         "local-capacity-exhaustion",
         "queue-lifecycle",
         "start-session-run-async-polling",
         "session-resume",
         "start-session-packet-failure",
+        "start-session-packet-missing",
+        "start-session-packet-invalid",
         "start-session-require-existing-missing",
         "get-run-missing",
         "caller-input",
@@ -324,6 +386,8 @@
         "cancel-terminal-run",
         "restart-drift",
         "packet-failure",
+        "packet-missing",
+        "packet-invalid",
         "session-valid-closure",
         "session-invalid-closure",
         "run-subagent-session-require-existing-missing",
@@ -341,6 +405,9 @@
         "durable-run-contract",
         "model-class-listing",
         "model-class-listing-alias",
+        "skill-binding-roundtrip",
+        "skill-runtime-bundle-roundtrip",
+        "skill-snapshot-lifecycle",
         "run_subagent-success",
         "run_subagent-auto-promotion",
         "run_subagent-schema-error",
@@ -349,12 +416,15 @@
         "run_subagent-timeout-recovery",
         "schedule_run-durable-first",
         "start_run-async-polling",
+        "start_run-client-start-id-replay",
         "start_run-missing-final-output",
         "start_run-local-capacity-exhaustion",
         "start_run-queue-lifecycle",
         "start_session_run-async-polling",
         "start_session_run-resume",
         "start_session_run-packet-failure",
+        "start_session_run-packet-missing",
+        "start_session_run-packet-invalid",
         "start_session_run-require-existing-missing",
         "get_run-run-not-found",
         "answer_run_input-caller-input",
@@ -365,6 +435,8 @@
         "get_run-restart-drift",
         "transcript-redaction",
         "run_subagent_session-packet-failure",
+        "run_subagent_session-packet-missing",
+        "run_subagent_session-packet-invalid",
         "run_subagent_session-valid-packet-closure",
         "run_subagent_session-invalid-packet-closure",
         "run_subagent_session-require-existing-missing",

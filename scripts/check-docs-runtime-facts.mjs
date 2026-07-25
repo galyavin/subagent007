@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SCRIPT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const MODEL_CLASSES = ["A", "B", "C", "D", "E", "Z1", "Z2", "Z3"];
+const MODEL_CLASSES = ["A", "B", "C", "D", "E", "Z1", "Z2", "Z3", "Z4", "Z5"];
 const DOC_ENV_KEY_PATTERN = /\b(?:SUBAGENT007_[A-Z0-9_]+|PI_CODING_AGENT_DIR|GIT_COMMIT)\b/g;
 const PROCESS_ENV_DOT_PATTERN = /\bprocess\.env\.([A-Z][A-Z0-9_]*)\b/g;
 const PROCESS_ENV_INDEX_PATTERN = /\bprocess\.env\[\s*["']([A-Z][A-Z0-9_]*)["']\s*\]/g;
@@ -179,6 +179,23 @@ async function checkRetiredPublicSnapshotTerms() {
     : [`Current documentation names retired public snapshot terms:\n${formatList(stale)}`];
 }
 
+async function checkTerminalOutputReferenceFacts(readme) {
+  const outputSource = await readOptionalText("src/output.ts");
+  if (!outputSource) return [];
+  const required = [
+    "relative_path",
+    "content_sha256",
+    "configured runs root",
+    "1 MiB",
+    "There is no public top-level `output_path` or reference `path`",
+    "descriptor-level finalizer",
+  ];
+  const missing = required.filter((term) => !readme.includes(term));
+  return missing.length === 0
+    ? []
+    : [`README is missing current terminal output-reference contract facts:\n${formatList(missing)}`];
+}
+
 async function checkAuthoringEffectScopeFacts(readme) {
   const [scopeSource, contractSource] = await Promise.all([
     readOptionalText("src/authoringEffectScope.ts"),
@@ -205,6 +222,7 @@ const failures = [
   ...checkInternalCalibrationsNotPublished(readme, modelSource),
   ...await checkEnvKeys(readme),
   ...await checkRetiredPublicSnapshotTerms(),
+  ...await checkTerminalOutputReferenceFacts(readme),
   ...await checkAuthoringEffectScopeFacts(readme),
 ];
 

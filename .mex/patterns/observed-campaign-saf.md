@@ -11,7 +11,7 @@ edges:
     condition: before interpreting tool lifecycle or failure projection findings
   - target: context/conventions.md
     condition: before changing public result fields, reason codes, tests, or README
-last_updated: 2026-07-13
+last_updated: 2026-07-25
 ---
 
 # Observed Campaign SAF
@@ -24,8 +24,8 @@ Load architecture, conventions, setup, decisions, and this pattern. Use isolated
 2. Run a deterministic full-current campaign through `scripts/run-observed-campaign.mjs` and `scripts/run-observed-mcp-probe.mjs --profile full-current` with a temp `SUBAGENT007_CONFIG_PATH`.
 3. Run `--profile live-current` when Pi/auth are available to prove installed Pi integration, but do not treat live smoke as full edge coverage.
 4. Inspect `campaign-ledger.jsonl`, `failures.jsonl`, run-task snapshots/events, and selected output artifacts directly. Record friction from the caller's point of view, including ambiguous result kinds, reason-code collapse, required text parsing, noisy fields, and secret leakage.
-5. Compress findings with `saf-ninja`, then stress-test the selected SAF with `red-blue-review` before editing.
-6. After implementation, rerun focused oracles first, then the full observed campaign or `tests/observed-campaign.test.ts`, `npm run docs:check`, `npm run runtime:readiness -- --source-state-policy allow_dirty --expected-contract-name subagent007.durable_run --expected-contract-version 2`, and `npm test`.
+5. Compress findings with `saf-ninja`, then run the selected SAF through `stress-test-mini` before editing.
+6. After implementation, rerun focused oracles first, then the full observed campaign or `tests/observed-campaign.test.ts`, `npm run docs:check`, `npm run runtime:readiness -- --source-state-policy allow_dirty --expected-contract-name subagent007.durable_run --expected-contract-version 3`, and `npm test`.
 7. Run a fresh-eye repair-delta scan. If it finds material oracle gaps, repair them and rerun the relevant oracles.
 
 ## Gotchas
@@ -43,6 +43,10 @@ Load architecture, conventions, setup, decisions, and this pattern. Use isolated
 - Full-current edge coverage should include caller-friendly front-door rejection and release contracts, including `require_existing` missing-session preflight for both named-session tools and `local_capacity_exhausted` followed by lease release.
 - Full-current session failure coverage should include `start_session_run` packet-failure telemetry correlation: failure logs must keep `tool:"start_session_run"`, the public durable `run_id`, and `task_kind:"session"`.
 - Recursive delegate coverage must prove root-visible lineage, parent `recursive_child_started`/`recursive_child_finished` event visibility, wait-0 child completion after parent terminalization, depth-limit rejection, and forged-lineage rejection through structured fields and run views. Event child ids must match the delegated run id. Do not expose recursive control token/socket payloads in ledgers, summaries, or public artifacts.
+- A deterministic child may prove protocol acceptance but cannot certify real Pi activation/tool enforcement by echoing a parent-provided receipt. Narrow the claim or use an explicitly live canary.
+- `client_start_id` coverage must replay while active and after terminal settlement, prove one child admission, and retain changed-body conflict. Output identity must hash and size one captured byte buffer and reject direct public path fields.
+- Snapshot lifecycle coverage should prove exact publication replay, changed-request conflict, and a genuine stale deletion-impact transition; an arbitrary wrong confirmation alone is not a stale-impact race.
+- A recursive answer-delivery repair is not accepted from terminal status alone: the live parent must receive and use answer evidence from the child. `working` beyond a bounded wait remains an explicit survivor when no child-facing poll exists.
 
 ## Verify
 - [ ] Deterministic `full-current` campaign has no missing required surfaces.

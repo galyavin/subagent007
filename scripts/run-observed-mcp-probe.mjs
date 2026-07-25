@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -337,6 +337,16 @@ function responseMatchesResultShape(response, resultClass) {
       response.reason_code === "packet_required_not_ready" &&
       response.packet_parse_status === "valid";
   }
+  if (resultClass === "packet_required_missing") {
+    return response.success === false &&
+      response.reason_code === "packet_required_missing" &&
+      response.packet_parse_status === "missing";
+  }
+  if (resultClass === "packet_required_invalid") {
+    return response.success === false &&
+      response.reason_code === "packet_required_invalid" &&
+      response.packet_parse_status === "invalid";
+  }
   if (resultClass === "transcript_redacted") {
     return response.success === true && response.transcript_redacted === true;
   }
@@ -391,6 +401,24 @@ function responseMatchesResultShape(response, resultClass) {
       response.status === "failed" &&
       response.reason_code === "packet_required_not_ready" &&
       response.packet_parse_status === "valid" &&
+      response.failure_log_matching_tool === "start_session_run" &&
+      response.failure_log_matching_task_kind === "session" &&
+      response.failure_log_matching_run_id === response.run_id;
+  }
+  if (resultClass === "start_session_packet_missing_logged") {
+    return response.success === false &&
+      response.status === "failed" &&
+      response.reason_code === "packet_required_missing" &&
+      response.packet_parse_status === "missing" &&
+      response.failure_log_matching_tool === "start_session_run" &&
+      response.failure_log_matching_task_kind === "session" &&
+      response.failure_log_matching_run_id === response.run_id;
+  }
+  if (resultClass === "start_session_packet_invalid_logged") {
+    return response.success === false &&
+      response.status === "failed" &&
+      response.reason_code === "packet_required_invalid" &&
+      response.packet_parse_status === "invalid" &&
       response.failure_log_matching_tool === "start_session_run" &&
       response.failure_log_matching_task_kind === "session" &&
       response.failure_log_matching_run_id === response.run_id;
@@ -479,7 +507,24 @@ function responseMatchesResultShape(response, resultClass) {
       response.delegated_view_child_run_ids.includes(response.nested_delegated_run_id) &&
       response.nested_child_parent_run_id === response.delegated_run_id &&
       response.nested_child_root_run_id === response.run_id &&
-      response.nested_child_recursion_depth === 2;
+      response.nested_child_recursion_depth === 2 &&
+      response.descendant_terminal_statuses?.[response.delegated_run_id] === "completed" &&
+      response.descendant_terminal_statuses?.[response.nested_delegated_run_id] === "completed" &&
+      response.delegated_view_descendant_terminal_statuses?.[response.nested_delegated_run_id] === "completed" &&
+      response.delegated_view_recursive_child_started_events?.some((event) =>
+        event?.child_run_id === response.nested_delegated_run_id &&
+        event?.parent_run_id === response.delegated_run_id &&
+        event?.root_run_id === response.run_id &&
+        event?.recursion_depth === 2
+      ) &&
+      response.delegated_view_recursive_child_finished_events?.some((event) =>
+        event?.child_run_id === response.nested_delegated_run_id &&
+        event?.parent_run_id === response.delegated_run_id &&
+        event?.root_run_id === response.run_id &&
+        event?.recursion_depth === 2 &&
+        event?.status === "completed" &&
+        event?.success === true
+      );
   }
   if (resultClass === "recursive_delegate_depth_boundary") {
     return response.success === true &&
@@ -518,6 +563,43 @@ function responseMatchesResultShape(response, resultClass) {
       response.ready === true &&
       response.status === "ready" &&
       response.contract_name === "subagent007.runtime_readiness";
+  }
+  if (resultClass === "skill_binding_roundtrip") {
+    return response.skill_resolution_success === true &&
+      response.skill_verification_success === true &&
+      response.skill_mismatch_rejected === true &&
+      response.skill_mismatch_reason_code === "skill_content_mismatch" &&
+      response.skill_batch_failure_atomic === true &&
+      response.skill_operations_model_free === true;
+  }
+  if (resultClass === "skill_runtime_bundle_roundtrip") {
+    return response.bundle_validation_success === true &&
+      response.bundle_resolution_success === true &&
+      response.bundle_digests_match === true &&
+      response.bundle_operations_model_free === true;
+  }
+  if (resultClass === "skill_snapshot_lifecycle") {
+    return response.snapshot_published === true &&
+      response.snapshot_publication_exact_replay === true &&
+      response.snapshot_publication_conflict_rejected === true &&
+      response.snapshot_publication_conflict_reason_code === "publication_identity_conflict" &&
+      response.snapshot_active_source_resolved === true &&
+      response.snapshot_reference_closed === true &&
+      response.snapshot_closed_source_resolved === true &&
+      response.snapshot_deletion_planned === true &&
+      response.snapshot_stale_impact_rejected === true &&
+      response.snapshot_deleted === true &&
+      response.snapshot_post_delete_rejected === true;
+  }
+  if (resultClass === "client_start_id_replay") {
+    return response.client_start_active_exact_replay === true &&
+      response.client_start_terminal_exact_replay === true &&
+      response.client_start_single_child_admission === true &&
+      response.client_start_changed_rejected === true &&
+      response.client_start_conflict_reason_code === "client_start_id_conflict" &&
+      response.client_start_terminal_status === "completed" &&
+      response.primary_output_reference_integrity === true &&
+      response.public_direct_output_paths_absent === true;
   }
   return false;
 }
@@ -602,11 +684,14 @@ async function createDeterministicFakeChild() {
       "  if (clone.recursiveControl) clone.recursiveControl = { ...clone.recursiveControl, socket_path: '[redacted]', token: '[redacted]' };",
       "  return clone;",
       "}",
-      "if (logPath) fs.appendFileSync(logPath, JSON.stringify({ request: requestForLog() }) + '\\n');",
+      "if (logPath) fs.appendFileSync(logPath, JSON.stringify({ pid: process.pid, request: requestForLog() }) + '\\n');",
+      "process.stdin.resume();",
+      "process.stdin.once('end', () => process.exit(0));",
       "function writeEvent(event) { process.stdout.write(JSON.stringify(event) + '\\n'); }",
       "function writeFinal(text) {",
       "  if (request.outputLastMessagePath && request.outputMode === 'final') fs.writeFileSync(request.outputLastMessagePath, text);",
       "  else process.stdout.write(text);",
+      "  process.stdin.pause();",
       "}",
       "function sessionFileForFresh() {",
       "  if (!request.sessionDir) return null;",
@@ -686,10 +771,13 @@ async function createDeterministicFakeChild() {
       "} else if (request.prompt.includes('TIMEOUT_ASSISTANT_EVENT')) {",
       "  writeEvent({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'PUBLIC PARTIAL ASSISTANT' }] } });",
       "  setInterval(() => {}, 1000);",
+      "} else if (request.prompt.includes('CLIENT_START_REPLAY_SLEEP')) {",
+      "  setTimeout(() => writeFinal('CLIENT START REPLAY DONE'), 500);",
       "} else if (request.prompt.includes('HEARTBEAT_SLEEP')) {",
       "  setTimeout(() => writeFinal('HEARTBEAT DONE'), 160);",
       "} else if (request.prompt.includes('CLEAN_EXIT_NO_FINAL')) {",
       "  writeEvent({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'PUBLIC DIAGNOSTIC ONLY' }] } });",
+      "  process.stdin.pause();",
       "} else if (request.prompt.includes('CANCEL_WAIT')) {",
       "  setInterval(() => {}, 1000);",
       "} else if (request.prompt.includes('REQUEST_INPUT_WAIT')) {",
@@ -728,6 +816,10 @@ async function createDeterministicFakeChild() {
       "  });",
       "} else if (request.prompt.includes('PACKET_INCONCLUSIVE')) {",
       "  writeFinal(packetFinal({ verdict: 'inconclusive', summary: 'not ready', findings: [], blockers: ['needs evidence'], next_step: 'repair' }));",
+      "} else if (request.prompt.includes('PACKET_MISSING')) {",
+      "  writeFinal('PACKET ABSENT');",
+      "} else if (request.prompt.includes('PACKET_INVALID_JSON')) {",
+      "  writeFinal('```contract_packet_v1\\n{invalid json\\n```');",
       "} else if (request.prompt.includes('PACKET_VALID_WITH_CLOSURE')) {",
       "  writeFinal(packetFinal({ verdict: 'ready', summary: 'ok with closure', findings: [], blockers: [], next_step: 'done', closure: { canonical_closure_source: 'scripts/run-observed-mcp-probe.mjs', artifact_roles: [{ path: 'scripts/run-observed-mcp-probe.mjs', role: 'fake packet producer' }], validation: ['closure shape parsed'], claim_ceiling: 'fake child packet only' } }));",
       "} else if (request.prompt.includes('PACKET_INVALID_CLOSURE_SHAPE')) {",
@@ -736,6 +828,7 @@ async function createDeterministicFakeChild() {
       "  writeEvent({ type: 'message_end', message: { role: 'user', content: [{ type: 'text', text: 'user prompt' }] } });",
       "  writeEvent({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: 'SECRET_THINKING_SHOULD_NOT_LEAK' } });",
       "  writeEvent({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'PUBLIC ASSISTANT TEXT' }] } });",
+      "  process.stdin.pause();",
       "} else {",
       "  writeFinal('FAST FINAL');",
       "}",
@@ -743,7 +836,59 @@ async function createDeterministicFakeChild() {
     "utf8",
   );
   await fs.chmod(childPath, 0o755);
-  return { childPath, logPath };
+  return { root: tmp, childPath, logPath };
+}
+
+async function createSkillLifecycleFixture() {
+  const root = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-observed-skill-lifecycle-")),
+  );
+  const skillsRoot = path.join(root, "skills");
+  const skillName = "observed-campaign-skill";
+  const otherSkillName = "observed-campaign-skill-z";
+  const bundleRoot = path.join(skillsRoot, skillName);
+  const otherBundleRoot = path.join(skillsRoot, otherSkillName);
+  const projectCwd = path.join(root, "project");
+  await fs.mkdir(path.join(bundleRoot, "references"), { recursive: true });
+  await fs.mkdir(path.join(otherBundleRoot, "references"), { recursive: true });
+  await fs.mkdir(projectCwd, { recursive: true });
+  await fs.writeFile(
+    path.join(bundleRoot, "SKILL.md"),
+    [
+      "---",
+      `name: ${skillName}`,
+      "description: Deterministic observed campaign fixture.",
+      "---",
+      `# ${skillName}`,
+      "Read references/guide.md and return the requested compact result.",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  await fs.writeFile(path.join(bundleRoot, "references", "guide.md"), "observed fixture guide\n", "utf8");
+  await fs.writeFile(
+    path.join(otherBundleRoot, "SKILL.md"),
+    [
+      "---",
+      `name: ${otherSkillName}`,
+      "description: Second deterministic observed campaign fixture.",
+      "---",
+      `# ${otherSkillName}`,
+      "Return the requested compact result.",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  await fs.writeFile(path.join(otherBundleRoot, "references", "guide.md"), "second observed fixture guide\n", "utf8");
+  return {
+    root,
+    skillsRoot,
+    skillName,
+    otherSkillName,
+    bundleRoot,
+    projectCwd,
+    snapshotsDir: path.join(root, "snapshots"),
+  };
 }
 
 function campaignLedgerPath() {
@@ -758,6 +903,11 @@ function campaignLedgerPath() {
 
 function requireScopedDeterministicProbe(mode) {
   if (mode !== "protocol-deterministic") {
+    if (process.env.SUBAGENT007_PI_CHILD_PATH?.trim()) {
+      throw new Error(
+        "live-model observed probes reject SUBAGENT007_PI_CHILD_PATH because a test child cannot prove installed Pi integration",
+      );
+    }
     return;
   }
   const failureLogPath = process.env.SUBAGENT007_FAILURE_LOG_PATH?.trim();
@@ -995,6 +1145,7 @@ function responseSummary(response) {
     contract_name: typeof structured.contract_name === "string" ? structured.contract_name : undefined,
     error_class: typeof structured.error_class === "string" ? structured.error_class : undefined,
     reason_code: typeof structured.reason_code === "string" ? structured.reason_code : undefined,
+    message: typeof structured.message === "string" ? structured.message : undefined,
     run_id: typeof structured.run_id === "string" ? structured.run_id : undefined,
     parent_run_id: typeof structured.parent_run_id === "string" ? structured.parent_run_id : undefined,
     root_run_id: typeof structured.root_run_id === "string" ? structured.root_run_id : undefined,
@@ -1002,6 +1153,13 @@ function responseSummary(response) {
     child_run_ids: Array.isArray(structured.child_run_ids)
       ? structured.child_run_ids.filter((value) => typeof value === "string")
       : undefined,
+    descendant_run_ids: Array.isArray(structured.descendant_run_ids)
+      ? structured.descendant_run_ids.filter((value) => typeof value === "string")
+      : undefined,
+    descendant_terminal_statuses:
+      structured.descendant_terminal_statuses && typeof structured.descendant_terminal_statuses === "object"
+        ? structured.descendant_terminal_statuses
+        : undefined,
     recursive_child_started_event: recursiveChildStartedEvents.length > 0,
     recursive_child_finished_event: recursiveChildFinishedEvents.length > 0,
     recursive_child_started_events: recursiveChildStartedSummaries,
@@ -1029,6 +1187,9 @@ function responseSummary(response) {
           .map((reference) => reference?.output_mode)
           .filter((value) => typeof value === "string")
       : [],
+    primary_output_reference: Array.isArray(structured.output_references) && structured.output_references.length === 1
+      ? structured.output_references[0]
+      : undefined,
     packet_parse_status: typeof structured.packet_parse_status === "string"
       ? structured.packet_parse_status
       : undefined,
@@ -1059,20 +1220,39 @@ function responseSummary(response) {
     promotion_reason_code: typeof structured.promotion_reason_code === "string"
       ? structured.promotion_reason_code
       : undefined,
-    output_path: typeof structured.output_path === "string" ? structured.output_path : undefined,
   };
+}
+
+function responseOutputPath(response) {
+  const structured = response.structuredContent && typeof response.structuredContent === "object"
+    ? response.structuredContent
+    : response;
+  const references = Array.isArray(structured?.output_references)
+    ? structured.output_references
+    : structured?.primary_output_reference
+      ? [structured.primary_output_reference]
+      : undefined;
+  if (!Array.isArray(references) || references.length !== 1) return undefined;
+  const reference = references[0];
+  const relativePath = reference?.relative_path;
+  const runsRoot = serverEnv.SUBAGENT007_RUNS_DIR;
+  if (typeof relativePath !== "string" || relativePath === "" || relativePath !== relativePath.normalize("NFC") ||
+    relativePath !== path.basename(relativePath) || relativePath.includes("/") || relativePath.includes("\\") ||
+    typeof runsRoot !== "string") {
+    return undefined;
+  }
+  return path.join(runsRoot, relativePath);
 }
 
 function isRecursiveDelegateScenario(scenario) {
   return Object.hasOwn(RECURSIVE_DELEGATE_SCENARIO_PROMPTS, scenario);
 }
 
-async function recursiveDelegateOutputSummary(summary) {
-  if (typeof summary.output_path !== "string") {
-    return {};
-  }
+async function recursiveDelegateOutputSummary(summary, outputPath) {
+  const resolvedOutputPath = outputPath ?? responseOutputPath(summary);
+  if (typeof resolvedOutputPath !== "string") return {};
   try {
-    const outputText = await fs.readFile(summary.output_path, "utf8");
+    const outputText = await fs.readFile(resolvedOutputPath, "utf8");
     const output = JSON.parse(outputText);
     const delegated = output?.delegated && typeof output.delegated === "object"
       ? output.delegated
@@ -1113,17 +1293,18 @@ async function responseSummaryForScenario(response, scenario) {
       ...toolListingSummary(response),
     };
   }
+  const outputPath = responseOutputPath(response);
   if (isRecursiveDelegateScenario(scenario)) {
     return {
       ...summary,
-      ...(await recursiveDelegateOutputSummary(summary)),
+      ...(await recursiveDelegateOutputSummary(summary, outputPath)),
     };
   }
-  if (scenario !== "transcript-redaction" || typeof summary.output_path !== "string") {
+  if (scenario !== "transcript-redaction" || typeof outputPath !== "string") {
     return summary;
   }
   try {
-    const output = await fs.readFile(summary.output_path, "utf8");
+    const output = await fs.readFile(outputPath, "utf8");
     return {
       ...summary,
       transcript_redacted:
@@ -1211,6 +1392,30 @@ function scenarioCall(scenario, cwd) {
         cwd,
         prompt: "PACKET_INCONCLUSIVE SECRET_LEDGER_PROMPT_PACKET_FAILURE",
         session_key: `campaign-probe:${Date.now()}:${randomUUID().slice(0, 8)}`,
+        resume_mode: "new",
+        packet_policy: "required",
+      },
+    };
+  }
+  if (scenario === "packet-missing") {
+    return {
+      tool: "run_subagent_session",
+      args: {
+        cwd,
+        prompt: "PACKET_MISSING",
+        session_key: `campaign-probe-packet-missing:${Date.now()}:${randomUUID().slice(0, 8)}`,
+        resume_mode: "new",
+        packet_policy: "required",
+      },
+    };
+  }
+  if (scenario === "packet-invalid") {
+    return {
+      tool: "run_subagent_session",
+      args: {
+        cwd,
+        prompt: "PACKET_INVALID_JSON",
+        session_key: `campaign-probe-packet-invalid:${Date.now()}:${randomUUID().slice(0, 8)}`,
         resume_mode: "new",
         packet_policy: "required",
       },
@@ -1365,27 +1570,45 @@ async function runCall(client, ledgerPath, evidenceClass, scenario, call) {
     });
   }
 
-  return {
+  const result = {
     call_id: callId,
     scenario,
     tool: call.tool,
     response: observedSummary,
     failure_log_delta_count: delta.length,
   };
+  Object.defineProperty(result, "structured", {
+    value: response?.structuredContent && typeof response.structuredContent === "object"
+      ? response.structuredContent
+      : undefined,
+    enumerable: false,
+  });
+  return result;
 }
 
-async function waitForRun(client, ledgerPath, evidenceClass, scenario, runId, predicate, options = {}) {
-  const deadline = Date.now() + 5000;
+async function waitForRun(client, ledgerPath, evidenceClass, scenario, runId, predicate) {
+  const testTimeoutMs = Number(process.env.SUBAGENT007_TEST_WAIT_FOR_RUN_TIMEOUT_MS);
+  const deadline = Date.now() + (Number.isFinite(testTimeoutMs) && testTimeoutMs > 0 ? testTimeoutMs : 5000);
+  const settlementMask = process.env.SUBAGENT007_TEST_MASK_CANCELLATION_SETTLEMENT;
+  let maskedTerminalViews = 0;
   let latest;
   while (Date.now() < deadline) {
     latest = await runCall(client, ledgerPath, evidenceClass, scenario, {
       tool: "get_run",
       args: { run_id: runId },
     });
-    if (predicate(latest.response)) {
-      return latest;
+    if (
+      scenario === "cancellation" &&
+      latest.response?.status === "cancelled" &&
+      (settlementMask === "always" || (settlementMask === "once" && maskedTerminalViews === 0))
+    ) {
+      maskedTerminalViews += 1;
+      latest = {
+        ...latest,
+        response: { ...latest.response, cancellation_settled: false },
+      };
     }
-    if (options.stopOnTerminal !== false && ["completed", "failed", "cancelled"].includes(latest.response?.status)) {
+    if (predicate(latest.response)) {
       return latest;
     }
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -1393,7 +1616,399 @@ async function waitForRun(client, ledgerPath, evidenceClass, scenario, runId, pr
   return latest;
 }
 
+async function exactFileIdentity(filePath) {
+  const identity = await exactFileContentIdentity(filePath);
+  return {
+    path: identity.path,
+    sha256: identity.sha256,
+  };
+}
+
+async function exactFileContentIdentity(filePath) {
+  const resolvedPath = path.resolve(filePath);
+  const bytes = await fs.readFile(resolvedPath);
+  return {
+    path: resolvedPath,
+    size_bytes: bytes.byteLength,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+  };
+}
+
 async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
+  if (scenario === "skill-binding-roundtrip") {
+    const resolved = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "resolve_skill_bindings",
+      args: {
+        contract_version: 1,
+        cwd: skillLifecycleFixture.projectCwd,
+        skill_names: [
+          skillLifecycleFixture.skillName,
+          skillLifecycleFixture.otherSkillName,
+        ],
+      },
+    });
+    const resolvedBindings = resolved.structured?.bindings ?? [];
+    const verified = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "verify_skill_bindings",
+      args: {
+        contract_version: 1,
+        cwd: skillLifecycleFixture.projectCwd,
+        bindings: resolvedBindings.map((binding) => ({
+          skill_name: binding.skill_name,
+          expected_skill_sha256: binding.resolved_skill_sha256,
+        })),
+      },
+    });
+    const mismatch = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "verify_skill_bindings",
+      args: {
+        contract_version: 1,
+        cwd: skillLifecycleFixture.projectCwd,
+        bindings: resolvedBindings.map((binding, index) => ({
+          skill_name: binding.skill_name,
+          expected_skill_sha256: index === 0 ? binding.resolved_skill_sha256 : "0".repeat(64),
+        })),
+      },
+    });
+    return {
+      ...mismatch,
+      tool: "resolve_skill_bindings+verify_skill_bindings",
+      response: {
+        ...(mismatch.response ?? {}),
+        skill_resolution_success:
+          resolved.structured?.kind === "skill_bindings_resolved" &&
+          isDeepStrictEqual(
+            resolvedBindings.map((binding) => binding?.skill_name),
+            [skillLifecycleFixture.skillName, skillLifecycleFixture.otherSkillName],
+          ) &&
+          resolvedBindings.every((binding) => typeof binding?.resolved_skill_sha256 === "string"),
+        skill_verification_success: verified.structured?.kind === "skill_bindings_verified",
+        skill_mismatch_rejected: mismatch.structured?.kind === "skill_binding_verification_rejected",
+        skill_mismatch_reason_code: mismatch.structured?.reason_code,
+        skill_batch_failure_atomic:
+          mismatch.structured?.kind === "skill_binding_verification_rejected" &&
+          !Array.isArray(mismatch.structured?.bindings),
+        skill_operations_model_free:
+          resolved.structured?.model_invoked === false &&
+          verified.structured?.model_invoked === false &&
+          mismatch.structured?.model_invoked === false,
+      },
+      failure_log_delta_count:
+        resolved.failure_log_delta_count +
+        verified.failure_log_delta_count +
+        mismatch.failure_log_delta_count,
+    };
+  }
+
+  if (scenario === "skill-runtime-bundle-roundtrip") {
+    const validated = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "validate_skill_runtime_bundle",
+      args: {
+        contract_version: 1,
+        bundle_root: skillLifecycleFixture.bundleRoot,
+        expected_skill_name: skillLifecycleFixture.skillName,
+      },
+    });
+    const resolved = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "resolve_skill_runtime_bundles",
+      args: {
+        contract_version: 1,
+        cwd: skillLifecycleFixture.projectCwd,
+        skill_names: [skillLifecycleFixture.skillName],
+      },
+    });
+    return {
+      ...resolved,
+      tool: "validate_skill_runtime_bundle+resolve_skill_runtime_bundles",
+      response: {
+        ...(resolved.response ?? {}),
+        bundle_validation_success: validated.structured?.kind === "skill_runtime_bundle_validated",
+        bundle_resolution_success: resolved.structured?.kind === "skill_runtime_bundles_resolved",
+        bundle_digests_match:
+          typeof validated.structured?.bundle_sha256 === "string" &&
+          validated.structured.bundle_sha256 === resolved.structured?.bindings?.[0]?.bundle_sha256,
+        bundle_operations_model_free:
+          validated.structured?.model_invoked === false &&
+          resolved.structured?.model_invoked === false,
+      },
+      failure_log_delta_count: validated.failure_log_delta_count + resolved.failure_log_delta_count,
+    };
+  }
+
+  if (scenario === "skill-snapshot-lifecycle") {
+    const resolved = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "resolve_skill_runtime_bundles",
+      args: {
+        contract_version: 1,
+        cwd: skillLifecycleFixture.projectCwd,
+        skill_names: [
+          skillLifecycleFixture.skillName,
+          skillLifecycleFixture.otherSkillName,
+        ],
+      },
+    });
+    const bundleSha256 = resolved.structured?.bindings?.find(
+      (binding) => binding?.skill_name === skillLifecycleFixture.skillName,
+    )?.bundle_sha256;
+    const otherBundleSha256 = resolved.structured?.bindings?.find(
+      (binding) => binding?.skill_name === skillLifecycleFixture.otherSkillName,
+    )?.bundle_sha256;
+    const projectId = `observed-project-${process.env.SUBAGENT007_CAMPAIGN_ID ?? "local"}`;
+    const publicationId = `observed-publication-${randomUUID()}`;
+    const publicationArgs = {
+      contract_version: 1,
+      cwd: skillLifecycleFixture.projectCwd,
+      project_reference: {
+        project_id: projectId,
+        publication_id: publicationId,
+        lifecycle: "active",
+      },
+      bindings: [{
+        skill_name: skillLifecycleFixture.skillName,
+        expected_bundle_sha256: bundleSha256 ?? "0".repeat(64),
+      }],
+    };
+    const published = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "publish_skill_snapshots",
+      args: publicationArgs,
+    });
+    const publicationReplay = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "publish_skill_snapshots",
+      args: publicationArgs,
+    });
+    const publicationConflict = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "publish_skill_snapshots",
+      args: {
+        ...publicationArgs,
+        bindings: [{
+          skill_name: skillLifecycleFixture.otherSkillName,
+          expected_bundle_sha256: otherBundleSha256 ?? "0".repeat(64),
+        }],
+      },
+    });
+    const item = published.structured?.bindings?.[0];
+    const snapshotBinding = item
+      ? {
+          contract_version: 1,
+          snapshot_id: item.snapshot_identity?.snapshot_id,
+          metadata_sha256: item.snapshot_identity?.metadata_sha256,
+          publication_receipt_sha256: item.publication_receipt?.receipt_sha256,
+          reference_id: item.publication_receipt?.reference_id,
+          project_id: item.publication_receipt?.project_reference?.project_id,
+          publication_id: item.publication_receipt?.project_reference?.publication_id,
+        }
+      : null;
+    const activeSource = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "resolve_retained_skill_snapshot_source",
+      args: {
+        contract_version: 1,
+        skill_name: skillLifecycleFixture.skillName,
+        snapshot_binding: snapshotBinding ?? {
+          contract_version: 1,
+          snapshot_id: "0".repeat(64),
+          metadata_sha256: "0".repeat(64),
+          publication_receipt_sha256: "0".repeat(64),
+          reference_id: "0".repeat(64),
+          project_id: projectId,
+          publication_id: publicationId,
+        },
+      },
+    });
+    const plan = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "plan_skill_snapshot_deletion",
+      args: {
+        contract_version: 1,
+        snapshot_id: snapshotBinding?.snapshot_id ?? "0".repeat(64),
+      },
+    });
+    const closed = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "close_skill_snapshot_references",
+      args: {
+        contract_version: 1,
+        project_id: projectId,
+        publication_id: publicationId,
+        snapshot_ids: snapshotBinding ? [snapshotBinding.snapshot_id] : [],
+      },
+    });
+    const closedSource = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "resolve_retained_skill_snapshot_source",
+      args: {
+        contract_version: 1,
+        skill_name: skillLifecycleFixture.skillName,
+        snapshot_binding: snapshotBinding,
+      },
+    });
+    const staleDelete = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "delete_skill_snapshot",
+      args: {
+        contract_version: 1,
+        snapshot_id: snapshotBinding?.snapshot_id ?? "0".repeat(64),
+        confirm_impact_sha256: plan.structured?.impact_report?.impact_sha256 ?? "0".repeat(64),
+      },
+    });
+    const freshPlan = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "plan_skill_snapshot_deletion",
+      args: {
+        contract_version: 1,
+        snapshot_id: snapshotBinding?.snapshot_id ?? "0".repeat(64),
+      },
+    });
+    const deleted = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "delete_skill_snapshot",
+      args: {
+        contract_version: 1,
+        snapshot_id: snapshotBinding?.snapshot_id ?? "0".repeat(64),
+        confirm_impact_sha256: freshPlan.structured?.impact_report?.impact_sha256 ?? "0".repeat(64),
+      },
+    });
+    const postDelete = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "resolve_retained_skill_snapshot_source",
+      args: {
+        contract_version: 1,
+        skill_name: skillLifecycleFixture.skillName,
+        snapshot_binding: snapshotBinding,
+      },
+    });
+    const calls = [
+      resolved,
+      published,
+      publicationReplay,
+      publicationConflict,
+      activeSource,
+      plan,
+      closed,
+      closedSource,
+      staleDelete,
+      freshPlan,
+      deleted,
+      postDelete,
+    ];
+    return {
+      ...postDelete,
+      tool: "skill-snapshot-lifecycle",
+      response: {
+        ...(postDelete.response ?? {}),
+        snapshot_published: published.structured?.kind === "skill_snapshots_published",
+        snapshot_publication_exact_replay:
+          publicationReplay.structured?.kind === "skill_snapshots_published" &&
+          isDeepStrictEqual(publicationReplay.structured, published.structured),
+        snapshot_publication_conflict_rejected:
+          publicationConflict.structured?.kind === "skill_snapshot_publication_rejected",
+        snapshot_publication_conflict_reason_code: publicationConflict.structured?.reason_code,
+        snapshot_active_source_resolved:
+          activeSource.structured?.kind === "skill_snapshot_source_resolved" &&
+          activeSource.structured?.retained_reference?.lifecycle === "active",
+        snapshot_reference_closed: closed.structured?.kind === "skill_snapshot_references_closed",
+        snapshot_closed_source_resolved:
+          closedSource.structured?.kind === "skill_snapshot_source_resolved" &&
+          closedSource.structured?.retained_reference?.lifecycle === "closed",
+        snapshot_deletion_planned:
+          plan.structured?.kind === "skill_snapshot_deletion_planned" &&
+          freshPlan.structured?.kind === "skill_snapshot_deletion_planned",
+        snapshot_stale_impact_rejected:
+          staleDelete.structured?.kind === "skill_snapshot_deletion_rejected" &&
+          staleDelete.structured?.reason_code === "skill_snapshot_deletion_impact_mismatch" &&
+          plan.structured?.impact_report?.impact_sha256 !== freshPlan.structured?.impact_report?.impact_sha256,
+        snapshot_deleted: deleted.structured?.kind === "skill_snapshot_deleted",
+        snapshot_post_delete_rejected:
+          postDelete.structured?.kind === "skill_snapshot_source_resolution_rejected",
+      },
+      failure_log_delta_count: calls.reduce(
+        (total, call) => total + (call.failure_log_delta_count ?? 0),
+        0,
+      ),
+    };
+  }
+
+  if (scenario === "client-start-id-replay") {
+    const clientStartId = `observed-client-start-${process.env.SUBAGENT007_CAMPAIGN_ID ?? "local"}-${randomUUID()}`;
+    const args = {
+      cwd,
+      prompt: "CLIENT_START_REPLAY_SLEEP",
+      output_mode: "final",
+      client_start_id: clientStartId,
+    };
+    const started = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "start_run",
+      args,
+    });
+    const replayed = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "start_run",
+      args,
+    });
+    const changed = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "start_run",
+      args: { ...args, prompt: "FAST CHANGED" },
+    });
+    const terminal = started.response?.run_id
+      ? await waitForRun(client, ledgerPath, evidenceClass, scenario, started.response.run_id, (response) =>
+          response?.status === "completed",
+        )
+      : started;
+    const terminalReplay = started.response?.run_id
+      ? await runCall(client, ledgerPath, evidenceClass, scenario, {
+          tool: "start_run",
+          args,
+        })
+      : terminal;
+    const admittedChildren = deterministicChild
+      ? (await fs.readFile(deterministicChild.logPath, "utf8").catch(() => ""))
+          .split(/\r?\n/)
+          .filter((line) => line.trim() !== "")
+          .map((line) => JSON.parse(line))
+          .filter((entry) => entry?.request?.runId === started.response?.run_id)
+          .length
+      : null;
+    const outputPath = responseOutputPath(terminal.response);
+    const outputIdentity = outputPath
+      ? await exactFileContentIdentity(outputPath).catch(() => null)
+      : null;
+    const reference = terminal.response?.primary_output_reference;
+    return {
+      ...terminal,
+      tool: "start_run",
+      response: {
+        ...(terminal.response ?? {}),
+        client_start_active_exact_replay:
+          typeof started.response?.run_id === "string" &&
+          started.response?.status === "working" &&
+          replayed.response?.status === "working" &&
+          replayed.response?.run_id === started.response.run_id,
+        client_start_terminal_exact_replay:
+          terminal.response?.status === "completed" &&
+          terminalReplay.response?.status === "completed" &&
+          terminalReplay.response?.run_id === started.response?.run_id &&
+          isDeepStrictEqual(terminalReplay.response?.primary_output_reference, reference),
+        client_start_single_child_admission: admittedChildren === 1,
+        client_start_changed_rejected:
+          changed.response?.kind === "preflight_rejected" &&
+          changed.response?.child_started === false,
+        client_start_conflict_reason_code: changed.response?.reason_code,
+        client_start_terminal_status: terminal.response?.status,
+        primary_output_reference_integrity:
+          outputIdentity !== null &&
+          reference?.relative_path === path.basename(outputIdentity.path) &&
+          reference?.content_sha256 === outputIdentity.sha256 &&
+          reference?.size_bytes === outputIdentity.size_bytes,
+        public_direct_output_paths_absent:
+          terminal.structured !== null &&
+          typeof terminal.structured === "object" &&
+          !Object.hasOwn(terminal.structured, "output_path") &&
+          !Object.hasOwn(terminal.structured, "partial_output_path") &&
+          terminalReplay.structured !== null &&
+          typeof terminalReplay.structured === "object" &&
+          !Object.hasOwn(terminalReplay.structured, "output_path") &&
+          !Object.hasOwn(terminalReplay.structured, "partial_output_path"),
+      },
+      failure_log_delta_count:
+        started.failure_log_delta_count +
+        replayed.failure_log_delta_count +
+        changed.failure_log_delta_count +
+        (terminal.failure_log_delta_count ?? 0) +
+        (terminalReplay.failure_log_delta_count ?? 0),
+    };
+  }
+
   if (scenario === "auto-promotion") {
     const started = await runCall(client, ledgerPath, evidenceClass, scenario, scenarioCall(scenario, cwd));
     const terminal = started.response?.run_id
@@ -1629,13 +2244,22 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
     };
   }
 
-  if (scenario === "start-session-packet-failure") {
+  if (
+    scenario === "start-session-packet-failure" ||
+    scenario === "start-session-packet-missing" ||
+    scenario === "start-session-packet-invalid"
+  ) {
+    const packetCase = scenario === "start-session-packet-failure"
+      ? { prompt: "PACKET_INCONCLUSIVE", reasonCode: "packet_required_not_ready" }
+      : scenario === "start-session-packet-missing"
+        ? { prompt: "PACKET_MISSING", reasonCode: "packet_required_missing" }
+        : { prompt: "PACKET_INVALID_JSON", reasonCode: "packet_required_invalid" };
     const started = await runCall(client, ledgerPath, evidenceClass, scenario, {
       tool: "start_session_run",
       args: {
         cwd,
-        prompt: "PACKET_INCONCLUSIVE",
-        session_key: `campaign-probe-start-session-packet:${Date.now()}:${randomUUID().slice(0, 8)}`,
+        prompt: packetCase.prompt,
+        session_key: `campaign-probe-${scenario}:${Date.now()}:${randomUUID().slice(0, 8)}`,
         resume_mode: "new",
         packet_policy: "required",
       },
@@ -1647,7 +2271,7 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
       : started;
     const matchingFailure = await waitForFailureRecord((record) =>
       record?.run_id === started.response?.run_id &&
-        record?.reason_code === "packet_required_not_ready"
+        record?.reason_code === packetCase.reasonCode
     );
     return {
       ...terminal,
@@ -1877,6 +2501,12 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
         delegated_view_root_run_id: delegatedView?.response?.root_run_id,
         delegated_view_recursion_depth: delegatedView?.response?.recursion_depth,
         delegated_view_child_run_ids: delegatedView?.response?.child_run_ids,
+        delegated_view_descendant_terminal_statuses:
+          delegatedView?.response?.descendant_terminal_statuses,
+        delegated_view_recursive_child_started_events:
+          delegatedView?.response?.recursive_child_started_events,
+        delegated_view_recursive_child_finished_events:
+          delegatedView?.response?.recursive_child_finished_events,
         nested_child_status: nestedView?.response?.status,
         nested_child_parent_run_id: nestedView?.response?.parent_run_id,
         nested_child_root_run_id: nestedView?.response?.root_run_id,
@@ -1948,7 +2578,7 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
       args: { run_id: started.response.run_id },
     });
     const settled = await waitForRun(client, ledgerPath, evidenceClass, scenario, started.response.run_id, (response) =>
-      response?.cancellation_settled === true,
+      response?.status === "cancelled" && response?.cancellation_settled === true,
     );
     return {
       ...settled,
@@ -2020,11 +2650,14 @@ try {
 
 const ledgerPath = campaignLedgerPath();
 const evidenceClass = evidenceClassForMode(parsed.options.mode);
+const skillLifecycleFixture = await createSkillLifecycleFixture();
 const deterministicChild = parsed.options.mode === "protocol-deterministic"
   ? await createDeterministicFakeChild()
   : null;
 const serverEnv = {
   ...process.env,
+  SUBAGENT007_PI_SKILL_PATHS: skillLifecycleFixture.skillsRoot,
+  SUBAGENT007_SKILL_SNAPSHOTS_DIR: skillLifecycleFixture.snapshotsDir,
   ...(deterministicChild
     ? {
         SUBAGENT007_PI_CHILD_PATH: deterministicChild.childPath,
@@ -2082,10 +2715,11 @@ async function runRestartDriftScenario(client) {
   };
 }
 
-let client = await connectClient();
+let client;
 const results = [];
 
 try {
+  client = await connectClient();
   for (const scenario of parsed.options.scenarios) {
     if (scenario === "restart-drift") {
       const restartDrift = await runRestartDriftScenario(client);
@@ -2148,7 +2782,16 @@ try {
     );
   }
 } finally {
-  await client.close();
+  try {
+    await client?.close();
+  } finally {
+    await Promise.all([
+      deterministicChild
+        ? fs.rm(deterministicChild.root, { recursive: true, force: true })
+        : Promise.resolve(),
+      fs.rm(skillLifecycleFixture.root, { recursive: true, force: true }),
+    ]);
+  }
 }
 
 const events = (await fs.readFile(ledgerPath, "utf8"))
@@ -2179,7 +2822,35 @@ if (!parsed.options.quiet) {
   ));
 }
 
-if (summary.missing_required_surfaces.length > 0) {
-  console.error(`missing required coverage surfaces: ${summary.missing_required_surfaces.join(", ")}`);
+const failedScenarios = summary.scenarios.filter((scenario) => !scenario.evidence_satisfied);
+if (summary.missing_required_surfaces.length > 0 || failedScenarios.length > 0) {
+  const [source, dist, manifest] = await Promise.all([
+    exactFileIdentity(fileURLToPath(import.meta.url)),
+    exactFileIdentity(parsed.options.server),
+    exactFileIdentity(MANIFEST_PATH),
+  ]);
+  for (const failed of failedScenarios) {
+    const failureRecord = {
+      record_name: "subagent007.observed_coverage_failure",
+      record_version: 1,
+      source,
+      dist,
+      manifest,
+      profile: parsed.options.scenarioSet,
+      scenario: failed.scenario,
+      run_id: typeof failed.observed_result?.run_id === "string" ? failed.observed_result.run_id : null,
+      observed_result: failed.observed_result ?? null,
+    };
+    await appendLedger(ledgerPath, evidenceClass, {
+      event: "coverage_failure",
+      failure_record: failureRecord,
+    });
+    console.error(JSON.stringify(failureRecord));
+  }
+  console.error(
+    summary.missing_required_surfaces.length > 0
+      ? `missing required coverage surfaces: ${summary.missing_required_surfaces.join(", ")}`
+      : `selected scenarios failed evidence: ${failedScenarios.map((scenario) => scenario.scenario).join(", ")}`,
+  );
   process.exit(1);
 }

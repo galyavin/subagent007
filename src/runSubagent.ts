@@ -13,7 +13,6 @@ import {
   createStreamingRunTranscript,
   createFinalMessageTarget,
   defaultSubagentStatePath,
-  runOutputReference,
   readFinalMessage,
   type StreamingRunTranscript,
   writeRunOutput,
@@ -34,6 +33,7 @@ import {
 import type { FailureReasonCode, RunStopReason } from "./types.js";
 import {
   assertResolvedBoundedControllerPython,
+  inspectResearchControllerCompletion,
   resolveBoundedControllerPython,
   type ResolvedBoundedControllerPython,
 } from "./boundedController.js";
@@ -60,6 +60,7 @@ import {
 } from "./recursiveControl.js";
 import {
   boundedControllerActivationBindings,
+  boundedControllerScriptPath,
   isBoundedEffectProfile,
   resolveWorkspaceReadOnlyWebProvider,
   validatedActivationReceipt,
@@ -557,6 +558,7 @@ export interface BoundedActivationExpectation {
   effectProfile: Extract<NonNullable<ResolvedRunSubagentRequest["effectProfile"]>, "researcher_bounded_v1" | "assumption_audit_bounded_v1">;
   toolBindings: ActivationToolBinding[];
   controllerPython: ResolvedBoundedControllerPython;
+  scriptPath: string;
 }
 
 export async function expectedBoundedActivationToolBindings(input: {
@@ -578,6 +580,11 @@ export async function expectedBoundedActivationToolBindings(input: {
       resolveWorkspaceReadOnlyWebProvider(resolvePiAgentDir()),
       resolveBoundedControllerPython(input.resolved.effectProfile),
     ]);
+    const controller = await boundedControllerScriptPath(
+      input.resolved.effectProfile,
+      input.resolved.skill,
+      input.snapshotActivation.receipt.resolved_skill_path,
+    );
     return {
       effectProfile: input.resolved.effectProfile,
       toolBindings: await boundedControllerActivationBindings({
@@ -589,6 +596,7 @@ export async function expectedBoundedActivationToolBindings(input: {
         controllerPython,
       }),
       controllerPython,
+      scriptPath: controller.scriptPath,
     };
   } catch (error) {
     throw new ValidationError(
@@ -699,7 +707,7 @@ export async function runSubagentCore(
     onChildControlReady?: (send: (message: string) => boolean) => void;
     onInputResponseAccepted?: (response: ChildInputResponseAccepted) => void;
     onTranscriptStaged?: (stagingPath: string) => void | Promise<void>;
-    onChildSpawned?: () => void | Promise<void>;
+    onChildSpawned?: (occurredAt: string) => void | Promise<void>;
     onActivationConfirmed?: (receipt: ActivationReceipt) => void | Promise<void>;
     onSkillSnapshotActivationConfirmed?: (receipt: SkillSnapshotActivationReceipt) => void | Promise<void>;
     onRecursiveDelegationConfirmed?: (receipt: RecursiveDelegationReceipt) => void | Promise<void>;
@@ -912,14 +920,11 @@ export async function runSubagentCore(
         if (accepted?.runId === runId) {
           options.onInputResponseAccepted?.(accepted);
         }
-        try {
-          await options.onOutputLine?.(line);
-        } catch {
-          // Active event projection remains best-effort; transcript persistence is authoritative.
-        }
+        await options.onOutputLine?.(line);
       },
     });
     let terminalEffectScopeError: ValidationError | undefined;
+    let controllerTerminalReceipt: RunSubagentResult["controller_terminal_receipt"];
     if (authoringEffectScope) {
       try {
         await assertAuthoringEffectScopeTerminal(authoringEffectScope);
@@ -937,6 +942,19 @@ export async function runSubagentCore(
               "authoring_effect_scope_drift",
             );
       }
+    }
+    if (
+      !terminalEffectScopeError &&
+      resolved.effectProfile === "researcher_bounded_v1" &&
+      boundedActivation &&
+      authoringEffectScope
+    ) {
+      controllerTerminalReceipt = await inspectResearchControllerCompletion({
+        taskRoot: resolved.cwd,
+        scriptPath: boundedActivation.scriptPath,
+        controllerPython: boundedActivation.controllerPython,
+        effectScopeBinding: authoringEffectScope.binding,
+      });
     }
     const finalMessage = await readFinalMessage(finalMessageTarget.outputLastMessagePath);
     const writtenOutputMode: OutputMode = finalMessage ? "final" : "transcript";
@@ -995,8 +1013,7 @@ export async function runSubagentCore(
           : success
             ? "completed"
             : "failed",
-      output_path: output.outputPath,
-      output_references: [runOutputReference(output.outputPath, output.sizeBytes, writtenOutputMode)],
+      output_references: [{ ...output.reference, output_mode: writtenOutputMode }],
       success,
       exit_code: processResult.exitCode,
       timed_out: processResult.timedOut,
@@ -1010,7 +1027,7 @@ export async function runSubagentCore(
       timeout_headroom_ms: timeoutBudget.responseHeadroomMs,
       kill_grace_ms: timeoutBudget.killGraceMs,
       force_grace_ms: timeoutBudget.forceGraceMs,
-      size_bytes: output.sizeBytes,
+      size_bytes: output.reference.size_bytes,
       resolved_model_class: resolved.modelClass,
       requested_skill: resolved.skill ?? null,
       resolved_skill_path: skillAudit.resolvedSkillPath,
@@ -1021,6 +1038,9 @@ export async function runSubagentCore(
         ? { resolved_effect_profile: activationReceipt.resolved_effect_profile }
         : {}),
       ...(activationReceipt ? { activation_receipt: activationReceipt } : {}),
+      ...(controllerTerminalReceipt
+        ? { controller_terminal_receipt: controllerTerminalReceipt }
+        : {}),
       ...(resolved.skillSnapshotBinding ? { skill_snapshot_binding: resolved.skillSnapshotBinding } : {}),
       ...(skillSnapshotActivationReceipt
         ? { skill_snapshot_activation_receipt: skillSnapshotActivationReceipt }

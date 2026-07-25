@@ -18,7 +18,7 @@ import { createFakePiChild } from "./helpers/fakePiChild.js";
 type RunSubagentMetadata = {
   run_id: string;
   status: "working" | "input_required" | "completed" | "failed" | "cancelled" | "timed_out";
-  output_path: string;
+  output_references: Array<{ relative_path: string }>;
   success: boolean;
   exit_code: number | null;
   timed_out: boolean;
@@ -85,6 +85,54 @@ test("runChildProcess reports spawn failure without claiming a started child", a
   assert.equal(result.stopReason, "spawn_error");
 });
 
+test("runChildProcess captures child spawn time before delayed owner observation", async () => {
+  const scriptPath = await createProcessScript();
+  let observedAt: string | undefined;
+  let callbackEnteredAt = 0;
+  let callbackSettledAt = 0;
+  const result = await runChildProcess({
+    command: process.execPath,
+    args: [scriptPath, "HEARTBEAT_SLEEP"],
+    cwd: os.tmpdir(),
+    timeoutBudget: computeTimeoutBudget(undefined),
+    onChildSpawned: async (occurredAt?: string) => {
+      callbackEnteredAt = Date.now();
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      observedAt = occurredAt;
+      callbackSettledAt = Date.now();
+    },
+  });
+
+  assert.equal(result.stopReason, "completed");
+  assert.equal(Number.isFinite(Date.parse(observedAt ?? "")), true);
+  assert.equal(Date.parse(observedAt!) <= callbackEnteredAt, true);
+  assert.equal(callbackSettledAt - Date.parse(observedAt!) >= 30, true);
+});
+
+test("runChildProcess rejects a synchronous owner-spawn failure before forwarding child output", async () => {
+  const scriptPath = await createProcessScript();
+  const outputLines: string[] = [];
+  await assert.rejects(
+    withDeadline(runChildProcess({
+      command: process.execPath,
+      args: [scriptPath, "OWNER_REJECTION_WAIT"],
+      cwd: os.tmpdir(),
+      timeoutBudget: computeTimeoutBudget(undefined, {
+        killGraceMs: 25,
+        forceGraceMs: 25,
+      }),
+      onChildSpawned: () => {
+        throw new Error("synchronous owner spawn rejection");
+      },
+      onOutputLine: (line) => {
+        outputLines.push(line);
+      },
+    }), 500),
+    /synchronous owner spawn rejection/,
+  );
+  assert.deepEqual(outputLines, []);
+});
+
 function processIsAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -134,6 +182,9 @@ async function createProcessScript(tmpPrefix = "subagent007-process-runner-"): P
       "const mode = process.argv[2];",
       "if (mode === 'HEARTBEAT_SLEEP') {",
       "  setTimeout(() => process.stdout.write('HEARTBEAT DONE'), 160);",
+      "} else if (mode === 'OWNER_REJECTION_WAIT') {",
+      "  process.stdout.write('OWNER REJECTION OUTPUT MUST NOT FORWARD');",
+      "  setInterval(() => {}, 1000);",
       "} else if (mode === 'TIMEOUT_SPAWN_CHILD') {",
       "  process.on('SIGTERM', () => {});",
       "  const child = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);\"], { stdio: 'ignore' });",
@@ -189,7 +240,7 @@ test("start_run returns timeout metadata and transcript before caller deadline",
 
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [path.resolve("dist/server.js")],
+    args: ["--import", "tsx", path.resolve("src/server.ts")],
     env: {
       ...process.env,
       SUBAGENT007_CONFIG_PATH: configPath,
@@ -251,10 +302,12 @@ test("start_run returns timeout metadata and transcript before caller deadline",
       (metadata.recent_events ?? []).filter((event) => event.text.startsWith("[subagent007 timeout]")).length,
       0,
     );
-    assert.equal(path.dirname(metadata.output_path), runsDir);
+    assert.equal(metadata.output_references.length, 1);
+    const outputPath = path.join(runsDir, metadata.output_references[0]!.relative_path);
+    assert.equal(path.dirname(outputPath), runsDir);
     assert.equal(elapsedMs < 2300, true);
 
-    const output = await fs.readFile(metadata.output_path, "utf8");
+    const output = await fs.readFile(outputPath, "utf8");
     assert.match(output, /TIMEOUT START/);
     assert.match(
       output,
@@ -287,7 +340,7 @@ test("start_run treats timeout_ms as a hard caller cap", async () => {
 
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [path.resolve("dist/server.js")],
+    args: ["--import", "tsx", path.resolve("src/server.ts")],
     env: {
       ...process.env,
       SUBAGENT007_CONFIG_PATH: configPath,

@@ -1,6 +1,6 @@
 export const THINKING_LEVELS = ["low", "medium", "high", "xhigh"] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
-export const MODEL_CLASSES = ["A", "B", "C", "D", "E", "Z1", "Z2", "Z3"] as const;
+export const MODEL_CLASSES = ["A", "B", "C", "D", "E", "Z1", "Z2", "Z3", "Z4", "Z5"] as const;
 export type ModelClass = (typeof MODEL_CLASSES)[number];
 export const OUTPUT_MODES = ["final", "transcript"] as const;
 export type OutputMode = (typeof OUTPUT_MODES)[number];
@@ -399,7 +399,23 @@ export interface ActivationReceiptV2 extends ActivationReceiptBase {
   effect_scope_binding: AuthoringEffectScopeBinding;
 }
 
-export type ActivationReceipt = ActivationReceiptV1 | ActivationReceiptV2;
+export interface ActivationReceiptV3 extends ActivationReceiptBase {
+  schema_version: 3;
+  effect_scope_binding: AuthoringEffectScopeBinding;
+  controller_state_discovery: "researchctl_state_paths_v1";
+}
+
+export type ActivationReceipt = ActivationReceiptV1 | ActivationReceiptV2 | ActivationReceiptV3;
+
+export interface ResearchControllerTerminalReceipt {
+  schema_version: 1;
+  controller: "researchctl";
+  state: "complete";
+  validation: "passed";
+  job_sha256: string;
+  render_profile: "full";
+  render_sha256: string;
+}
 
 export interface RecursiveDelegationReceipt {
   schema_version: 1;
@@ -422,7 +438,6 @@ export interface PromptProvenance {
 }
 
 interface SubagentRunResultBase {
-  output_path: string;
   output_references: RunOutputReference[];
   success: boolean;
   exit_code: number | null;
@@ -446,6 +461,7 @@ interface SubagentRunResultBase {
   requested_effect_profile?: EffectProfile;
   resolved_effect_profile?: EffectProfile;
   activation_receipt?: ActivationReceipt;
+  controller_terminal_receipt?: ResearchControllerTerminalReceipt;
   skill_snapshot_binding?: SkillSnapshotLaunchBinding;
   skill_snapshot_activation_receipt?: SkillSnapshotActivationReceipt;
   requested_recursive_delegation?: RecursiveDelegation;
@@ -470,11 +486,12 @@ interface SubagentRunResultBase {
   usage_limit_secondary_reset_after_seconds?: number | null;
 }
 
-interface RunOutputReference {
+export interface RunOutputReference {
   kind: "file";
   name: "primary";
-  path: string;
+  relative_path: string;
   size_bytes: number;
+  content_sha256: string;
   content_type: "text/markdown";
   encoding: "utf-8";
   output_mode: OutputMode;
@@ -525,7 +542,7 @@ export interface SessionRunRecord {
   attempt_subagent_session_id?: string | null;
   attempt_session_established?: boolean;
   resume_mode: ResumeMode;
-  output_path: string;
+  output_reference: RunOutputReference;
   packet_path: string | null;
   packet_policy: SessionPacketPolicy;
   packet_parse_status: PacketParseStatus;
@@ -565,7 +582,7 @@ export interface SessionManifest {
   created_at: string;
   last_run_at: string;
   run_count: number;
-  last_output_path: string;
+  last_output_reference: RunOutputReference;
   status: "active";
 }
 

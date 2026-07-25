@@ -28,6 +28,12 @@ import {
   type SkillSnapshotPublicationRecord,
   type SkillSnapshotPublicationReceiptBinding,
   SkillSnapshotPublicationConflictError,
+  skillRuntimeBundleSourceIdentitySha256,
+  skillSnapshotPublicationReceiptSha256,
+} from "./skillSnapshotStore.js";
+export {
+  SNAPSHOT_PUBLICATION_RECEIPT_DOMAIN,
+  skillSnapshotPublicationReceiptSha256,
 } from "./skillSnapshotStore.js";
 import { ValidationError, type SkillSnapshotActivationReceipt, type SkillSnapshotLaunchBinding } from "./types.js";
 import { validateCwd } from "./validate.js";
@@ -38,7 +44,6 @@ export const SKILL_RUNTIME_BUNDLE_RESOLUTION_CONTRACT_NAME =
 export const SKILL_RUNTIME_BUNDLE_RESOLUTION_CONTRACT_VERSION = 1 as const;
 export const MAX_SKILL_RUNTIME_BUNDLE_RESOLUTION_ENTRIES = 64;
 const REQUEST_DIGEST_DOMAIN = `${SKILL_RUNTIME_BUNDLE_RESOLUTION_CONTRACT_NAME}.request.v1\n`;
-const SOURCE_ID_DOMAIN = "subagent007.skill_runtime_source.v1\n";
 
 export interface SkillRuntimeBundleResolutionRequest {
   contract_version: 1;
@@ -126,7 +131,7 @@ function sourceIdentity(input: {
 }): RuntimeBundleSourceIdentity {
   return {
     schema_version: 1,
-    source_id: createHash("sha256").update(SOURCE_ID_DOMAIN).update(JSON.stringify(input)).digest("hex"),
+    source_id: skillRuntimeBundleSourceIdentitySha256(input),
     resolved_skill_path: input.resolved_skill_path,
     source_root_path: input.source_root_path,
   };
@@ -208,23 +213,6 @@ export type SkillSnapshotPublicationResult =
     };
 
 const SNAPSHOT_PUBLICATION_REQUEST_DOMAIN = "subagent007.skill_snapshot_publication.request.v1\n";
-export const SNAPSHOT_PUBLICATION_RECEIPT_DOMAIN = "subagent007.skill_snapshot_publication.receipt.v1\n";
-
-export function skillSnapshotPublicationReceiptSha256(input: {
-  snapshot_identity: SkillSnapshotIdentity;
-  project_reference: SkillSnapshotProjectReference;
-  reference_id: string;
-}): string {
-  return createHash("sha256")
-    .update(SNAPSHOT_PUBLICATION_RECEIPT_DOMAIN)
-    .update(JSON.stringify({
-      schema_version: 1,
-      project_reference: input.project_reference,
-      reference_id: input.reference_id,
-      snapshot_identity: input.snapshot_identity,
-    }))
-    .digest("hex");
-}
 
 export type SkillSnapshotLaunchReasonCode =
   | "skill_snapshot_not_found"

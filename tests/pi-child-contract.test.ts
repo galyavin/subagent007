@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { CHILD_OWNER_COMMIT_RELEASE_FRAME } from "../src/processRunner.js";
 
 test("real Pi child fails closed before prompt when the explicit web provider is unavailable", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-child-contract-"));
@@ -29,7 +30,10 @@ test("real Pi child fails closed before prompt when the explicit web provider is
     const child = spawn(process.execPath, [path.resolve("dist/piChild.js"), requestPath], {
       cwd,
       env: { ...process.env, SUBAGENT007_PI_AGENT_DIR: agentDir },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    child.once("spawn", () => {
+      child.stdin.write(CHILD_OWNER_COMMIT_RELEASE_FRAME);
     });
     let stdout = "";
     child.stdout.setEncoding("utf8");

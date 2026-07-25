@@ -1,16 +1,17 @@
 ---
 name: agents
 description: Always-loaded project anchor. Read this first. Contains project identity, non-negotiables, commands, and pointer to ROUTER.md for full context.
-last_updated: 2026-06-30
+last_updated: 2026-07-23
 ---
 
 # Subagent007 Pi
 
 ## What This Is
-A private MCP server that delegates work to a separate Pi-backed child agent through one-shot, durable run, and named-session tools.
+A private, universal execution-attempt substrate that delegates bounded work to a separate Pi-backed child agent through one-shot, durable-run, and named-session primitives. One `run_id` is one concrete attempt; caller missions, workflows, retry policy, reconciliation, and external-effect safety stay outside this server.
 
 ## Non-Negotiables
 - Always work on `main`; do not create branches unless explicitly instructed.
+- Preserve the founder boundary in `README.md` and `.mex/context/architecture.md`: durable means attempt identity/evidence, not process immortality or caller-mission ownership. Never add Bendum-specific workflow state, infer replacement authority, reuse `run_id` for a new attempt, or treat `session_id` as a live execution lease.
 - Keep public MCP result fields, reason codes, durable-run statuses, and failure-log schema changes synchronized across source, tests, and README.
 - Do not parse or expose private thinking/tool payloads in public events, transcripts, failure logs, or run views.
 - Handler-level semantic preflight validation must reject before child launch and report `child_started:false`; SDK input-schema rejections must remain standard MCP `isError` responses before handler invocation.

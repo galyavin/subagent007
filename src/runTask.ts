@@ -23,6 +23,7 @@ import {
   removeTerminalInputRequestsForRun,
   settleInputResponse,
   validateInputResponse,
+  type InputTerminalRecord,
   type InputRequestView,
 } from "./inputMailbox.js";
 import {
@@ -56,12 +57,11 @@ import { DEFAULT_HEARTBEAT_MESSAGE, type HeartbeatNotify } from "./progress.js";
 import { PUBLIC_PROMPT_REDACTED_MARKER, serverContractPacketMarker, serverContractSkillMarker } from "./prompt.js";
 import { skillBindingForPublicMarker } from "./skillBinding.js";
 import {
-  appendRunPublicEvent,
+  canonicalRunPublicEvent,
   publicOutputExcerptProjection,
-  readRunPublicEvents,
   recentEventsProjection,
-  removeRunPublicEvents,
   terminalEventsProjection,
+  type CanonicalRunPublicEvent,
 } from "./runEvents.js";
 import { publicOutputLineFromProcessLine } from "./transcript.js";
 import {
@@ -99,7 +99,11 @@ import {
   type RunSubagentOneShotIncompatibility,
   validateAndResolveRequest,
 } from "./validate.js";
-import { defaultSubagentStatePath, recoverStreamingRunTranscript, runOutputReference } from "./output.js";
+import {
+  decodeRunOutputReference,
+  defaultSubagentStatePath,
+  recoverStreamingRunTranscript,
+} from "./output.js";
 import { assertModelClassUsableForOneShot } from "./modelHealth.js";
 import { safeIntegerFromEnv } from "./env.js";
 import {
@@ -112,6 +116,7 @@ import {
 } from "./activeChildLease.js";
 import { assertDiskReserveAvailable } from "./diskReserve.js";
 import { processIsDefinitelyGone } from "./processLiveness.js";
+import { withRunClaimLock } from "./runClaimLock.js";
 import {
   canonicalClientStartRequestSha256,
   canonicalJson,
@@ -119,7 +124,6 @@ import {
   claimClientStartAdmission,
   findClientStartAdmission,
   resolveClientStartAdmissionBinding,
-  validatedClientStartRequestIdentity,
   type ClientStartAdmission,
   type ClientStartBinding,
 } from "./clientStartAdmission.js";
@@ -151,6 +155,39 @@ type ChildLifecycleEventName = Extract<
   "child_spawned" | "child_bridge_started" | "child_session_established" | "activation_confirmed" | "skill_snapshot_activation_confirmed" | "recursive_delegation_confirmed" | "child_prompt_submitted"
 >;
 type StandardChildLifecycleEventName = Exclude<ChildLifecycleEventName, "activation_confirmed" | "skill_snapshot_activation_confirmed" | "recursive_delegation_confirmed">;
+const CHILD_LIFECYCLE_GENERATION = {
+  child_spawned: {
+    sequence: 0,
+    progressMessage: "child process running; waiting for first public output",
+  },
+  child_bridge_started: {
+    sequence: 1,
+    progressMessage: "child bridge started; waiting for first public output",
+  },
+  recursive_delegation_confirmed: {
+    sequence: 2,
+    progressMessage: "recursive delegation authority confirmed before prompt",
+  },
+  child_session_established: {
+    sequence: 3,
+    progressMessage: "Pi session established; waiting for first public output",
+  },
+  activation_confirmed: {
+    sequence: 4,
+    progressMessage: "constrained activation confirmed before prompt",
+  },
+  skill_snapshot_activation_confirmed: {
+    sequence: 5,
+    progressMessage: "immutable runtime snapshot confirmed before prompt",
+  },
+  child_prompt_submitted: {
+    sequence: 6,
+    progressMessage: "prompt submitted; waiting for first public output",
+  },
+} as const satisfies Record<
+  ChildLifecycleEventName,
+  { sequence: number; progressMessage: string }
+>;
 type RunTaskFailureLogTool = Extract<
   FailureLogTool,
   "run_subagent" | "schedule_run" | "start_run" | "start_session_run" | "run_subagent_session"
@@ -213,7 +250,7 @@ interface RunTaskState {
   finishedAt?: string;
   mailboxRoot: string;
   inputRequestsDir: string;
-  terminalInputRequests?: InputRequestView[];
+  inputRequests: InputRequestView[];
   abortController: AbortController;
   taskKind: "run" | "session";
   result?: RunTaskTerminalResult;
@@ -244,7 +281,6 @@ interface RunTaskState {
   childControlSend?: (message: string) => boolean;
   acceptedInputResponses: Map<string, AcceptedInputResponse>;
   pendingInputDeliveries: Map<string, PendingInputDelivery>;
-  inputMutationQueue: Promise<void>;
   terminalizing: boolean;
   partialOutputPath?: string;
   childStarted: boolean;
@@ -263,9 +299,21 @@ interface RunTaskState {
   recursiveDelegationReceipt?: RecursiveDelegationReceipt;
   requestedRecursiveDelegation?: RunSubagentRequest["recursive_delegation"];
   expectedSkillSha256?: string;
-  ownerRecordAdmission?: RunOwnerRecordAdmission;
+  claimDeclarations?: OwnerRequestDeclarations;
   ownerLaunchObservation?: RunOwnerLaunchObservation;
 }
+
+type ChildLifecycleProjectionBaseline = Pick<
+  RunTaskState,
+  | "activePhase"
+  | "lastPhaseAt"
+  | "lastChildLifecycleEvent"
+  | "lastChildLifecycleAt"
+  | "lastProgressAt"
+  | "lastProgressMessage"
+  | "heartbeatCount"
+  | "firstPublicOutputAt"
+>;
 
 interface PendingInputDelivery {
   responseId: string;
@@ -280,6 +328,11 @@ interface AcceptedInputResponse {
   responseId: string;
   answerSha256: string;
   receipt: string;
+}
+
+interface RunTaskTerminalIntent {
+  result?: RunTaskTerminalResult;
+  error?: Error;
 }
 
 type RunTaskProgressView = Pick<
@@ -299,8 +352,7 @@ type RunTaskProgressView = Pick<
 >;
 
 const tasks = new Map<string, RunTaskState>();
-const restartDriftReconciliations = new Map<string, Promise<RunTaskView>>();
-const ownerRecordWriteChains = new Map<string, Promise<void>>();
+const residentTransitionChains = new Map<string, Promise<void>>();
 const DEFAULT_SCHEDULE_WAIT_MS = 1_000;
 const DEFAULT_SCHEDULE_MAX_WAIT_MS = 30_000;
 const SCHEDULE_MAX_WAIT_ENV = "SUBAGENT007_SCHEDULE_RUN_MAX_WAIT_MS";
@@ -314,20 +366,10 @@ function taskRecordPath(runId: string): string {
   return path.join(defaultRunTasksDir(), `${runId}.json`);
 }
 
-const RUN_OWNER_RECORD_NAME = "subagent007.run_owner_record" as const;
+const RUN_OWNER_RECORD_NAME = "subagent007.current_run_claim" as const;
 const RUN_OWNER_RECORD_VERSION = 1 as const;
-const RUN_OWNER_RECORD_REQUEST_DOMAIN = "subagent007.run_owner_record.request.v1\n";
-const RUN_OWNER_RECORD_PROMPT_DOMAIN = "subagent007.run_owner_record.prompt.v1\n";
 const RUN_OWNER_RECORD_SCOPE_DOMAIN = "subagent007.run_owner_record.effect_scope.v1\n";
 const LIVE_INPUT_RESPONSE_DOMAIN = "subagent007.live_input_response.v1\n";
-
-interface RunOwnerRecordAdmission {
-  run_id: string;
-  task_kind: "run" | "session";
-  request_bytes: string;
-  request_sha256: string;
-  declarations: OwnerRequestDeclarations;
-}
 
 interface RunOwnerLaunchObservation {
   effect_scope_binding_bytes?: string;
@@ -342,27 +384,27 @@ interface RunOwnerLaunchObservation {
     requested_recursive_delegation: "disabled" | "enabled" | null;
     resolved_recursive_delegation: "disabled" | "enabled";
   };
-  queue: {
-    queued_at: string | null;
-    child_started_at: string | null;
-    queue_wait_ms: number | null;
-  };
 }
 
-interface RunOwnerSettlement {
-  status: RunTaskTerminalStatus;
-  event: RunPublicEvent;
-  occurred_at: string;
-}
-
-interface RunOwnerRecordV1 {
+interface CurrentRunClaimV1 extends RunTaskView {
   record_name: typeof RUN_OWNER_RECORD_NAME;
   record_version: typeof RUN_OWNER_RECORD_VERSION;
-  revision: number;
-  immutable_admission: RunOwnerRecordAdmission;
+  declarations: OwnerRequestDeclarations;
   launch_observation?: RunOwnerLaunchObservation;
-  settlement?: RunOwnerSettlement;
-  public_view: RunTaskView;
+}
+
+function currentRunClaimView(claim: CurrentRunClaimV1): RunTaskView {
+  const {
+    record_name: _recordName,
+    record_version: _recordVersion,
+    declarations: _declarations,
+    launch_observation: _launch,
+    ...view
+  } = claim;
+  if (isTerminalRunStatus(view.status) && view.recent_events?.length && !view.last_public_output_excerpt) {
+    view.last_public_output_excerpt = publicOutputExcerptProjection(view.recent_events);
+  }
+  return view;
 }
 
 function canonicalOwnerJson(value: unknown): string {
@@ -401,56 +443,15 @@ function ownerRequestDeclarationsFromRequest(
   };
 }
 
-/**
- * The owner needs a stable admission identity for exact comparison, but the
- * durable record is not a prompt archive.  Keep all non-secret request facts
- * in canonical form and bind the prompt with a domain-separated digest.
- */
-function ownerRecordRequestIdentity(
-  state: RunTaskState,
-  request: RunSubagentRequest | RunSubagentSessionRequest,
-): unknown {
-  const identity = state.clientStartBinding
-    ? validatedClientStartRequestIdentity(request as StartRunTaskRequest)
-    : request;
-  const value = identity as Record<string, unknown>;
-  const prompt = value.prompt;
-  if (typeof prompt !== "string") {
-    throw new ValidationError("run owner admission requires a prompt string", "run_liveness_unknown");
-  }
-  const { prompt: _prompt, ...nonSecretRequest } = value;
-  return {
-    ...nonSecretRequest,
-    prompt_sha256: ownerRecordDigest(
-      RUN_OWNER_RECORD_PROMPT_DOMAIN,
-      prompt,
-    ),
-  };
-}
-
-function ownerRecordAdmissionFor(
-  state: RunTaskState,
-  request: RunSubagentRequest | RunSubagentSessionRequest,
-): RunOwnerRecordAdmission {
-  const requestBytes = canonicalOwnerJson(ownerRecordRequestIdentity(state, request));
-  return {
-    run_id: state.runId,
-    task_kind: state.taskKind,
-    request_bytes: requestBytes,
-    request_sha256: ownerRecordDigest(RUN_OWNER_RECORD_REQUEST_DOMAIN, requestBytes),
-    declarations: ownerRequestDeclarationsFromRequest(request),
-  };
-}
-
-function ensureOwnerRecordAdmission(
+function ensureClaimDeclarations(
   state: RunTaskState,
   request: RunSubagentRequest | RunSubagentSessionRequest,
 ): void {
-  const admission = ownerRecordAdmissionFor(state, request);
-  if (state.ownerRecordAdmission && !sameCanonicalOwnerJson(state.ownerRecordAdmission, admission)) {
-    throw new ValidationError("run owner admission changed after it was captured", "client_start_id_conflict");
+  const declarations = ownerRequestDeclarationsFromRequest(request);
+  if (state.claimDeclarations && !sameCanonicalOwnerJson(state.claimDeclarations, declarations)) {
+    throw new ValidationError("run claim declarations changed after capture", "client_start_id_conflict");
   }
-  state.ownerRecordAdmission = admission;
+  state.claimDeclarations = declarations;
 }
 
 function exactRecordKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
@@ -495,68 +496,36 @@ function recordOwnerLaunchObservation(
       requested_recursive_delegation: observation.requestedRecursiveDelegation,
       resolved_recursive_delegation: observation.resolvedRecursiveDelegation,
     },
-    queue: {
-      queued_at: state.queuedAt ?? null,
-      child_started_at: state.childStartedAt ?? null,
-      queue_wait_ms: state.queuedAt && state.childStartedAt
-        ? Date.parse(state.childStartedAt) - Date.parse(state.queuedAt)
-        : null,
-    },
   };
 }
 
-function settlementForSnapshot(snapshot: RunTaskView): RunOwnerSettlement {
-  const terminalEvents = (snapshot.recent_events ?? []).filter((event) => event.kind === "terminal" &&
-    OWNER_SETTLEMENT_EVENT_SET.has(event.event ?? ""));
-  const event = terminalEvents[0];
-  if (!event || terminalEvents.length !== 1 || !isTerminalRunStatus(snapshot.status) || !isFiniteTimestamp(snapshot.finished_at) ||
-    event.occurred_at !== snapshot.finished_at) {
-    throw new Error("terminal owner record requires an exact settlement projection");
+function ownerLaunchObservationTransition(
+  existing: RunOwnerLaunchObservation,
+  next: RunOwnerLaunchObservation,
+): RunOwnerLaunchObservation {
+  if (!sameCanonicalOwnerJson(existing, next)) {
+    invalidOwnerRecord("run claim launch grant changed after capture");
   }
-  return {
-    status: snapshot.status as RunTaskTerminalStatus,
-    event,
-    occurred_at: snapshot.finished_at,
-  };
+  return existing;
 }
 
-function assertRunOwnerRecord(record: RunOwnerRecordV1): void {
-  const value = record as unknown as Record<string, unknown>;
-  if (!exactRecordKeys(value, [
-    "record_name", "record_version", "revision", "immutable_admission", "launch_observation", "settlement", "public_view",
-  ].filter((key) => value[key] !== undefined))) {
-    invalidOwnerRecord("run owner record has unexpected keys");
+function assertRunOwnerRecord(record: CurrentRunClaimV1): void {
+  if (record.record_name !== RUN_OWNER_RECORD_NAME || record.record_version !== RUN_OWNER_RECORD_VERSION) {
+    invalidOwnerRecord("run claim has an invalid representation");
   }
-  if (record.record_name !== RUN_OWNER_RECORD_NAME || record.record_version !== RUN_OWNER_RECORD_VERSION ||
-    !Number.isSafeInteger(record.revision) || record.revision < 1) {
-    invalidOwnerRecord("run owner record has an invalid version or revision");
+  const view = currentRunClaimView(record);
+  const declarations = record.declarations;
+  if (!isRecord(declarations) || !isNonemptyString(view.run_id) || view.task_id !== view.run_id ||
+    (view.task_kind !== "run" && view.task_kind !== "session") ||
+    !sameCanonicalOwnerJson(ownerRequestDeclarations(view), declarations)) {
+    invalidOwnerRecord("run claim declarations do not match current truth");
   }
-  const admission = record.immutable_admission;
-  if (!admission || !exactRecordKeys(admission as unknown as Record<string, unknown>, [
-    "run_id", "task_kind", "request_bytes", "request_sha256", "declarations",
-  ]) || !isNonemptyString(admission.run_id) || (admission.task_kind !== "run" && admission.task_kind !== "session") ||
-    !isNonemptyString(admission.request_bytes) || !/^[0-9a-f]{64}$/.test(admission.request_sha256) ||
-    ownerRecordDigest(RUN_OWNER_RECORD_REQUEST_DOMAIN, admission.request_bytes) !== admission.request_sha256) {
-    invalidOwnerRecord("run owner record has an invalid immutable admission");
-  }
-  try {
-    if (canonicalOwnerJson(JSON.parse(admission.request_bytes)) !== admission.request_bytes) {
-      invalidOwnerRecord("run owner record request bytes are not canonical");
-    }
-  } catch {
-    invalidOwnerRecord("run owner record request bytes are unreadable");
-  }
-  if (record.public_view.run_id !== admission.run_id || record.public_view.task_id !== admission.run_id ||
-    record.public_view.task_kind !== admission.task_kind ||
-    !sameCanonicalOwnerJson(ownerRequestDeclarations(record.public_view), admission.declarations)) {
-    invalidOwnerRecord("run owner record public view does not match immutable admission");
-  }
-  if (record.launch_observation) {
+  if (record.launch_observation !== undefined) {
     const launch = record.launch_observation;
     if (!exactRecordKeys(launch as unknown as Record<string, unknown>, [
-      "effect_scope_binding_bytes", "effect_scope_binding_sha256", "activation_expectation", "queue",
+      "effect_scope_binding_bytes", "effect_scope_binding_sha256", "activation_expectation",
     ].filter((key) => (launch as unknown as Record<string, unknown>)[key] !== undefined)) ||
-      !isRecord(launch.activation_expectation) || !isRecord(launch.queue)) {
+      !isRecord(launch.activation_expectation)) {
       invalidOwnerRecord("run owner record launch observation is malformed");
     }
     if ((launch.effect_scope_binding_bytes === undefined) !== (launch.effect_scope_binding_sha256 === undefined)) {
@@ -575,7 +544,7 @@ function assertRunOwnerRecord(record: RunOwnerRecordV1): void {
       } catch {
         invalidOwnerRecord("run owner record effect scope binding is invalid");
       }
-      const receipt = record.public_view.activation_receipt;
+      const receipt = view.activation_receipt;
       const receiptScope = receipt && "effect_scope_binding" in receipt
         ? receipt.effect_scope_binding
         : undefined;
@@ -584,34 +553,36 @@ function assertRunOwnerRecord(record: RunOwnerRecordV1): void {
       }
     }
     const expectation = launch.activation_expectation as Record<string, unknown>;
+    const expectedChildRecursiveDelegation = view.task_kind === "session"
+      ? "disabled"
+      : declarations.requestedRecursiveDelegation;
     if (!exactRecordKeys(expectation, [
       "requested_effect_profile", "expected_skill_sha256", "skill_binding", "tool_bindings",
       "skill_snapshot_binding", "skill_snapshot_activation_receipt",
       "requested_recursive_delegation", "resolved_recursive_delegation",
     ]) ||
-      expectation.requested_effect_profile !== (admission.declarations.effectProfile ?? null) ||
-      expectation.expected_skill_sha256 !== (admission.declarations.expectedSkillSha256 ?? null) ||
-      !sameCanonicalOwnerJson(expectation.skill_snapshot_binding, admission.declarations.skillSnapshotBinding ?? null) ||
-      expectation.requested_recursive_delegation !== admission.declarations.requestedRecursiveDelegation ||
+      expectation.requested_effect_profile !== (declarations.effectProfile ?? null) ||
+      expectation.expected_skill_sha256 !== (declarations.expectedSkillSha256 ?? null) ||
+      !sameCanonicalOwnerJson(expectation.skill_snapshot_binding, declarations.skillSnapshotBinding ?? null) ||
+      expectation.requested_recursive_delegation !== expectedChildRecursiveDelegation ||
       !Array.isArray(expectation.tool_bindings) ||
-      !["disabled", "enabled"].includes(String(expectation.resolved_recursive_delegation))) {
+      !["disabled", "enabled"].includes(String(expectation.resolved_recursive_delegation)) ||
+      (view.task_kind === "session" && expectation.resolved_recursive_delegation !== "disabled")) {
       invalidOwnerRecord("run owner record activation expectation does not match immutable admission");
     }
-    const queue = launch.queue as Record<string, unknown>;
-    if (!exactRecordKeys(queue, ["queued_at", "child_started_at", "queue_wait_ms"]) ||
-      ![null, undefined].includes(queue.queued_at as null | undefined) && !isFiniteTimestamp(queue.queued_at) ||
-      ![null, undefined].includes(queue.child_started_at as null | undefined) && !isFiniteTimestamp(queue.child_started_at) ||
-      !(queue.queue_wait_ms === null || (typeof queue.queue_wait_ms === "number" && Number.isFinite(queue.queue_wait_ms) && queue.queue_wait_ms >= 0)) ||
-      (queue.queued_at !== null && queue.child_started_at !== null &&
-        (queue.queue_wait_ms !== Date.parse(queue.child_started_at as string) - Date.parse(queue.queued_at as string)))) {
-      invalidOwnerRecord("run owner record queue observation is inconsistent");
+    const retainedChildSpawnedEvents = (view.recent_events ?? []).filter((event) =>
+      event.kind === "child" && event.event === "child_spawned"
+    );
+    const expectedChildSpawnedEvents = view.child_started === true ? 1 : 0;
+    if (retainedChildSpawnedEvents.length !== expectedChildSpawnedEvents) {
+      invalidOwnerRecord("run claim grant does not match retained child_spawned event");
     }
     const expectedScope = launch.effect_scope_binding_bytes
       ? JSON.parse(launch.effect_scope_binding_bytes)
       : undefined;
-    const promptSubmitted = childPromptWasSubmitted(record.public_view);
+    const promptSubmitted = childPromptWasSubmitted(view);
     if (promptSubmitted) {
-      const receipt = record.public_view.activation_receipt;
+      const receipt = view.activation_receipt;
       if ((expectation.requested_effect_profile !== null || expectation.expected_skill_sha256 !== null) &&
         !validatedActivationReceipt({
           value: receipt,
@@ -630,176 +601,276 @@ function assertRunOwnerRecord(record: RunOwnerRecordV1): void {
         invalidOwnerRecord("run owner record activation receipt does not match retained launch expectations");
       }
       if (expectation.skill_snapshot_binding !== null &&
-        (!record.public_view.skill_snapshot_activation_receipt ||
+        (!view.skill_snapshot_activation_receipt ||
           validatedSkillSnapshotActivationReceipt({
-            value: record.public_view.skill_snapshot_activation_receipt,
+            value: view.skill_snapshot_activation_receipt,
             binding: expectation.skill_snapshot_binding as import("./types.js").SkillSnapshotLaunchBinding,
           }) === undefined)) {
         invalidOwnerRecord("run owner record snapshot receipt does not match retained launch expectations");
       }
-      if (!record.public_view.recursive_delegation_receipt ||
-        record.public_view.resolved_recursive_delegation !== expectation.resolved_recursive_delegation ||
+      if (!view.recursive_delegation_receipt ||
+        view.resolved_recursive_delegation !== expectation.resolved_recursive_delegation ||
         validatedRecursiveDelegationReceipt({
-          value: record.public_view.recursive_delegation_receipt,
+          value: view.recursive_delegation_receipt,
           requestedRecursiveDelegation: expectation.requested_recursive_delegation as "disabled" | "enabled" | null,
           resolvedRecursiveDelegation: expectation.resolved_recursive_delegation as "disabled" | "enabled",
         }) === undefined) {
         invalidOwnerRecord("run owner record recursive receipt does not match retained launch expectations");
       }
     }
+  } else if (view.child_started === true) {
+    invalidOwnerRecord("child-started run claim is missing its launch observation");
   }
-  assertCurrentRunTaskSnapshot(record.public_view);
-  if (record.settlement) {
-    const projectedSettlement = settlementForSnapshot(record.public_view);
-    if (!isTerminalRunStatus(record.public_view.status) ||
-      record.settlement.status !== record.public_view.status ||
-      record.settlement.occurred_at !== record.public_view.finished_at ||
-      !sameCanonicalOwnerJson(record.settlement.event, projectedSettlement.event)) {
-      invalidOwnerRecord("run owner record settlement does not match its public projection");
-    }
-  } else if (isTerminalRunStatus(record.public_view.status)) {
-    invalidOwnerRecord("terminal run owner record is missing its settlement");
+  assertCurrentRunTaskSnapshot(view);
+}
+
+function runClaimSnapshot(snapshot: RunTaskView): RunTaskView {
+  const {
+    elapsed_ms: _elapsed,
+    last_progress_at: _lastProgressAt,
+    last_progress_message: _lastProgressMessage,
+    heartbeat_count: _heartbeatCount,
+    last_child_lifecycle_event: _lastChildLifecycleEvent,
+    last_child_lifecycle_at: _lastChildLifecycleAt,
+    first_public_output_at: _firstPublicOutputAt,
+    no_public_output_elapsed_ms: _noPublicOutputElapsed,
+    last_public_output_excerpt: _lastPublicOutputExcerpt,
+    queued_at: _queuedAt,
+    child_started_at: _childStartedAt,
+    queue_wait_ms: _queueWaitMs,
+    ...claim
+  } = snapshot;
+  if (!isTerminalRunStatus(snapshot.status) && claim.recent_events) {
+    claim.recent_events = claim.recent_events.filter((event) =>
+      event.kind === "task" || event.kind === "user" || event.kind === "child" ||
+      event.kind === "input" || event.kind === "packet" || event.kind === "terminal"
+    );
   }
+  return claim;
+}
+
+interface RunClaimPersistenceEvidence {
+  declarations: NonNullable<RunTaskState["claimDeclarations"]>;
+  launchObservation?: NonNullable<RunTaskState["ownerLaunchObservation"]>;
+}
+
+function runClaimPersistenceEvidence(state: RunTaskState): RunClaimPersistenceEvidence {
+  if (!state.claimDeclarations) invalidOwnerRecord("current v3 run has no claim declarations");
+  return {
+    declarations: state.claimDeclarations,
+    ...(state.ownerLaunchObservation ? { launchObservation: state.ownerLaunchObservation } : {}),
+  };
 }
 
 function ownerRecordForSnapshot(
   snapshot: RunTaskView,
-  existing: RunOwnerRecordV1 | undefined,
-  explicitState?: RunTaskState,
-): RunOwnerRecordV1 {
-  const state = explicitState ?? tasks.get(snapshot.run_id);
-  const admission = existing?.immutable_admission ?? state?.ownerRecordAdmission;
-  if (!admission) {
-    invalidOwnerRecord("current v3 run has no owner admission record");
+  existing: CurrentRunClaimV1 | undefined,
+  evidence: RunClaimPersistenceEvidence,
+): CurrentRunClaimV1 {
+  const declarations = existing?.declarations ?? evidence.declarations;
+  if (!sameCanonicalOwnerJson(declarations, evidence.declarations)) {
+    invalidOwnerRecord("run claim declarations changed during persistence");
   }
-  if (state?.ownerRecordAdmission && !sameCanonicalOwnerJson(admission, state.ownerRecordAdmission)) {
-    invalidOwnerRecord("run owner admission changed during persistence");
-  }
-  const launch = state?.ownerLaunchObservation ?? existing?.launch_observation;
+  const launch = evidence.launchObservation && existing?.launch_observation
+    ? ownerLaunchObservationTransition(existing.launch_observation, evidence.launchObservation)
+    : evidence.launchObservation ?? existing?.launch_observation;
   return {
+    ...runClaimSnapshot(snapshot),
     record_name: RUN_OWNER_RECORD_NAME,
     record_version: RUN_OWNER_RECORD_VERSION,
-    revision: (existing?.revision ?? 0) + 1,
-    immutable_admission: admission,
+    declarations,
     ...(launch ? { launch_observation: launch } : {}),
-    ...(isTerminalRunStatus(snapshot.status) ? { settlement: settlementForSnapshot(snapshot) } : {}),
-    public_view: snapshot,
   };
 }
 
-function ownerRecordFromValue(value: unknown): RunOwnerRecordV1 | undefined {
+function ownerRecordFromValue(value: unknown): CurrentRunClaimV1 | undefined {
   if (!isRecord(value) || value.record_name !== RUN_OWNER_RECORD_NAME) return undefined;
-  const record = value as unknown as RunOwnerRecordV1;
+  const record = value as unknown as CurrentRunClaimV1;
   assertRunOwnerRecord(record);
   return record;
 }
 
-async function readRunOwnerRecordFile(filePath: string): Promise<RunOwnerRecordV1 | undefined> {
+async function readRunOwnerRecordFile(filePath: string): Promise<CurrentRunClaimV1 | undefined> {
   return ownerRecordFromValue(JSON.parse(await fs.readFile(filePath, "utf8")) as unknown);
 }
 
 async function readPersistedRunView(filePath: string): Promise<RunTaskView> {
   const value = JSON.parse(await fs.readFile(filePath, "utf8")) as unknown;
   const record = ownerRecordFromValue(value);
-  if (record) return record.public_view;
-  const legacy = value as RunTaskView;
-  if (legacy.client_start_binding ||
-    (legacy.contract_name === DURABLE_RUN_CONTRACT_NAME && legacy.contract_version === DURABLE_RUN_CONTRACT_VERSION)) {
-    invalidOwnerRecord("current v3 run snapshot is missing its owner record envelope");
-  }
-  return legacy;
+  if (record) return currentRunClaimView(record);
+  invalidOwnerRecord("run snapshot is missing its current run claim");
 }
 
-async function serializeOwnerRecordWrite<T>(runId: string, operation: () => Promise<T>): Promise<T> {
-  const previous = ownerRecordWriteChains.get(runId) ?? Promise.resolve();
+async function withRunOwner<T>(runId: string, operation: () => Promise<T>): Promise<T> {
+  const previous = residentTransitionChains.get(runId) ?? Promise.resolve();
   let release!: () => void;
   const current = new Promise<void>((resolve) => { release = resolve; });
   const queued = previous.then(() => current);
-  ownerRecordWriteChains.set(runId, queued);
+  residentTransitionChains.set(runId, queued);
   await previous;
   try {
     return await operation();
   } finally {
     release();
-    if (ownerRecordWriteChains.get(runId) === queued) ownerRecordWriteChains.delete(runId);
+    if (residentTransitionChains.get(runId) === queued) residentTransitionChains.delete(runId);
   }
 }
 
-async function writeTaskSnapshot(view: RunTaskView): Promise<void> {
-  await serializeOwnerRecordWrite(view.run_id, async () => {
-    const recordPath = taskRecordPath(view.run_id);
-    const existingRecord = await readRunOwnerRecordFile(recordPath).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return undefined;
-      throw error;
-    });
-    const existing = existingRecord?.public_view;
+function assertOwnerViewTransition(existing: RunTaskView | undefined, next: RunTaskView): void {
+  if (!existing) return;
+  if (existing.run_id !== next.run_id || existing.task_id !== next.task_id) {
+    invalidOwnerRecord("run owner identity changed across revisions");
+  }
+  if (existing.child_started === true && next.child_started !== true) {
+    invalidOwnerRecord("run owner child-started claim regressed");
+  }
+  const nextEvents = next.recent_events ?? [];
+  for (const event of existing.recent_events ?? []) {
     if (
-      existing &&
-      isRestartDriftSnapshot(existing) &&
-      isTerminalRunStatus(view.status) &&
-      !isRestartDriftSnapshot(view)
-    ) return;
-    const runTasksDir = defaultRunTasksDir();
-    const terminal = isTerminalRunStatus(view.status);
-    let snapshot = view;
-    if (terminal) {
-      const persistedEvents = await readRunPublicEvents(runTasksDir, view.run_id);
-      const existingEvents = existing?.recent_events ?? [];
-      const viewEvents = view.recent_events ?? [];
-      // Event JSONL is staging.  If a crash happened after it recorded a
-      // child lifecycle line but before the owner record recorded
-      // `child_started`, a declaration-only owner terminal must not turn that
-      // line into durable launch evidence during its final merge.
-      const ownerObservableEvents = [...existingEvents, ...persistedEvents, ...viewEvents].filter((event) =>
-        view.child_started !== false || event.kind !== "child",
-      );
-      const canonicalEvents = terminalEventsProjection(
-        ownerObservableEvents.sort((left, right) =>
-          left.occurred_at.localeCompare(right.occurred_at)
-        ),
-      );
-      snapshot = {
-        ...view,
-        recent_events: canonicalEvents,
-        ...(canonicalEvents.length > 0
-          ? { last_public_output_excerpt: publicOutputExcerptProjection(canonicalEvents) }
-          : {}),
-      };
+      (event.event === "child_spawned" ||
+        event.event === "cancellation_requested" ||
+        event.kind === "terminal") &&
+      !nextEvents.some((candidate) => sameCanonicalOwnerJson(candidate, event))
+    ) {
+      invalidOwnerRecord("run owner stable event claim regressed");
     }
-    const record = ownerRecordForSnapshot(snapshot, existingRecord);
-    assertRunOwnerRecord(record);
-    await fs.mkdir(runTasksDir, { recursive: true });
-    const tmpPath = `${recordPath}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
-    const handle = await fs.open(tmpPath, "wx", 0o600);
-    try {
-      await handle.writeFile(`${JSON.stringify(record, null, 2)}\n`, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
+  }
+  for (const field of [
+    "activation_receipt",
+    "skill_snapshot_activation_receipt",
+    "recursive_delegation_receipt",
+  ] as const) {
+    if (
+      existing[field] !== undefined &&
+      !sameCanonicalOwnerJson(existing[field], next[field])
+    ) {
+      invalidOwnerRecord(`run owner ${field} claim regressed`);
     }
-    try {
-      await fs.rename(tmpPath, recordPath);
-      await fsyncRunTasksDirectory();
-    } finally {
-      await fs.rm(tmpPath, { force: true });
+  }
+  for (const childRunId of existing.child_run_ids ?? []) {
+    if (!(next.child_run_ids ?? []).includes(childRunId)) {
+      invalidOwnerRecord("run owner direct-child claim regressed");
     }
-    if (terminal) {
-      const cleanupResults = await Promise.allSettled([
-        removeRunPublicEvents(runTasksDir, snapshot.run_id),
-        removeTerminalInputRequestsForRun({
-          mailboxRoot: path.dirname(snapshot.input_requests_dir),
-          runId: snapshot.run_id,
-        }),
-      ]);
-      for (const result of cleanupResults) {
-        if (result.status === "rejected") {
-          console.error(
-            `[subagent007 warning] terminal state cleanup failed for run ${snapshot.run_id}: ${String(result.reason)}`,
-          );
-        }
-      }
+  }
+  for (const descendantRunId of existing.descendant_run_ids ?? []) {
+    if (!(next.descendant_run_ids ?? []).includes(descendantRunId)) {
+      invalidOwnerRecord("run owner descendant claim regressed");
     }
+  }
+  for (const inputRequest of existing.input_requests) {
+    if (
+      inputRequest.status !== "pending" &&
+      !(next.input_requests ?? []).some((candidate) =>
+        candidate.request_id === inputRequest.request_id &&
+        sameCanonicalOwnerJson(candidate, inputRequest)
+      )
+    ) {
+      invalidOwnerRecord("run owner accepted input claim regressed");
+    }
+  }
+  if (isTerminalRunStatus(existing.status)) {
+    const {
+      timeout_recovery_hint: existingHint,
+      ...existingWithoutHint
+    } = existing;
+    const {
+      timeout_recovery_hint: nextHint,
+      ...nextWithoutHint
+    } = next;
+    const concreteHintSuffix = ` Inspect this run with get_run using run_id ${existing.run_id}.`;
+    const timeoutEnrichment =
+      sameCanonicalOwnerJson(existingWithoutHint, nextWithoutHint) &&
+      (nextHint === existingHint ||
+        ((existing.timed_out === true || existing.error_class === "timeout") &&
+          typeof nextHint === "string" &&
+          (existingHint === undefined
+            ? nextHint === `${RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT}${concreteHintSuffix}`
+            : nextHint === `${existingHint}${concreteHintSuffix}`)));
+    if (!timeoutEnrichment) {
+      invalidOwnerRecord("terminal run owner record cannot be replaced");
+    }
+  }
+}
+
+async function withRunClaimOwner<T>(
+  state: RunTaskState,
+  operation: () => Promise<T>,
+): Promise<T> {
+  return withRunOwner(state.runId, () =>
+    withRunClaimLock(defaultRunTasksDir(), state.runId, operation)
+  );
+}
+
+// The caller already holds the operation's exclusive semantic-authority owner.
+// The view and immutable claim evidence are derived only after that ownership is held.
+async function writeRunClaimOwned(
+  view: RunTaskView,
+  evidence: RunClaimPersistenceEvidence,
+): Promise<RunTaskView> {
+  const recordPath = taskRecordPath(view.run_id);
+  const existingRecord = await readRunOwnerRecordFile(recordPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
   });
+  const existing = existingRecord ? runClaimSnapshot(currentRunClaimView(existingRecord)) : undefined;
+  if (
+    existing &&
+    isRestartDriftSnapshot(existing) &&
+    isTerminalRunStatus(view.status) &&
+    !isRestartDriftSnapshot(view)
+  ) return existing;
+  const terminal = isTerminalRunStatus(view.status);
+  let snapshot = view;
+  if (terminal) {
+    const canonicalEvents = terminalEventsProjection(
+      (view.recent_events ?? []).filter(
+        (event) => view.child_started !== false || event.kind !== "child"
+      ),
+    );
+    snapshot = {
+      ...view,
+      recent_events: canonicalEvents,
+      ...(canonicalEvents.length > 0
+        ? { last_public_output_excerpt: publicOutputExcerptProjection(canonicalEvents) }
+        : {}),
+    };
+  }
+  assertOwnerViewTransition(existing, runClaimSnapshot(snapshot));
+  const record = ownerRecordForSnapshot(snapshot, existingRecord, evidence);
+  assertRunOwnerRecord(record);
+  const runTasksDir = defaultRunTasksDir();
+  await fs.mkdir(runTasksDir, { recursive: true });
+  const tmpPath = `${recordPath}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+  const handle = await fs.open(tmpPath, "wx", 0o600);
+  try {
+    await handle.writeFile(`${JSON.stringify(record, null, 2)}\n`, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  try {
+    await fs.rename(tmpPath, recordPath);
+    await fsyncRunTasksDirectory();
+  } finally {
+    await fs.rm(tmpPath, { force: true });
+  }
+  return snapshot;
+}
+
+async function cleanupTerminalRunStaging(snapshot: RunTaskView): Promise<void> {
+  const cleanupResults = await Promise.allSettled([
+    removeTerminalInputRequestsForRun({
+      mailboxRoot: path.dirname(snapshot.input_requests_dir),
+      runId: snapshot.run_id,
+    }),
+  ]);
+  for (const result of cleanupResults) {
+    if (result.status === "rejected") {
+      console.error(
+        `[subagent007 warning] terminal state cleanup failed for run ${snapshot.run_id}: ${String(result.reason)}`,
+      );
+    }
+  }
 }
 
 async function fsyncRunTasksDirectory(): Promise<void> {
@@ -863,13 +934,17 @@ async function writePreparedClientStartCandidate(
 ): Promise<string> {
   if (!state.clientStartBinding) throw new Error("prepared client start candidate requires a binding identity");
   bindRequestToRunTaskState(state, request);
-  ensureOwnerRecordAdmission(state, request);
+  ensureClaimDeclarations(state, request);
   await fs.mkdir(defaultRunTasksDir(), { recursive: true });
   await reconcilePreparedClientStartCandidates(state.clientStartBinding.client_start_id);
   const candidatePath = preparedClientStartCandidatePath(state.clientStartBinding, process.pid);
   const handle = await fs.open(candidatePath, "wx", 0o600);
   try {
-    const record = ownerRecordForSnapshot(activeRunTaskView(state, []), undefined, state);
+    const record = ownerRecordForSnapshot(
+      activeRunTaskView(state, []),
+      undefined,
+      runClaimPersistenceEvidence(state),
+    );
     assertRunOwnerRecord(record);
     await handle.writeFile(`${JSON.stringify(record, null, 2)}\n`, "utf8");
     await handle.sync();
@@ -882,7 +957,6 @@ async function writePreparedClientStartCandidate(
 
 async function discardPreparedClientStartCandidate(candidatePath: string): Promise<void> {
   await fs.rm(candidatePath, { force: true });
-  await fsyncRunTasksDirectory();
 }
 
 function validateClientStartSnapshotBinding(view: RunTaskView, admission: ClientStartAdmission): void {
@@ -897,6 +971,13 @@ function validateClientStartSnapshotBinding(view: RunTaskView, admission: Client
       "client_start_id run snapshot does not match its authoritative binding",
       "client_start_id_conflict",
     );
+  }
+}
+
+function assertCurrentRunTaskSnapshotAdmission(view: RunTaskView, admission: ClientStartAdmission): void {
+  validateClientStartSnapshotBinding(view, admission);
+  if (view.started_at !== admission.admitted_at) {
+    invalidCurrentRunTaskSnapshot(view, "client_start_id run snapshot start identity does not match admission");
   }
 }
 
@@ -947,7 +1028,12 @@ function hasTerminalCoreEvidence(view: RunTaskView): boolean {
 }
 
 function hasProcessResultEvidence(view: RunTaskView): boolean {
-  return isNonemptyString(view.output_path) &&
+  const outputReferences = view.output_references;
+  const reference = Array.isArray(outputReferences) && outputReferences.length === 1
+    ? decodeRunOutputReference(outputReferences[0])
+    : undefined;
+  return !hasOwnDefined(view, "output_path") && reference !== undefined &&
+    reference.size_bytes === view.size_bytes && reference.output_mode === view.written_output_mode &&
     typeof view.timeout_floor_ms === "number" && Number.isFinite(view.timeout_floor_ms) && view.timeout_floor_ms >= 0 &&
     typeof view.timeout_headroom_ms === "number" && Number.isFinite(view.timeout_headroom_ms) && view.timeout_headroom_ms >= 0 &&
     typeof view.kill_grace_ms === "number" && Number.isFinite(view.kill_grace_ms) && view.kill_grace_ms >= 0 &&
@@ -1241,21 +1327,13 @@ function derivedOwnerTerminalLifecycle(view: RunTaskView): DerivedOwnerTerminalL
 
 function ownerOutputClosureIsExact(view: RunTaskView, restartDrift: boolean): boolean {
   const outputReferences = view.output_references;
-  if (!Array.isArray(outputReferences)) return false;
-  if (!restartDrift) {
-    return view.partial_output_available === false && view.output_path === undefined && outputReferences.length === 0;
+  if (!Array.isArray(outputReferences) || hasOwnDefined(view, "output_path")) return false;
+  if (!restartDrift || view.partial_output_available === false) {
+    return view.partial_output_available === false && outputReferences.length === 0;
   }
-  if (view.partial_output_available === false) {
-    return view.output_path === undefined && outputReferences.length === 0;
-  }
-  if (!isNonemptyString(view.output_path) || !path.isAbsolute(view.output_path) || outputReferences.length !== 1) return false;
-  const reference = outputReferences[0];
-  return isRecord(reference) && Object.keys(reference).sort().join("\0") === [
-    "content_type", "encoding", "kind", "name", "output_mode", "path", "size_bytes",
-  ].sort().join("\0") &&
-    reference.kind === "file" && reference.name === "primary" && reference.path === view.output_path &&
-    reference.content_type === "text/markdown" && reference.encoding === "utf-8" && reference.output_mode === "transcript" &&
-    Number.isSafeInteger(reference.size_bytes) && (reference.size_bytes as number) >= 0;
+  if (outputReferences.length !== 1) return false;
+  const reference = decodeRunOutputReference(outputReferences[0]);
+  return reference !== undefined && reference.output_mode === "transcript";
 }
 
 function ownerTerminalEventProjection(view: RunTaskView): Pick<RunPublicEvent, "kind" | "event" | "text" | "occurred_at" | "metadata"> | null {
@@ -1383,7 +1461,7 @@ function hasSessionTerminalEvidence(view: RunTaskView): boolean {
     record.action === view.created_or_resumed &&
     record.subagent_session_id === view.subagent_session_id &&
     record.resume_mode === view.resume_mode &&
-    record.output_path === view.output_path &&
+    JSON.stringify(record.output_reference) === JSON.stringify(view.output_references?.[0]) &&
     record.packet_path === view.packet_path &&
     record.packet_policy === view.requested_packet_policy &&
     record.success === view.success &&
@@ -1472,10 +1550,7 @@ export function assertCurrentRunTaskSnapshot(view: RunTaskView, admission?: Clie
     invalidCurrentRunTaskSnapshot(view, "current durable run snapshot has an invalid client_start_id identity");
   }
   if (admission) {
-    validateClientStartSnapshotBinding(view, admission);
-    if (view.started_at !== admission.admitted_at) {
-      invalidCurrentRunTaskSnapshot(view, "client_start_id run snapshot start identity does not match admission");
-    }
+    assertCurrentRunTaskSnapshotAdmission(view, admission);
   }
   if (!ownerPromotionIsExact(view)) {
     invalidCurrentRunTaskSnapshot(view, "current durable run snapshot has invalid promotion evidence");
@@ -1580,20 +1655,7 @@ async function promotePreparedClientStartCandidate(admission: ClientStartAdmissi
 
 async function readTaskSnapshot(runId: string): Promise<RunTaskView | null> {
   try {
-    const recordPath = taskRecordPath(runId);
-    const ownerRecord = await readRunOwnerRecordFile(recordPath);
-    if (ownerRecord) return ownerRecord.public_view;
-    const view = JSON.parse(await fs.readFile(recordPath, "utf8")) as RunTaskView;
-    if (
-      view.client_start_binding ||
-      (view.contract_name === DURABLE_RUN_CONTRACT_NAME && view.contract_version === DURABLE_RUN_CONTRACT_VERSION)
-    ) {
-      // Current-v3 snapshots without the owner envelope cannot establish an
-      // owner-admitted claim.  They are diagnostic only and must never be
-      // normalized or republished as authoritative evidence.
-      invalidOwnerRecord("current v3 run snapshot is missing its owner record envelope");
-    }
-    return view;
+    return await readPersistedRunView(taskRecordPath(runId));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return null;
@@ -1670,22 +1732,6 @@ function taskNotFound(runId: string): ValidationError {
   return new ValidationError(`run not found: ${runId}`, "run_not_found");
 }
 
-function serializeInputMutation<T>(state: RunTaskState, operation: () => Promise<T>): Promise<T> {
-  const previous = state.inputMutationQueue;
-  let release!: () => void;
-  state.inputMutationQueue = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  return (async () => {
-    await previous;
-    try {
-      return await operation();
-    } finally {
-      release();
-    }
-  })();
-}
-
 function rejectPendingInputDeliveries(state: RunTaskState, error: ValidationError): void {
   for (const delivery of state.pendingInputDeliveries.values()) {
     delivery.reject(error);
@@ -1715,6 +1761,7 @@ function createRunTaskState(
     startedAt,
     mailboxRoot,
     inputRequestsDir: path.join(mailboxRoot, runId),
+    inputRequests: [],
     abortController: new AbortController(),
     taskKind,
     cancelRequested: false,
@@ -1737,7 +1784,6 @@ function createRunTaskState(
     descendantTerminalStatuses: {},
     acceptedInputResponses: new Map(),
     pendingInputDeliveries: new Map(),
-    inputMutationQueue: Promise.resolve(),
     terminalizing: false,
     childStarted: false,
     capacityReleased: false,
@@ -1763,18 +1809,6 @@ function setTaskPhase(state: RunTaskState, phase: RunTaskActivePhase, occurredAt
   }
   state.activePhase = phase;
   state.lastPhaseAt = occurredAt;
-}
-
-function noteChildLifecycle(
-  state: RunTaskState,
-  event: ChildLifecycleEventName,
-  occurredAt = new Date().toISOString(),
-): void {
-  if (state.terminalSnapshotStarted) {
-    return;
-  }
-  state.lastChildLifecycleEvent = event;
-  state.lastChildLifecycleAt = occurredAt;
 }
 
 function noteFirstPublicOutput(state: RunTaskState, occurredAt = new Date().toISOString()): void {
@@ -1824,7 +1858,6 @@ function syntheticTerminalFailureEnvelope(options: {
   reasonCode: FailureReasonCode;
   sessionId?: string | null;
   sessionEstablished?: boolean;
-  outputPath?: string;
   outputReferences?: RunTaskView["output_references"];
   partialOutputAvailable?: boolean;
 }): Pick<
@@ -1843,7 +1876,7 @@ function syntheticTerminalFailureEnvelope(options: {
   | "output_references"
   | "error_class"
   | "reason_code"
-> & { output_path?: string } {
+> {
   return {
     success: false,
     exit_code: null,
@@ -1857,7 +1890,6 @@ function syntheticTerminalFailureEnvelope(options: {
     session_id: options.sessionId ?? null,
     session_established: options.sessionEstablished ?? (options.sessionId !== undefined && options.sessionId !== null),
     output_references: options.outputReferences ?? [],
-    ...(options.outputPath ? { output_path: options.outputPath } : {}),
     error_class: options.errorClass,
     reason_code: options.reasonCode,
   };
@@ -2008,9 +2040,6 @@ function activationView(state: RunTaskState): Pick<
 
 function activeRunTaskView(state: RunTaskState, inputRequests: InputRequestView[]): RunTaskView {
   const hasPendingInput = inputRequests.some((request) => request.status === "pending");
-  if (hasPendingInput) {
-    setTaskPhase(state, "input_required");
-  }
   return {
     ...contractFields(),
     run_id: state.runId,
@@ -2032,45 +2061,315 @@ function activeRunTaskView(state: RunTaskState, inputRequests: InputRequestView[
   };
 }
 
-function setTaskProgress(state: RunTaskState, message: string, heartbeatCount = state.heartbeatCount): void {
+function cloneRunTaskTransitionState(state: RunTaskState): RunTaskState {
+  return {
+    ...state,
+    recentEvents: [...state.recentEvents],
+    childRunIds: [...state.childRunIds],
+    descendantRunIds: [...state.descendantRunIds],
+    descendantTerminalStatuses: { ...state.descendantTerminalStatuses },
+    acceptedInputResponses: new Map(state.acceptedInputResponses),
+    pendingInputDeliveries: new Map(state.pendingInputDeliveries),
+    inputRequests: state.inputRequests.map((request) => ({ ...request })),
+  };
+}
+
+function publishRunTaskTransitionState(state: RunTaskState, draft: RunTaskState): void {
+  state.finishedAt = draft.finishedAt;
+  state.inputRequests = draft.inputRequests;
+  state.result = draft.result;
+  state.error = draft.error;
+  state.cancelRequested = draft.cancelRequested;
+  state.heartbeatCount = draft.heartbeatCount;
+  state.lastProgressAt = draft.lastProgressAt;
+  state.lastProgressMessage = draft.lastProgressMessage;
+  state.activePhase = draft.activePhase;
+  state.lastPhaseAt = draft.lastPhaseAt;
+  state.lastChildLifecycleEvent = draft.lastChildLifecycleEvent;
+  state.lastChildLifecycleAt = draft.lastChildLifecycleAt;
+  state.firstPublicOutputAt = draft.firstPublicOutputAt;
+  state.recentEvents = draft.recentEvents;
+  state.lastPublicOutputExcerpt = draft.lastPublicOutputExcerpt;
+  state.terminalSnapshotStarted = draft.terminalSnapshotStarted;
+  state.cwd = draft.cwd;
+  state.failureLogTool = draft.failureLogTool;
+  state.sessionKey = draft.sessionKey;
+  state.promotion = draft.promotion;
+  state.parentRunId = draft.parentRunId;
+  state.rootRunId = draft.rootRunId;
+  state.recursionDepth = draft.recursionDepth;
+  state.childRunIds = draft.childRunIds;
+  state.descendantRunIds = draft.descendantRunIds;
+  state.descendantTerminalStatuses = draft.descendantTerminalStatuses;
+  state.childControlSend = draft.childControlSend;
+  state.acceptedInputResponses = draft.acceptedInputResponses;
+  state.pendingInputDeliveries = draft.pendingInputDeliveries;
+  state.terminalizing = draft.terminalizing;
+  state.partialOutputPath = draft.partialOutputPath;
+  state.childStarted = draft.childStarted;
+  state.queuedAt = draft.queuedAt;
+  state.childStartedAt = draft.childStartedAt;
+  state.capacityReleased = draft.capacityReleased;
+  state.clientStartBinding = draft.clientStartBinding;
+  state.requestedEffectProfile = draft.requestedEffectProfile;
+  state.activationReceipt = draft.activationReceipt;
+  state.skillSnapshotBinding = draft.skillSnapshotBinding;
+  state.skillSnapshotActivationReceipt = draft.skillSnapshotActivationReceipt;
+  state.recursiveDelegationReceipt = draft.recursiveDelegationReceipt;
+  state.requestedRecursiveDelegation = draft.requestedRecursiveDelegation;
+  state.expectedSkillSha256 = draft.expectedSkillSha256;
+  state.claimDeclarations = draft.claimDeclarations;
+  state.ownerLaunchObservation = draft.ownerLaunchObservation;
+}
+
+function runTaskViewFromState(
+  state: RunTaskState,
+  inputRequests: InputRequestView[],
+  allowUnreleasedTerminal = false,
+): RunTaskView {
+  if (
+    (state.result || state.error) &&
+    (!state.terminalSnapshotStarted || (!state.capacityReleased && !allowUnreleasedTerminal))
+  ) {
+    return activeRunTaskView(state, inputRequests);
+  }
+  if (state.result) {
+    return {
+      ...contractFields(),
+      ...state.result,
+      ...promotionView(state),
+      ...activationView(state),
+      run_id: state.runId,
+      task_id: state.runId,
+      task_kind: state.taskKind,
+      ...lineageView(state),
+      status: terminalRunTaskStatus(state.result),
+      started_at: state.startedAt,
+      finished_at: state.finishedAt,
+      input_requests_dir: state.inputRequestsDir,
+      input_requests: inputRequests,
+      ...admissionView(state),
+      ...terminalProgressView(state, state.result),
+    };
+  }
+  if (state.error) {
+    const cancelledBeforeLaunch = state.cancelRequested && !state.childStarted;
+    const taxonomy = errorTaxonomyForError(state.error);
+    const sessionId = sessionIdFromEvents(state.recentEvents);
+    const failureEnvelope = syntheticTerminalFailureEnvelope({
+      startedAt: state.startedAt,
+      finishedAt: state.finishedAt ?? new Date().toISOString(),
+      errorClass: taxonomy.error_class,
+      reasonCode: taxonomy.reason_code,
+      sessionId,
+    });
+    return {
+      ...contractFields(),
+      run_id: state.runId,
+      task_id: state.runId,
+      task_kind: state.taskKind,
+      ...lineageView(state),
+      ...promotionView(state),
+      ...activationView(state),
+      ...(state.sessionKey ? { session_key: state.sessionKey } : {}),
+      status: state.cancelRequested ? "cancelled" : "failed",
+      started_at: state.startedAt,
+      finished_at: state.finishedAt,
+      input_requests_dir: state.inputRequestsDir,
+      input_requests: inputRequests,
+      ...admissionView(state),
+      ...failureEnvelope,
+      ...(cancelledBeforeLaunch ? { error_class: undefined, reason_code: undefined } : {}),
+      ...activeProgressView(state),
+      ...(cancelledBeforeLaunch ? {} : { error: state.error.message }),
+    };
+  }
+  return activeRunTaskView(state, inputRequests);
+}
+
+async function commitActiveRunTransition(
+  state: RunTaskState,
+  apply: (
+    draft: RunTaskState,
+    stagedEvents: CanonicalRunPublicEvent[],
+  ) => boolean | Promise<boolean>,
+): Promise<RunTaskView> {
+  return withRunOwner(state.runId, async () => {
+    if (tasks.get(state.runId) !== state) {
+      throw taskNotFound(state.runId);
+    }
+    if (state.terminalSnapshotStarted || state.result || state.error) {
+      return runTaskViewFromState(
+        state,
+        state.inputRequests,
+      );
+    }
+    const draft = cloneRunTaskTransitionState(state);
+    const stagedEvents: CanonicalRunPublicEvent[] = [];
+    const changed = await apply(draft, stagedEvents);
+    const inputRequests = draft.inputRequests;
+    if (!changed) {
+      if (stagedEvents.length > 0) {
+        invalidOwnerRecord("run transition produced staged events without an owner change");
+      }
+      return runTaskViewFromState(state, inputRequests);
+    }
+    const view = runTaskViewFromState(draft, inputRequests);
+    publishRunTaskTransitionState(state, draft);
+    return view;
+  });
+}
+
+function setTaskProgress(
+  state: RunTaskState,
+  message: string,
+  heartbeatCount = state.heartbeatCount,
+  occurredAt = new Date().toISOString(),
+): void {
   if (state.terminalSnapshotStarted) {
     return;
   }
   state.heartbeatCount = heartbeatCount;
-  state.lastProgressAt = new Date().toISOString();
+  state.lastProgressAt = occurredAt;
   state.lastProgressMessage = message;
 }
 
-async function appendStatusEvent(
+function projectStatusEvent(
   state: RunTaskState,
   event: RunPublicEvent,
+  stagedEvents: CanonicalRunPublicEvent[],
   progressMessage = event.text,
-): Promise<void> {
-  const written = await appendPublicEvent(state, event);
-  setTaskProgress(state, progressMessage);
-  state.lastProgressAt = written.occurred_at;
+): void {
+  const written = projectPublicEvent(state, event, stagedEvents);
+  setTaskProgress(state, progressMessage, state.heartbeatCount, written.occurred_at);
 }
 
-async function appendChildLifecycleEvent(
+function childLifecycleProjectionBaseline(state: RunTaskState): ChildLifecycleProjectionBaseline {
+  return {
+    activePhase: state.activePhase,
+    lastPhaseAt: state.lastPhaseAt,
+    lastChildLifecycleEvent: state.lastChildLifecycleEvent,
+    lastChildLifecycleAt: state.lastChildLifecycleAt,
+    lastProgressAt: state.lastProgressAt,
+    lastProgressMessage: state.lastProgressMessage,
+    heartbeatCount: state.heartbeatCount,
+    firstPublicOutputAt: state.firstPublicOutputAt,
+  };
+}
+
+function sameChildLifecycleProjectionBaseline(
+  state: RunTaskState,
+  baseline: ChildLifecycleProjectionBaseline,
+): boolean {
+  return state.activePhase === baseline.activePhase &&
+    state.lastPhaseAt === baseline.lastPhaseAt &&
+    state.lastChildLifecycleEvent === baseline.lastChildLifecycleEvent &&
+    state.lastChildLifecycleAt === baseline.lastChildLifecycleAt &&
+    state.lastProgressAt === baseline.lastProgressAt &&
+    state.lastProgressMessage === baseline.lastProgressMessage &&
+    state.heartbeatCount === baseline.heartbeatCount &&
+    state.firstPublicOutputAt === baseline.firstPublicOutputAt;
+}
+
+function childLifecycleGenerationPrecedes(
+  current: ChildLifecycleEventName | undefined,
+  incoming: ChildLifecycleEventName,
+): boolean {
+  return current === undefined ||
+    CHILD_LIFECYCLE_GENERATION[current].sequence < CHILD_LIFECYCLE_GENERATION[incoming].sequence;
+}
+
+function hasCoherentChildLifecycleProjection(state: RunTaskState): boolean {
+  return state.lastChildLifecycleEvent !== undefined &&
+    state.lastChildLifecycleAt !== undefined &&
+    state.activePhase === "running_silent" &&
+    state.lastPhaseAt === state.lastChildLifecycleAt &&
+    state.lastProgressAt === state.lastChildLifecycleAt &&
+    state.lastProgressMessage === CHILD_LIFECYCLE_GENERATION[state.lastChildLifecycleEvent].progressMessage;
+}
+
+function canProjectWrittenChildLifecycleEvent(
+  state: RunTaskState,
+  event: ChildLifecycleEventName,
+  baseline: ChildLifecycleProjectionBaseline,
+): boolean {
+  if (
+    state.terminalizing ||
+    state.result ||
+    state.error ||
+    state.cancelRequested ||
+    (state.activePhase !== "starting" &&
+      state.activePhase !== "awaiting_child_event" &&
+      state.activePhase !== "running_silent") ||
+    !childLifecycleGenerationPrecedes(baseline.lastChildLifecycleEvent, event)
+  ) {
+    return false;
+  }
+  if (sameChildLifecycleProjectionBaseline(state, baseline)) {
+    return true;
+  }
+  return hasCoherentChildLifecycleProjection(state) &&
+    state.heartbeatCount === baseline.heartbeatCount &&
+    state.firstPublicOutputAt === baseline.firstPublicOutputAt &&
+    childLifecycleGenerationPrecedes(state.lastChildLifecycleEvent, event);
+}
+
+function projectWrittenChildLifecycleEvent(
+  state: RunTaskState,
+  written: RunPublicEvent & { event: ChildLifecycleEventName },
+  baseline: ChildLifecycleProjectionBaseline,
+): void {
+  if (state.terminalSnapshotStarted) {
+    return;
+  }
+  const events = [...state.recentEvents, written];
+  state.recentEvents = recentEventsProjection(events);
+  state.lastPublicOutputExcerpt = publicOutputExcerptProjection(events);
+  if (state.lastChildLifecycleAt && state.lastChildLifecycleAt.localeCompare(written.occurred_at) > 0) {
+    return;
+  }
+  if (!canProjectWrittenChildLifecycleEvent(state, written.event, baseline)) {
+    return;
+  }
+  state.activePhase = "running_silent";
+  state.lastPhaseAt = written.occurred_at;
+  state.lastChildLifecycleEvent = written.event;
+  state.lastChildLifecycleAt = written.occurred_at;
+  state.lastProgressAt = written.occurred_at;
+  state.lastProgressMessage = CHILD_LIFECYCLE_GENERATION[written.event].progressMessage;
+}
+
+function projectChildLifecycleEvent(
   state: RunTaskState,
   event: ChildLifecycleEventName,
   text: string,
-  progressMessage: string,
+  stagedEvents: CanonicalRunPublicEvent[],
   options: { occurredAt?: string; metadata?: Record<string, unknown> } = {},
-): Promise<void> {
+): void {
   const occurredAt = options.occurredAt ?? new Date().toISOString();
-  noteChildLifecycle(state, event, occurredAt);
-  await appendStatusEvent(state, {
+  const baseline = childLifecycleProjectionBaseline(state);
+  const written = canonicalRunPublicEvent({
     kind: "child",
     event,
     text,
     occurred_at: occurredAt,
     ...(options.metadata ? { metadata: options.metadata } : {}),
-  }, progressMessage);
+  }) as CanonicalRunPublicEvent & { event: ChildLifecycleEventName };
+  stagedEvents.push(written);
+  projectWrittenChildLifecycleEvent(
+    state,
+    written,
+    baseline,
+  );
 }
 
-async function appendPublicEvent(state: RunTaskState, event: RunPublicEvent): Promise<RunPublicEvent> {
-  const written = await appendRunPublicEvent(defaultRunTasksDir(), state.runId, event);
+function projectPublicEvent(
+  state: RunTaskState,
+  event: RunPublicEvent,
+  stagedEvents: CanonicalRunPublicEvent[],
+): CanonicalRunPublicEvent {
+  const written = canonicalRunPublicEvent(event);
+  stagedEvents.push(written);
   const events = [...state.recentEvents, written];
   state.recentEvents = recentEventsProjection(events);
   state.lastPublicOutputExcerpt = publicOutputExcerptProjection(events);
@@ -2091,12 +2390,10 @@ async function appendParentRecursiveChildEvent(
   event: RunPublicEvent,
   progressMessage: string,
 ): Promise<void> {
-  if (parent.result || parent.error || parent.terminalSnapshotStarted) {
-    await appendPublicEvent(parent, event);
-  } else {
-    await appendStatusEvent(parent, event, progressMessage);
-  }
-  await writeTaskSnapshot(await getRunTask(parent.runId));
+  await commitActiveRunTransition(parent, (draft, stagedEvents) => {
+    projectStatusEvent(draft, event, stagedEvents, progressMessage);
+    return true;
+  });
 }
 
 async function appendParentRecursiveChildStartedEvent(child: RunTaskState): Promise<void> {
@@ -2124,6 +2421,33 @@ function terminalStatusForRecursiveChild(child: RunTaskState): RunTaskTerminalSt
   return child.cancelRequested ? "cancelled" : "failed";
 }
 
+async function recordDescendantTerminalLineage(
+  ancestor: RunTaskState,
+  childRunId: string,
+  status: RunTaskTerminalStatus,
+): Promise<RunTaskView> {
+  return withRunClaimOwner(ancestor, async () => {
+    if (tasks.get(ancestor.runId) !== ancestor) throw taskNotFound(ancestor.runId);
+    if (ancestor.terminalSnapshotStarted || ancestor.result || ancestor.error) {
+      return runTaskViewFromState(ancestor, ancestor.inputRequests);
+    }
+    const draft = cloneRunTaskTransitionState(ancestor);
+    if (draft.descendantTerminalStatuses[childRunId] === status) {
+      return runTaskViewFromState(ancestor, ancestor.inputRequests);
+    }
+    draft.descendantTerminalStatuses = {
+      ...draft.descendantTerminalStatuses,
+      [childRunId]: status,
+    };
+    const committed = await writeRunClaimOwned(
+      runTaskViewFromState(draft, draft.inputRequests),
+      runClaimPersistenceEvidence(draft),
+    );
+    publishRunTaskTransitionState(ancestor, draft);
+    return committed;
+  });
+}
+
 async function appendParentRecursiveChildFinishedEvent(child: RunTaskState): Promise<void> {
   if (!child.parentRunId) {
     return;
@@ -2139,10 +2463,7 @@ async function appendParentRecursiveChildFinishedEvent(child: RunTaskState): Pro
   while (ancestorId) {
     const ancestor = tasks.get(ancestorId);
     if (!ancestor) break;
-    ancestor.descendantTerminalStatuses = {
-      ...ancestor.descendantTerminalStatuses,
-      [child.runId]: status,
-    };
+    await recordDescendantTerminalLineage(ancestor, child.runId, status);
     ancestorId = ancestor.parentRunId;
   }
   await appendParentRecursiveChildEvent(parent, {
@@ -2164,25 +2485,34 @@ async function handleTaskHeartbeat(
   message: string | undefined,
   notify: HeartbeatNotify | undefined,
 ): Promise<void> {
-  const hasPublicOutput = state.firstPublicOutputAt !== undefined;
-  const progressMessage = hasPublicOutput
-    ? message ?? DEFAULT_HEARTBEAT_MESSAGE
-    : "child alive; waiting for first public output";
-  if (!hasPublicOutput && (state.activePhase === "awaiting_child_event" || state.activePhase === "running_silent")) {
-    setTaskPhase(state, "running_silent");
-  } else if (hasPublicOutput && (state.activePhase === "awaiting_child_event" || state.activePhase === "running_silent")) {
-    setTaskPhase(state, "running");
-  }
-  setTaskProgress(state, progressMessage, beat);
-  await writeTaskSnapshot(await getRunTask(state.runId));
+  let progressMessage = message ?? DEFAULT_HEARTBEAT_MESSAGE;
+  await commitActiveRunTransition(state, (draft) => {
+    const hasPublicOutput = draft.firstPublicOutputAt !== undefined;
+    progressMessage = hasPublicOutput
+      ? message ?? DEFAULT_HEARTBEAT_MESSAGE
+      : "child alive; waiting for first public output";
+    if (beat < draft.heartbeatCount) return false;
+    if (beat === draft.heartbeatCount) {
+      if (draft.lastProgressMessage === progressMessage) return false;
+      invalidOwnerRecord("heartbeat identity conflicts with its prior progress");
+    }
+    if (!hasPublicOutput && (draft.activePhase === "awaiting_child_event" || draft.activePhase === "running_silent")) {
+      setTaskPhase(draft, "running_silent");
+    } else if (hasPublicOutput && (draft.activePhase === "awaiting_child_event" || draft.activePhase === "running_silent")) {
+      setTaskPhase(draft, "running");
+    }
+    setTaskProgress(draft, progressMessage, beat);
+    return true;
+  });
   await notify?.(beat, progressMessage);
 }
 
-async function appendRunStartedEvent(
+function appendRunStartedEvent(
   state: RunTaskState,
   request: RunSubagentRequest | RunSubagentSessionRequest,
-): Promise<void> {
-  await appendStatusEvent(state, {
+  stagedEvents: CanonicalRunPublicEvent[],
+): void {
+  projectStatusEvent(state, {
     kind: "task",
     event: "run_started",
     text: `[run_started] ${state.taskKind} ${state.runId}`,
@@ -2192,39 +2522,41 @@ async function appendRunStartedEvent(
       cwd: typeof request.cwd === "string" ? request.cwd : undefined,
       tool: state.failureLogTool,
     },
-  }, DEFAULT_HEARTBEAT_MESSAGE);
+  }, stagedEvents, DEFAULT_HEARTBEAT_MESSAGE);
   if (typeof request.prompt === "string" && request.prompt.trim() !== "") {
-    await appendPublicEvent(state, {
+    projectPublicEvent(state, {
       kind: "user",
       event: "message",
       text: `[user]\n${PUBLIC_PROMPT_REDACTED_MARKER}`,
       occurred_at: state.startedAt,
-    });
+    }, stagedEvents);
   }
   const skill = skillBindingForPublicMarker(request);
   if (skill) {
-    await appendPublicEvent(state, {
+    projectPublicEvent(state, {
       kind: "task",
       event: "message",
       text: serverContractSkillMarker(skill),
       occurred_at: state.startedAt,
-    });
+    }, stagedEvents);
   }
   if ("packet_policy" in request && request.packet_policy && request.packet_policy !== "none") {
-    await appendPublicEvent(state, {
+    projectPublicEvent(state, {
       kind: "packet",
       event: "message",
       text: serverContractPacketMarker(request.packet_policy),
       occurred_at: state.startedAt,
-    });
+    }, stagedEvents);
   }
 }
 
 async function prepareChildRun(state: RunTaskState): Promise<void> {
-  const occurredAt = new Date().toISOString();
-  setTaskPhase(state, "starting", occurredAt);
-  setTaskProgress(state, "preparing child process");
-  await writeTaskSnapshot(await getRunTask(state.runId));
+  await commitActiveRunTransition(state, (draft) => {
+    const occurredAt = new Date().toISOString();
+    setTaskPhase(draft, "starting", occurredAt);
+    setTaskProgress(draft, "preparing child process");
+    return true;
+  });
 }
 
 function bindRequestToRunTaskState(
@@ -2244,11 +2576,60 @@ async function registerRunTaskState(
   state: RunTaskState,
   request: RunSubagentRequest | RunSubagentSessionRequest,
 ): Promise<void> {
-  ensureOwnerRecordAdmission(state, request);
+  ensureClaimDeclarations(state, request);
   bindRequestToRunTaskState(state, request);
   tasks.set(state.runId, state);
-  await appendRunStartedEvent(state, request);
-  await writeTaskSnapshot(await getRunTask(state.runId));
+  await withRunClaimOwner(state, async () => {
+    if (tasks.get(state.runId) !== state) throw taskNotFound(state.runId);
+    const draft = cloneRunTaskTransitionState(state);
+    const stagedEvents: CanonicalRunPublicEvent[] = [];
+    appendRunStartedEvent(draft, request, stagedEvents);
+    const nextView = runTaskViewFromState(draft, draft.inputRequests);
+    const existingRecord = await readRunOwnerRecordFile(taskRecordPath(state.runId)).catch(
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return undefined;
+        throw error;
+      },
+    );
+    if (existingRecord) {
+      assertOwnerViewTransition(currentRunClaimView(existingRecord), runClaimSnapshot(nextView));
+      assertRunOwnerRecord(ownerRecordForSnapshot(
+        nextView,
+        existingRecord,
+        runClaimPersistenceEvidence(draft),
+      ));
+    } else {
+      await writeRunClaimOwned(nextView, runClaimPersistenceEvidence(draft));
+    }
+    publishRunTaskTransitionState(state, draft);
+  });
+}
+
+async function recordParentChildLineage(
+  ancestor: RunTaskState,
+  childRunId: string,
+  directParent: boolean,
+): Promise<void> {
+  await withRunClaimOwner(ancestor, async () => {
+    if (tasks.get(ancestor.runId) !== ancestor) throw taskNotFound(ancestor.runId);
+    if (ancestor.terminalSnapshotStarted || ancestor.result || ancestor.error) return;
+    const draft = cloneRunTaskTransitionState(ancestor);
+    let changed = false;
+    if (directParent && !draft.childRunIds.includes(childRunId)) {
+      draft.childRunIds = [...draft.childRunIds, childRunId];
+      changed = true;
+    }
+    if (!draft.descendantRunIds.includes(childRunId)) {
+      draft.descendantRunIds = [...draft.descendantRunIds, childRunId];
+      changed = true;
+    }
+    if (!changed) return;
+    await writeRunClaimOwned(
+      runTaskViewFromState(draft, draft.inputRequests),
+      runClaimPersistenceEvidence(draft),
+    );
+    publishRunTaskTransitionState(ancestor, draft);
+  });
 }
 
 async function recordParentChildRun(state: RunTaskState): Promise<void> {
@@ -2256,27 +2637,35 @@ async function recordParentChildRun(state: RunTaskState): Promise<void> {
     return;
   }
   const parent = tasks.get(state.parentRunId);
-  if (!parent || parent.childRunIds.includes(state.runId)) {
+  if (!parent) {
     return;
   }
-  parent.childRunIds = [...parent.childRunIds, state.runId];
   let ancestor: RunTaskState | undefined = parent;
   while (ancestor) {
-    if (!ancestor.descendantRunIds.includes(state.runId)) {
-      ancestor.descendantRunIds = [...ancestor.descendantRunIds, state.runId];
-      await writeTaskSnapshot(await getRunTask(ancestor.runId));
-    }
+    await recordParentChildLineage(ancestor, state.runId, ancestor.runId === parent.runId);
     ancestor = ancestor.parentRunId ? tasks.get(ancestor.parentRunId) : undefined;
   }
   await appendParentRecursiveChildStartedEvent(state);
 }
 
-async function settleDescendantSubtreeBeforeTerminal(state: RunTaskState): Promise<void> {
-  const children = state.childRunIds.map((id) => tasks.get(id)).filter((child): child is RunTaskState => Boolean(child));
+async function settleDescendantSubtreeBeforeTerminal(
+  state: RunTaskState,
+  terminal: RunTaskTerminalIntent,
+): Promise<void> {
+  let children: RunTaskState[] = [];
+  let cancelRequested = false;
+  await commitActiveRunTransition(state, (draft) => {
+    children = draft.childRunIds
+      .map((id) => tasks.get(id))
+      .filter((child): child is RunTaskState => Boolean(child));
+    cancelRequested = draft.cancelRequested;
+    if (children.length === 0) return false;
+    setTaskProgress(draft, "waiting for recursive descendants to settle");
+    return true;
+  });
   if (children.length === 0) return;
-  setTaskProgress(state, "waiting for recursive descendants to settle");
-  await writeTaskSnapshot(await getRunTask(state.runId));
-  const abnormal = state.cancelRequested || Boolean(state.error) || (state.result !== undefined && !state.result.success);
+  const abnormal = cancelRequested || Boolean(terminal.error) ||
+    (terminal.result !== undefined && !terminal.result.success);
   if (abnormal) {
     for (const child of children) {
       if (!child.terminalSnapshotStarted) child.abortController.abort();
@@ -2328,8 +2717,13 @@ async function registerRunTaskStateWithChildLease(
     await recordParentChildRun(state);
     return childLease;
   } catch (error) {
-    state.error = error instanceof Error ? error : new Error(String(error));
-    await finalizeRegisteredRunTask(state, childLease, "run registration failed");
+    const terminalError = error instanceof Error ? error : new Error(String(error));
+    await finalizeRegisteredRunTask(
+      state,
+      childLease,
+      "run registration failed",
+      { error: terminalError },
+    );
     throw error;
   }
 }
@@ -2342,13 +2736,20 @@ async function registerRunTaskStateWithAdmission(
 ): Promise<void> {
   try {
     if (admission.kind === "queued") {
-      state.queuedAt = admission.ticket.queuedAt;
-      setTaskPhase(state, "queued", admission.ticket.queuedAt);
-      setTaskProgress(state, "queued; waiting for local child capacity");
+      if (alreadyRegistered) {
+        await commitActiveRunTransition(state, (draft) => {
+          draft.queuedAt = admission.ticket.queuedAt;
+          setTaskPhase(draft, "queued", admission.ticket.queuedAt);
+          setTaskProgress(draft, "queued; waiting for local child capacity");
+          return true;
+        });
+      } else {
+        state.queuedAt = admission.ticket.queuedAt;
+        setTaskPhase(state, "queued", admission.ticket.queuedAt);
+        setTaskProgress(state, "queued; waiting for local child capacity");
+      }
     }
-    if (alreadyRegistered) {
-      if (admission.kind === "queued") await writeTaskSnapshot(await getRunTask(state.runId));
-    } else {
+    if (!alreadyRegistered) {
       await registerRunTaskState(state, request);
     }
     await recordParentChildRun(state);
@@ -2417,16 +2818,22 @@ async function finalizeRegisteredRunTask(
   state: RunTaskState,
   childLease: ActiveChildLease,
   closeReason: string,
+  terminal: RunTaskTerminalIntent = {},
 ): Promise<void> {
   let terminalDurable = false;
   try {
-    await settleDescendantSubtreeBeforeTerminal(state);
-    await finalizeRunTask(state, closeReason);
+    await settleDescendantSubtreeBeforeTerminal(state, terminal);
+    await settleRunClaim(state, closeReason, terminal);
     terminalDurable = true;
   } finally {
     terminalDurable ||= await hasDurableTerminalSnapshot(state.runId);
     if (terminalDurable) {
-      state.capacityReleased = await releaseChildLease(childLease);
+      const capacityReleased = await releaseChildLease(childLease);
+      await withRunOwner(state.runId, async () => {
+        if (tasks.get(state.runId) === state) {
+          state.capacityReleased = capacityReleased;
+        }
+      });
       maybeEvictTerminalTask(state);
       if (state.parentRunId) {
         const parent = tasks.get(state.parentRunId);
@@ -2443,22 +2850,51 @@ function containBackgroundRunFailure(state: RunTaskState, promise: Promise<void>
     if (await hasDurableTerminalSnapshot(state.runId)) {
       return;
     }
-    state.error = error instanceof Error ? error : new Error(String(error));
-    state.result = undefined;
-    state.finishedAt ??= new Date().toISOString();
-    state.terminalizing = true;
     console.error(
-      `[subagent007 background failure] run_id=${state.runId} ${state.error.message}`,
+      `[subagent007 background failure] run_id=${state.runId} ${
+        error instanceof Error ? error.message : String(error)
+      }`,
     );
   });
 }
 
-async function appendClosedInputEvents(
+function planClosedInputRequests(
+  inputRequests: InputRequestView[],
+  settledAt: string,
+  reason: string,
+): { inputRequests: InputRequestView[]; closed: InputTerminalRecord[] } {
+  const closed = inputRequests
+    .filter((request) => request.status === "pending")
+    .map((request): InputTerminalRecord => ({
+      schema_version: 2,
+      request_id: request.request_id,
+      status: "closed",
+      settled_at: settledAt,
+      reason,
+    }));
+  const closedIds = new Set(closed.map((record) => record.request_id));
+  return {
+    inputRequests: inputRequests.map((request) =>
+      closedIds.has(request.request_id)
+        ? {
+            ...request,
+            status: "closed",
+            settled_at: settledAt,
+            closed_at: settledAt,
+          }
+        : request
+    ),
+    closed,
+  };
+}
+
+function appendClosedInputEvents(
   state: RunTaskState,
   closed: Awaited<ReturnType<typeof closePendingInputRequestsForRun>>,
-): Promise<void> {
+  stagedEvents: CanonicalRunPublicEvent[],
+): void {
   for (const request of closed) {
-    await appendStatusEvent(state, {
+    projectStatusEvent(state, {
       kind: "input",
       event: "input_closed",
       text: `[input_closed] ${request.request_id}`,
@@ -2467,7 +2903,7 @@ async function appendClosedInputEvents(
         request_id: request.request_id,
         status: "closed",
       },
-    }, "input request closed");
+    }, stagedEvents, "input request closed");
   }
 }
 
@@ -2535,7 +2971,6 @@ async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
     cwd: state.cwd,
     run_id: state.runId,
     task_kind: state.taskKind,
-    output_path: result.output_path,
     success: result.success,
     exit_code: result.exit_code,
     timed_out: result.timed_out,
@@ -2581,55 +3016,73 @@ async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
   });
 }
 
-async function finalizeRunTask(state: RunTaskState, closeReason: string): Promise<void> {
-  await serializeInputMutation(state, async () => {
-    state.terminalizing = true;
-    state.skillSnapshotActivationObservation.resolve(state.skillSnapshotActivationReceipt);
-    rejectPendingInputDeliveries(
-      state,
-      new ValidationError(`run is not accepting input: ${state.runId}`, "run_not_accepting_input"),
+async function settleRunClaim(
+  state: RunTaskState,
+  closeReason: string,
+  terminal: RunTaskTerminalIntent,
+): Promise<void> {
+  let preservedTerminal = false;
+  let cleanup: { committed: RunTaskView; reason: string; settledAt: string } | undefined;
+  await withRunClaimOwner(state, async () => {
+    const existing = await readTaskSnapshot(state.runId);
+    if (existing && isTerminalRunStatus(existing.status)) {
+      const draft = cloneRunTaskTransitionState(state);
+      draft.finishedAt = existing.finished_at ?? new Date().toISOString();
+      draft.terminalSnapshotStarted = true;
+      draft.terminalizing = true;
+      publishRunTaskTransitionState(state, draft);
+      preservedTerminal = true;
+      return;
+    }
+    const draft = cloneRunTaskTransitionState(state);
+    const stagedEvents: CanonicalRunPublicEvent[] = [];
+    if (terminal.result && terminal.error) {
+      invalidOwnerRecord("run terminal transition cannot contain both a result and an error");
+    }
+    draft.result = terminal.result;
+    draft.error = terminal.error;
+    draft.terminalizing = true;
+    draft.finishedAt = new Date().toISOString();
+    normalizeAcceptedCancellation(draft);
+    normalizeOwnerTerminalError(draft);
+    draft.childControlSend = undefined;
+    const effectiveCloseReason = draft.cancelRequested ? "run cancelled" : closeReason;
+    const inputSettlement = planClosedInputRequests(
+      draft.inputRequests,
+      draft.finishedAt,
+      effectiveCloseReason,
     );
-    const preservedRestartDrift = await authoritativeRestartDriftSnapshot(state.runId);
-    if (preservedRestartDrift) {
-      state.finishedAt = preservedRestartDrift.finished_at ?? new Date().toISOString();
-      state.terminalSnapshotStarted = true;
-      return;
-    }
-    state.finishedAt = new Date().toISOString();
-    normalizeAcceptedCancellation(state);
-    normalizeOwnerTerminalError(state);
-    state.childControlSend = undefined;
-    // Preserve only hashed receipt identities in this live owner process for
-    // exact retries; terminal input staging still compacts after the owner
-    // record commits and cannot replay across process loss.
-    const closed = await closePendingInputRequestsForRun({
-      mailboxRoot: state.mailboxRoot,
-      runId: state.runId,
-      reason: closeReason,
-    });
-    await appendClosedInputEvents(state, closed);
-    const restartDriftAfterInputClose = await authoritativeRestartDriftSnapshot(state.runId);
-    if (restartDriftAfterInputClose) {
-      state.finishedAt = restartDriftAfterInputClose.finished_at ?? state.finishedAt;
-      state.terminalSnapshotStarted = true;
-      return;
-    }
-    await appendTerminalEvent(state);
-    const restartDriftBeforePersist = await authoritativeRestartDriftSnapshot(state.runId);
-    if (restartDriftBeforePersist) {
-      state.finishedAt = restartDriftBeforePersist.finished_at ?? state.finishedAt;
-      state.terminalSnapshotStarted = true;
-      return;
-    }
-    state.terminalInputRequests = await listInputRequests({
-      mailboxRoot: state.mailboxRoot,
-      runId: state.runId,
-    });
-    state.terminalSnapshotStarted = true;
-    await logTerminalRunTaskFailure(state);
-    await writeTaskSnapshot(await getRunTask(state.runId, true));
-    await appendParentRecursiveChildFinishedEvent(state);
+    draft.inputRequests = inputSettlement.inputRequests;
+    appendClosedInputEvents(draft, inputSettlement.closed, stagedEvents);
+    appendTerminalEvent(draft, stagedEvents);
+    draft.terminalSnapshotStarted = true;
+    if (!draft.result && !draft.error) invalidOwnerRecord("terminal settlement lacks owner evidence");
+    const committed = await writeRunClaimOwned(
+      runTaskViewFromState(draft, draft.inputRequests, true),
+      runClaimPersistenceEvidence(draft),
+    );
+    rejectPendingInputDeliveries(
+      draft,
+      new ValidationError(`run is not accepting input: ${draft.runId}`, "run_not_accepting_input"),
+    );
+    draft.recentEvents = [...(committed.recent_events ?? draft.recentEvents)];
+    draft.lastPublicOutputExcerpt = committed.last_public_output_excerpt;
+    publishRunTaskTransitionState(state, draft);
+    cleanup = { committed, reason: effectiveCloseReason, settledAt: draft.finishedAt };
   });
+  state.skillSnapshotActivationObservation.resolve(state.skillSnapshotActivationReceipt);
+  if (preservedTerminal) return;
+  if (cleanup) {
+    await closePendingInputRequestsForRun({
+      mailboxRoot: state.mailboxRoot,
+      runId: state.runId,
+      reason: cleanup.reason,
+      settledAt: cleanup.settledAt,
+    });
+    await cleanupTerminalRunStaging(cleanup.committed);
+  }
+  await logTerminalRunTaskFailure(state);
+  await appendParentRecursiveChildFinishedEvent(state);
 }
 
 function durableTaskCloseReason(state: RunTaskState): string {
@@ -2734,7 +3187,6 @@ function isStandardChildLifecycleEventName(value: unknown): value is StandardChi
 function childLifecycleFromProcessLine(line: string): {
   event: ChildLifecycleEventName;
   text: string;
-  progressMessage: string;
   metadata?: Record<string, unknown>;
 } | null {
   const parsed = eventObjectFromJsonLine(line);
@@ -2745,7 +3197,6 @@ function childLifecycleFromProcessLine(line: string): {
     return {
       event: "child_session_established",
       text: "[child_session_established] Pi session established",
-      progressMessage: "Pi session established; waiting for first public output",
       metadata: {
         session_id: typeof parsed.session_id === "string" ? parsed.session_id : null,
         session_file: typeof parsed.session_file === "string" ? parsed.session_file : null,
@@ -2757,21 +3208,18 @@ function childLifecycleFromProcessLine(line: string): {
     return {
       event: "activation_confirmed",
       text: "[activation_confirmed] constrained child activation confirmed",
-      progressMessage: "constrained activation confirmed before prompt",
     };
   }
   if (parsed.type === "subagent007.skill_snapshot_activation_confirmed") {
     return {
       event: "skill_snapshot_activation_confirmed",
       text: "[skill_snapshot_activation_confirmed] immutable runtime snapshot confirmed",
-      progressMessage: "immutable runtime snapshot confirmed before prompt",
     };
   }
   if (parsed.type === "subagent007.recursive_delegation_confirmed") {
     return {
       event: "recursive_delegation_confirmed",
       text: "[recursive_delegation_confirmed] recursive delegation authority confirmed",
-      progressMessage: "recursive delegation authority confirmed before prompt",
     };
   }
   if (parsed.type !== "subagent007.lifecycle") {
@@ -2786,19 +3234,16 @@ function childLifecycleFromProcessLine(line: string): {
       return {
         event,
         text: "[child_bridge_started] Pi child bridge started",
-        progressMessage: "child bridge started; waiting for first public output",
       };
     case "child_prompt_submitted":
       return {
         event,
         text: "[child_prompt_submitted] prompt submitted to Pi session",
-        progressMessage: "prompt submitted; waiting for first public output",
       };
     case "child_session_established":
       return {
         event,
         text: "[child_session_established] Pi session established",
-        progressMessage: "Pi session established; waiting for first public output",
       };
   }
   return null;
@@ -2818,18 +3263,21 @@ function hasCompletePrePromptOwnerObservations(state: RunTaskState): boolean {
     state.recursiveDelegationReceipt !== undefined;
 }
 
-async function appendTerminalEvent(state: RunTaskState): Promise<void> {
+function appendTerminalEvent(
+  state: RunTaskState,
+  stagedEvents: CanonicalRunPublicEvent[],
+): void {
   const result = state.result;
   const occurredAt = state.finishedAt ?? new Date().toISOString();
   if (result) {
     const packetEvent = packetTerminalEvent(result, occurredAt);
     if (packetEvent) {
-      await appendStatusEvent(state, {
+      projectStatusEvent(state, {
         ...packetEvent,
-      }, packetEvent.event === "packet_accepted" ? "packet accepted" : "packet rejected");
+      }, stagedEvents, packetEvent.event === "packet_accepted" ? "packet accepted" : "packet rejected");
     }
     const terminalEvent = terminalRunTaskEventDetails(result);
-    await appendStatusEvent(state, {
+    projectStatusEvent(state, {
       kind: "terminal",
       event: terminalEvent.event,
       text: terminalEvent.text,
@@ -2840,7 +3288,7 @@ async function appendTerminalEvent(state: RunTaskState): Promise<void> {
         exit_code: result.exit_code,
         timed_out: result.timed_out,
       },
-    }, terminalEvent.progressMessage);
+    }, stagedEvents, terminalEvent.progressMessage);
     setTaskPhase(state, terminalEvent.phase, occurredAt);
     return;
   }
@@ -2866,90 +3314,217 @@ async function appendTerminalEvent(state: RunTaskState): Promise<void> {
     } as RunTaskView;
     const terminalEvent = ownerTerminalEventProjection(ownerView);
     if (!terminalEvent) throw new Error("owner terminal event projection unexpectedly missing");
-    await appendStatusEvent(state, terminalEvent, state.cancelRequested ? "run cancelled" : state.error.message);
+    projectStatusEvent(
+      state,
+      terminalEvent,
+      stagedEvents,
+      state.cancelRequested ? "run cancelled" : state.error.message,
+    );
     setTaskPhase(state, state.cancelRequested ? "cancelled" : "failed", occurredAt);
   }
 }
 
 async function observeOutputLine(state: RunTaskState, line: string): Promise<void> {
   const lifecycle = childLifecycleFromProcessLine(line);
-  if (lifecycle) {
-    if (lifecycle.event === "activation_confirmed" && !state.activationReceipt) {
-      return;
-    }
-    if (lifecycle.event === "skill_snapshot_activation_confirmed" && !state.skillSnapshotActivationReceipt) {
-      return;
-    }
-    if (lifecycle.event === "recursive_delegation_confirmed" && !state.recursiveDelegationReceipt) {
-      return;
-    }
-    if (lifecycle.event === "child_prompt_submitted" && !hasCompletePrePromptOwnerObservations(state)) {
-      return;
-    }
-    const occurredAt = new Date().toISOString();
-    if (state.activePhase === "awaiting_child_event" || state.activePhase === "running_silent") {
-      setTaskPhase(state, "running_silent", occurredAt);
-    }
-    await appendChildLifecycleEvent(
-      state,
-      lifecycle.event,
-      lifecycle.text,
-      lifecycle.progressMessage,
-      {
-        occurredAt,
-        ...(lifecycle.event === "activation_confirmed" && state.activationReceipt
-          ? { metadata: { receipt: state.activationReceipt } }
-          : lifecycle.event === "skill_snapshot_activation_confirmed" && state.skillSnapshotActivationReceipt
-            ? { metadata: { receipt: state.skillSnapshotActivationReceipt } }
-          : lifecycle.event === "recursive_delegation_confirmed" && state.recursiveDelegationReceipt
-            ? { metadata: { receipt: state.recursiveDelegationReceipt } }
-          : lifecycle.metadata
-            ? { metadata: lifecycle.metadata }
-            : {}),
-      },
-    );
-    await writeTaskSnapshot(await getRunTask(state.runId));
-    return;
-  }
-  const publicLine = publicOutputLineFromProcessLine(line);
-  if (!publicLine) {
-    if (line.trim() !== "" && !isProcessControlMarkerLine(line) && !eventObjectFromJsonLine(line)) {
-      const occurredAt = new Date().toISOString();
-      noteFirstPublicOutput(state, occurredAt);
-      if (state.activePhase === "awaiting_child_event" || state.activePhase === "running_silent") {
-        setTaskPhase(state, "running", occurredAt);
+  const publicLine = lifecycle ? null : publicOutputLineFromProcessLine(line);
+  await commitActiveRunTransition(state, async (draft, stagedEvents) => {
+    if (lifecycle) {
+      if (lifecycle.event === "activation_confirmed" && !draft.activationReceipt) return false;
+      if (lifecycle.event === "skill_snapshot_activation_confirmed" && !draft.skillSnapshotActivationReceipt) {
+        return false;
       }
-      setTaskProgress(state, "child output received");
-      await writeTaskSnapshot(await getRunTask(state.runId));
+      if (lifecycle.event === "recursive_delegation_confirmed" && !draft.recursiveDelegationReceipt) {
+        return false;
+      }
+      if (lifecycle.event === "child_prompt_submitted" && !hasCompletePrePromptOwnerObservations(draft)) {
+        return false;
+      }
+      projectChildLifecycleEvent(
+        draft,
+        lifecycle.event,
+        lifecycle.text,
+        stagedEvents,
+        {
+          occurredAt: new Date().toISOString(),
+          ...(lifecycle.event === "activation_confirmed" && draft.activationReceipt
+            ? { metadata: { receipt: draft.activationReceipt } }
+            : lifecycle.event === "skill_snapshot_activation_confirmed" && draft.skillSnapshotActivationReceipt
+              ? { metadata: { receipt: draft.skillSnapshotActivationReceipt } }
+            : lifecycle.event === "recursive_delegation_confirmed" && draft.recursiveDelegationReceipt
+              ? { metadata: { receipt: draft.recursiveDelegationReceipt } }
+            : lifecycle.metadata
+              ? { metadata: lifecycle.metadata }
+              : {}),
+        },
+      );
+      return true;
     }
-    return;
-  }
-  if (publicLine.kind === "user") {
-    return;
-  }
-  const occurredAt = new Date().toISOString();
-  noteFirstPublicOutput(state, occurredAt);
-  if (publicLine.event === "input_required") {
-    setTaskPhase(state, "input_required", occurredAt);
-  } else if (publicLine.kind === "assistant" || publicLine.kind === "warning" || publicLine.kind === "error") {
-    setTaskPhase(state, "running", occurredAt);
-  } else if (publicLine.event === "input_timed_out" || publicLine.event === "input_closed") {
-    setTaskPhase(state, "running", occurredAt);
-  }
-  await appendPublicEvent(state, {
-    kind: publicLine.kind,
-    event: publicLine.event ?? "message",
-    text: publicLine.text,
-    occurred_at: occurredAt,
+    if (!publicLine) {
+      if (line.trim() === "" || isProcessControlMarkerLine(line) || eventObjectFromJsonLine(line)) {
+        return false;
+      }
+      const occurredAt = new Date().toISOString();
+      noteFirstPublicOutput(draft, occurredAt);
+      if (draft.activePhase === "awaiting_child_event" || draft.activePhase === "running_silent") {
+        setTaskPhase(draft, "running", occurredAt);
+      }
+      setTaskProgress(draft, "child output received");
+      return true;
+    }
+    if (publicLine.kind === "user") return false;
+    const occurredAt = new Date().toISOString();
+    if (
+      publicLine.event === "input_required" ||
+      publicLine.event === "input_timed_out" ||
+      publicLine.event === "input_closed"
+    ) {
+      draft.inputRequests = await listInputRequests({
+        mailboxRoot: draft.mailboxRoot,
+        runId: draft.runId,
+      });
+    }
+    noteFirstPublicOutput(draft, occurredAt);
+    if (publicLine.event === "input_required") {
+      setTaskPhase(draft, "input_required", occurredAt);
+    } else if (publicLine.kind === "assistant" || publicLine.kind === "warning" || publicLine.kind === "error") {
+      setTaskPhase(draft, "running", occurredAt);
+    } else if (publicLine.event === "input_timed_out" || publicLine.event === "input_closed") {
+      setTaskPhase(draft, "running", occurredAt);
+    }
+    projectPublicEvent(draft, {
+      kind: publicLine.kind,
+      event: publicLine.event ?? "message",
+      text: publicLine.text,
+      occurred_at: occurredAt,
+    }, stagedEvents);
+    if (publicLine.event === "input_required") {
+      setTaskProgress(draft, "input required");
+    } else if (publicLine.event === "input_timed_out") {
+      setTaskProgress(draft, "input timed out");
+    } else if (publicLine.event === "input_closed") {
+      setTaskProgress(draft, "input request closed");
+    }
+    return true;
   });
-  if (publicLine.event === "input_required") {
-    setTaskProgress(state, "input required");
-  } else if (publicLine.event === "input_timed_out") {
-    setTaskProgress(state, "input timed out");
-  } else if (publicLine.event === "input_closed") {
-    setTaskProgress(state, "input request closed");
-  }
-  await writeTaskSnapshot(await getRunTask(state.runId));
+}
+
+async function commitChildSpawnTransition(state: RunTaskState, occurredAt: string): Promise<void> {
+  await withRunClaimOwner(state, async () => {
+    if (tasks.get(state.runId) !== state) throw taskNotFound(state.runId);
+    const draft = cloneRunTaskTransitionState(state);
+    const childSpawnedEvent = canonicalRunPublicEvent({
+      kind: "child",
+      event: "child_spawned",
+      text: "[child_spawned] Pi child process started",
+      occurred_at: occurredAt,
+    }) as CanonicalRunPublicEvent & { event: "child_spawned" };
+    if (draft.childStarted) {
+      const existingSpawn = draft.recentEvents.find((event) =>
+        event.kind === "child" && event.event === "child_spawned"
+      );
+      if (existingSpawn && sameCanonicalOwnerJson(existingSpawn, childSpawnedEvent)) return;
+      invalidOwnerRecord("child spawn identity conflicts with its committed observation");
+    }
+    if (!draft.ownerLaunchObservation) invalidOwnerRecord("child spawn has no execution grant");
+    draft.childStarted = true;
+    if (draft.queuedAt) draft.childStartedAt = occurredAt;
+    projectWrittenChildLifecycleEvent(
+      draft,
+      childSpawnedEvent,
+      childLifecycleProjectionBaseline(draft),
+    );
+    draft.inputRequests = await listInputRequests({
+      mailboxRoot: draft.mailboxRoot,
+      runId: draft.runId,
+    });
+    await writeRunClaimOwned(
+      runTaskViewFromState(draft, draft.inputRequests),
+      runClaimPersistenceEvidence(draft),
+    );
+    publishRunTaskTransitionState(state, draft);
+  });
+}
+
+async function acceptActivationReceipt(
+  state: RunTaskState,
+  receipt: NonNullable<RunSubagentResult["activation_receipt"]>,
+): Promise<void> {
+  await withRunClaimOwner(state, async () => {
+    if (tasks.get(state.runId) !== state) throw taskNotFound(state.runId);
+    if (state.terminalSnapshotStarted || state.result || state.error) return;
+    const draft = cloneRunTaskTransitionState(state);
+    if (draft.activationReceipt) {
+      if (sameCanonicalOwnerJson(draft.activationReceipt, receipt)) return;
+      invalidOwnerRecord("activation receipt conflicts with its prior bytes");
+    }
+    draft.activationReceipt = receipt;
+    await writeRunClaimOwned(
+      runTaskViewFromState(draft, draft.inputRequests),
+      runClaimPersistenceEvidence(draft),
+    );
+    publishRunTaskTransitionState(state, draft);
+  });
+}
+
+async function acceptSkillSnapshotActivationReceipt(
+  state: RunTaskState,
+  receipt: NonNullable<RunSubagentResult["skill_snapshot_activation_receipt"]>,
+): Promise<void> {
+  await withRunClaimOwner(state, async () => {
+    if (tasks.get(state.runId) !== state) throw taskNotFound(state.runId);
+    if (state.terminalSnapshotStarted || state.result || state.error) return;
+    const draft = cloneRunTaskTransitionState(state);
+    if (draft.skillSnapshotActivationReceipt) {
+      if (sameCanonicalOwnerJson(draft.skillSnapshotActivationReceipt, receipt)) return;
+      invalidOwnerRecord("skill snapshot receipt conflicts with its prior bytes");
+    }
+    draft.skillSnapshotActivationReceipt = receipt;
+    await writeRunClaimOwned(
+      runTaskViewFromState(draft, draft.inputRequests),
+      runClaimPersistenceEvidence(draft),
+    );
+    publishRunTaskTransitionState(state, draft);
+  });
+  state.skillSnapshotActivationObservation.resolve(state.skillSnapshotActivationReceipt);
+}
+
+async function acceptRecursiveDelegationReceipt(
+  state: RunTaskState,
+  receipt: RecursiveDelegationReceipt,
+): Promise<void> {
+  await withRunClaimOwner(state, async () => {
+    if (tasks.get(state.runId) !== state) throw taskNotFound(state.runId);
+    if (state.terminalSnapshotStarted || state.result || state.error) return;
+    const draft = cloneRunTaskTransitionState(state);
+    if (draft.recursiveDelegationReceipt) {
+      if (sameCanonicalOwnerJson(draft.recursiveDelegationReceipt, receipt)) return;
+      invalidOwnerRecord("recursive delegation receipt conflicts with its prior bytes");
+    }
+    draft.recursiveDelegationReceipt = receipt;
+    await writeRunClaimOwned(
+      runTaskViewFromState(draft, draft.inputRequests),
+      runClaimPersistenceEvidence(draft),
+    );
+    publishRunTaskTransitionState(state, draft);
+  });
+}
+
+async function grantRunClaimFromLaunchObservation(state: RunTaskState, observation: unknown): Promise<void> {
+  await withRunClaimOwner(state, async () => {
+    if (tasks.get(state.runId) !== state) throw taskNotFound(state.runId);
+    if (state.terminalSnapshotStarted || state.result || state.error) return;
+    const draft = cloneRunTaskTransitionState(state);
+    recordOwnerLaunchObservation(
+      draft,
+      observation as Parameters<typeof recordOwnerLaunchObservation>[1],
+    );
+    if (!draft.ownerLaunchObservation) invalidOwnerRecord("execution grant lacks launch evidence");
+    await writeRunClaimOwned(
+      runTaskViewFromState(draft, draft.inputRequests),
+      runClaimPersistenceEvidence(draft),
+    );
+    publishRunTaskTransitionState(state, draft);
+  });
 }
 
 function taskChildRuntimeOptions(
@@ -2961,10 +3536,10 @@ function taskChildRuntimeOptions(
   abortSignal: AbortSignal;
   onOutputLine: (line: string) => Promise<void>;
   onTranscriptStaged: (stagingPath: string) => Promise<void>;
-  onChildSpawned: () => Promise<void>;
-  onActivationConfirmed: (receipt: NonNullable<RunSubagentResult["activation_receipt"]>) => void;
-  onSkillSnapshotActivationConfirmed: (receipt: NonNullable<RunSubagentResult["skill_snapshot_activation_receipt"]>) => void;
-  onRecursiveDelegationConfirmed: (receipt: RecursiveDelegationReceipt) => void;
+  onChildSpawned: (occurredAt: string) => Promise<void>;
+  onActivationConfirmed: (receipt: NonNullable<RunSubagentResult["activation_receipt"]>) => Promise<void>;
+  onSkillSnapshotActivationConfirmed: (receipt: NonNullable<RunSubagentResult["skill_snapshot_activation_receipt"]>) => Promise<void>;
+  onRecursiveDelegationConfirmed: (receipt: RecursiveDelegationReceipt) => Promise<void>;
   onOwnerLaunchObservation: (observation: unknown) => Promise<void>;
 } {
   return {
@@ -2972,43 +3547,22 @@ function taskChildRuntimeOptions(
     heartbeatIntervalMs: options.heartbeatIntervalMs,
     abortSignal: state.abortController.signal,
     onOutputLine: (line) => observeOutputLine(state, line),
-    onActivationConfirmed: (receipt) => {
-      state.activationReceipt = receipt;
-    },
-    onSkillSnapshotActivationConfirmed: (receipt) => {
-      state.skillSnapshotActivationReceipt = receipt;
-      state.skillSnapshotActivationObservation.resolve(receipt);
-    },
-    onRecursiveDelegationConfirmed: (receipt) => {
-      state.recursiveDelegationReceipt = receipt;
-    },
-    onOwnerLaunchObservation: async (observation) => {
-      recordOwnerLaunchObservation(state, observation as Parameters<typeof recordOwnerLaunchObservation>[1]);
-      // This commit is deliberately before writeChildRequestFile/runChildProcess.
-      // The child and terminal validator use the same captured scope carried
-      // by runSubagentCore, while the owner record retains its independent
-      // canonical binding for recovery/readback.
-      await writeTaskSnapshot(await getRunTask(state.runId));
-    },
+    onActivationConfirmed: (receipt) => acceptActivationReceipt(state, receipt),
+    onSkillSnapshotActivationConfirmed: (receipt) =>
+      acceptSkillSnapshotActivationReceipt(state, receipt),
+    onRecursiveDelegationConfirmed: (receipt) =>
+      acceptRecursiveDelegationReceipt(state, receipt),
+    // This durable grant is deliberately before writeChildRequestFile/runChildProcess.
+    onOwnerLaunchObservation: (observation) => grantRunClaimFromLaunchObservation(state, observation),
     onTranscriptStaged: async (stagingPath) => {
-      state.partialOutputPath = stagingPath;
-      await writeTaskSnapshot(await getRunTask(state.runId));
+      await commitActiveRunTransition(state, (draft) => {
+        if (draft.partialOutputPath === stagingPath) return false;
+        draft.partialOutputPath = stagingPath;
+        return true;
+      });
     },
-    onChildSpawned: async () => {
-      const occurredAt = new Date().toISOString();
-      state.childStarted = true;
-      if (state.queuedAt) {
-        state.childStartedAt = occurredAt;
-      }
-      setTaskPhase(state, "running_silent", occurredAt);
-      await appendChildLifecycleEvent(
-        state,
-        "child_spawned",
-        "[child_spawned] Pi child process started",
-        "child process running; waiting for first public output",
-        { occurredAt },
-      );
-      await writeTaskSnapshot(await getRunTask(state.runId));
+    onChildSpawned: async (occurredAt) => {
+      await commitChildSpawnTransition(state, occurredAt);
     },
   };
 }
@@ -3019,7 +3573,19 @@ function taskInputControlOptions(state: RunTaskState): {
 } {
   return {
     onChildControlReady: (send) => {
-      state.childControlSend = send;
+      void withRunOwner(state.runId, async () => {
+        if (
+          tasks.get(state.runId) === state &&
+          !state.terminalSnapshotStarted &&
+          !state.terminalizing
+        ) {
+          state.childControlSend = send;
+        }
+      }).catch((error) => {
+        console.error(
+          `[subagent007 warning] child control registration failed for run ${state.runId}: ${String(error)}`,
+        );
+      });
     },
     onInputResponseAccepted: (response) => {
       settleChildAcceptedInputResponse(state, response);
@@ -3035,37 +3601,6 @@ function taskRecursiveRuntimeOptions(state: RunTaskState): {
     rootRunId: state.rootRunId,
     recursionDepth: state.recursionDepth,
   };
-}
-
-async function loadSnapshotEvents(
-  snapshot: RunTaskView,
-): Promise<Pick<RunTaskView, "recent_events" | "last_public_output_excerpt">> {
-  const events = await readRunPublicEvents(defaultRunTasksDir(), snapshot.run_id);
-  if (events.length === 0) {
-    return {
-      ...(snapshot.recent_events ? { recent_events: snapshot.recent_events } : {}),
-      ...(snapshot.last_public_output_excerpt
-        ? { last_public_output_excerpt: snapshot.last_public_output_excerpt }
-        : {}),
-    };
-  }
-  const lastPublicOutputExcerpt = publicOutputExcerptProjection(events);
-  return {
-    recent_events: recentEventsProjection(events),
-    ...(lastPublicOutputExcerpt
-      ? { last_public_output_excerpt: lastPublicOutputExcerpt }
-      : {}),
-  };
-}
-
-function eventsForFailureLog(
-  snapshot: Pick<RunTaskView, "recent_events">,
-  eventProjection: Pick<RunTaskView, "recent_events">,
-): RunPublicEvent[] {
-  return [
-    ...(snapshot.recent_events ?? []),
-    ...(eventProjection.recent_events ?? []),
-  ];
 }
 
 function isRunTaskFailureLogTool(value: unknown): value is RunTaskFailureLogTool {
@@ -3107,76 +3642,63 @@ async function authoritativeRestartDriftSnapshot(runId: string): Promise<RunTask
   return snapshot;
 }
 
-async function persistRestartDriftSnapshot(
+interface RestartDriftEvidence {
+  finishedAt: string;
+  recoveredOutput?: Awaited<ReturnType<typeof recoverStreamingRunTranscript>>;
+}
+
+function settleRunOwnerLossSnapshot(
   snapshot: RunTaskView,
-  eventProjection: Pick<RunTaskView, "recent_events" | "last_public_output_excerpt">,
-): Promise<RunTaskView> {
-  const finishedAt = new Date().toISOString();
-  const sessionEvents = eventsForFailureLog(snapshot, eventProjection);
+  evidence: RestartDriftEvidence,
+): RunTaskView {
+  const sessionEvents = snapshot.recent_events ?? [];
   const sessionId = snapshot.session_id ?? sessionIdFromEvents(sessionEvents);
-  const recoveredOutput = snapshot.output_path || !snapshot.partial_output_path
-    ? undefined
-    : await recoverStreamingRunTranscript(snapshot.partial_output_path, snapshot.run_id);
-  const outputPath = snapshot.output_path ?? recoveredOutput?.outputPath;
-  const outputReferences = snapshot.output_references?.length
-    ? snapshot.output_references
-    : recoveredOutput
-      ? [runOutputReference(recoveredOutput.outputPath, recoveredOutput.sizeBytes, "transcript")]
-      : [];
+  const outputReferences = evidence.recoveredOutput ? [evidence.recoveredOutput] : [];
   const failureEnvelope = syntheticTerminalFailureEnvelope({
     startedAt: snapshot.started_at,
-    finishedAt,
+    finishedAt: evidence.finishedAt,
     errorClass: "restart_drift",
     reasonCode: "server_restarted_active_run",
     sessionId,
     sessionEstablished: snapshot.session_established ?? sessionId !== null,
-    outputPath,
     outputReferences,
-    // Restart drift owns the recovered-output projection.  An inherited
-    // durable output is equally partial diagnostic output after owner loss.
-    partialOutputAvailable: outputPath !== undefined,
+    partialOutputAvailable: evidence.recoveredOutput !== undefined,
   });
-  const mailboxRoot = path.dirname(snapshot.input_requests_dir);
-  await closePendingInputRequestsForRun({
-    mailboxRoot,
-    runId: snapshot.run_id,
-    reason: "MCP server restarted while run was active",
-  });
-  await appendRunPublicEvent(defaultRunTasksDir(), snapshot.run_id, {
+  const closeReason = "MCP server restarted while run was active";
+  const inputSettlement = planClosedInputRequests(snapshot.input_requests, evidence.finishedAt, closeReason);
+  const terminalEvent = canonicalRunPublicEvent({
     kind: "terminal",
     event: "failed",
     text: "[failed] run is not active after MCP server restart",
-    occurred_at: finishedAt,
+    occurred_at: evidence.finishedAt,
     metadata: syntheticTerminalFailureEventMetadata(failureEnvelope),
   });
-  const inputRequests = await listInputRequests({ mailboxRoot, runId: snapshot.run_id });
-  const stagedEvents = await loadSnapshotEvents(snapshot);
-  // A JSONL child event may have reached staging immediately before a process
-  // crash, while the owner record still truthfully says that no child launch
-  // was committed.  Staging is not coequal owner evidence, so it must not be
-  // replayed into the owner-terminal view as a launch observation.
-  const restartEvents = snapshot.child_started === false
-    ? stagedEvents.recent_events?.filter((event) => event.kind !== "child") ?? []
-    : stagedEvents.recent_events ?? [];
-  const events: Pick<RunTaskView, "recent_events" | "last_public_output_excerpt"> = {
+  const restartEvents = terminalEventsProjection(
+    [...(snapshot.recent_events ?? []), terminalEvent]
+      .filter((event) => snapshot.child_started !== false || event.kind !== "child"),
+  );
+  return {
+    ...normalizeHistoricalSnapshotForRepublication(snapshot),
     recent_events: restartEvents,
     ...(restartEvents.length > 0
       ? { last_public_output_excerpt: publicOutputExcerptProjection(restartEvents) }
       : {}),
-  };
-  const staleView: RunTaskView = {
-    ...normalizeHistoricalSnapshotForRepublication(snapshot),
-    ...eventProjection,
-    ...events,
     status: "failed",
-    finished_at: snapshot.finished_at ?? finishedAt,
+    finished_at: snapshot.finished_at ?? evidence.finishedAt,
     active_phase: "failed",
-    last_phase_at: finishedAt,
-    input_requests: inputRequests,
+    last_phase_at: evidence.finishedAt,
+    input_requests: inputSettlement.inputRequests,
     ...failureEnvelope,
     partial_output_path: undefined,
     error: "run is not active in this MCP server process; the server may have restarted",
   };
+}
+
+async function logRestartDriftFailure(
+  snapshot: RunTaskView,
+  staleView: RunTaskView,
+): Promise<void> {
+  const sessionEvents = snapshot.recent_events ?? [];
   await logFailure({
     tool: failureLogToolFromRunEvents(sessionEvents, snapshot.task_kind),
     failure_class: "restart_drift",
@@ -3184,7 +3706,6 @@ async function persistRestartDriftSnapshot(
     cwd: cwdFromRunStartedEvent(sessionEvents),
     run_id: snapshot.run_id,
     task_kind: snapshot.task_kind,
-    output_path: staleView.output_path,
     session_key: snapshot.session_key,
     success: false,
     exit_code: null,
@@ -3205,23 +3726,6 @@ async function persistRestartDriftSnapshot(
     skill: staleView.requested_skill,
     output_mode: staleView.requested_output_mode,
   });
-  await writeTaskSnapshot(staleView);
-  return staleView;
-}
-
-function persistRestartDriftSnapshotOnce(
-  snapshot: RunTaskView,
-  eventProjection: Pick<RunTaskView, "recent_events" | "last_public_output_excerpt">,
-): Promise<RunTaskView> {
-  const existing = restartDriftReconciliations.get(snapshot.run_id);
-  if (existing) {
-    return existing;
-  }
-  const reconciliation = persistRestartDriftSnapshot(snapshot, eventProjection).finally(() => {
-    restartDriftReconciliations.delete(snapshot.run_id);
-  });
-  restartDriftReconciliations.set(snapshot.run_id, reconciliation);
-  return reconciliation;
 }
 
 async function clientStartSnapshotOwnerLiveness(
@@ -3236,141 +3740,158 @@ async function clientStartSnapshotOwnerLiveness(
   }
 }
 
-function persistedActiveRunView(
-  snapshot: RunTaskView,
-  eventProjection: Pick<RunTaskView, "recent_events" | "last_public_output_excerpt">,
-  inputRequests: InputRequestView[],
-): RunTaskView {
+function persistedOwnerView(snapshot: RunTaskView): RunTaskView {
   return {
     ...contractFields(),
     ...snapshot,
-    ...eventProjection,
-    input_requests: inputRequests,
   };
+}
+
+async function persistedRunLiveness(
+  snapshot: RunTaskView,
+): Promise<"live" | "gone"> {
+  const clientStartOwnerLiveness = await clientStartSnapshotOwnerLiveness(snapshot);
+  if (clientStartOwnerLiveness === "live") return "live";
+  if (clientStartOwnerLiveness === "unknown") {
+    throw new ValidationError(
+      "run liveness is unknown because its client_start_id owner binding cannot be verified",
+      "run_liveness_unknown",
+    );
+  }
+  if (clientStartOwnerLiveness === null) {
+    const leaseLiveness = await activeChildLeaseLiveness(snapshot.run_id);
+    if (leaseLiveness === "live" || await hasLiveQueuedRunTicket(snapshot.run_id)) {
+      return "live";
+    }
+    if (leaseLiveness === "unknown") {
+      throw new ValidationError(
+        "run liveness is unknown because a legacy active-child lease is unreadable",
+        "run_liveness_unknown",
+      );
+    }
+  }
+  return "gone";
+}
+
+async function getPersistedRunTask(runId: string): Promise<RunTaskView> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const phaseOne = await withRunOwner(runId, async (): Promise<
+      | { kind: "return"; view: RunTaskView }
+      | { kind: "inspect"; descendantRunIds: string[] }
+    > => {
+      let snapshot = await readTaskSnapshot(runId);
+      if (!snapshot) {
+        await reconcilePreparedClientStartCandidates();
+        snapshot = await readTaskSnapshot(runId);
+      }
+      if (!snapshot) throw taskNotFound(runId);
+      if (snapshot.status !== "working" && snapshot.status !== "input_required") {
+        return { kind: "return", view: persistedOwnerView(snapshot) };
+      }
+      if (await persistedRunLiveness(snapshot) === "live") {
+        return { kind: "return", view: persistedOwnerView(snapshot) };
+      }
+      return {
+        kind: "inspect",
+        descendantRunIds: [...(snapshot.descendant_run_ids ?? [])],
+      };
+    });
+    if (phaseOne.kind === "return") return phaseOne.view;
+
+    // No parent owner is held while descendant owners are entered.
+    const descendantStatuses = new Map<string, RunTaskTerminalStatus | null>();
+    for (const descendantRunId of phaseOne.descendantRunIds) {
+      const descendant = await getRunTask(descendantRunId);
+      descendantStatuses.set(
+        descendantRunId,
+        isTerminalRunStatus(descendant.status) ? descendant.status as RunTaskTerminalStatus : null,
+      );
+    }
+
+    let failureLog: { snapshot: RunTaskView; view: RunTaskView; settledAt: string } | undefined;
+    const phaseTwo = await withRunOwner(runId, () =>
+      withRunClaimLock(defaultRunTasksDir(), runId, async (): Promise<
+        | { kind: "retry" }
+        | { kind: "return"; view: RunTaskView }
+      > => {
+        const currentRecord = await readRunOwnerRecordFile(taskRecordPath(runId));
+        if (!currentRecord) throw taskNotFound(runId);
+        const snapshot = currentRunClaimView(currentRecord);
+        if (snapshot.status !== "working" && snapshot.status !== "input_required") {
+          return { kind: "return", view: persistedOwnerView(snapshot) };
+        }
+        if (await persistedRunLiveness(snapshot) === "live") {
+          return { kind: "return", view: persistedOwnerView(snapshot) };
+        }
+        const freshDescendantRunIds = [...(snapshot.descendant_run_ids ?? [])];
+        if (
+          freshDescendantRunIds.length !== phaseOne.descendantRunIds.length ||
+          freshDescendantRunIds.some((descendantRunId, index) =>
+            descendantRunId !== phaseOne.descendantRunIds[index] || !descendantStatuses.has(descendantRunId)
+          )
+        ) {
+          return { kind: "retry" };
+        }
+        if (freshDescendantRunIds.some((descendantRunId) => descendantStatuses.get(descendantRunId) === null)) {
+          return { kind: "return", view: persistedOwnerView(snapshot) };
+        }
+        const descendantTerminalStatuses = { ...(snapshot.descendant_terminal_statuses ?? {}) };
+        for (const descendantRunId of freshDescendantRunIds) {
+          descendantTerminalStatuses[descendantRunId] = descendantStatuses.get(descendantRunId)!;
+        }
+        const freshSnapshot = {
+          ...snapshot,
+          descendant_terminal_statuses: descendantTerminalStatuses,
+        };
+        const recoveredOutput = !snapshot.partial_output_path
+          ? undefined
+          : await recoverStreamingRunTranscript(snapshot.partial_output_path, snapshot.run_id);
+        const ownerLossEvidence: RestartDriftEvidence = {
+          finishedAt: new Date().toISOString(),
+          ...(recoveredOutput ? { recoveredOutput } : {}),
+        };
+        const staleView = settleRunOwnerLossSnapshot(
+          { ...contractFields(), ...freshSnapshot },
+          ownerLossEvidence,
+        );
+        if (!isRestartDriftSnapshot(staleView)) invalidOwnerRecord("owner-loss settlement is not restart drift");
+        const view = await writeRunClaimOwned(staleView, {
+          declarations: currentRecord.declarations,
+          ...(currentRecord.launch_observation
+            ? { launchObservation: currentRecord.launch_observation }
+            : {}),
+        });
+        failureLog = { snapshot: freshSnapshot, view, settledAt: ownerLossEvidence.finishedAt };
+        return { kind: "return", view };
+      })
+    );
+    if (phaseTwo.kind === "retry") continue;
+    if (failureLog) {
+      const closeReason = "MCP server restarted while run was active";
+      await closePendingInputRequestsForRun({
+        mailboxRoot: path.dirname(failureLog.snapshot.input_requests_dir),
+        runId,
+        reason: closeReason,
+        settledAt: failureLog.settledAt,
+      });
+      await cleanupTerminalRunStaging(failureLog.view);
+      await logRestartDriftFailure(failureLog.snapshot, failureLog.view);
+    }
+    return phaseTwo.view;
+  }
+  throw new ValidationError(
+    `run restart reconciliation could not stabilize descendant membership: ${runId}`,
+    "run_liveness_unknown",
+  );
 }
 
 export async function getRunTask(runId: string, allowUnreleasedTerminal = false): Promise<RunTaskView> {
   const state = tasks.get(runId);
-  if (!state) {
-    let snapshot = await readTaskSnapshot(runId);
-    if (!snapshot) {
-      await reconcilePreparedClientStartCandidates();
-      snapshot = await readTaskSnapshot(runId);
-    }
-    if (!snapshot) {
-      throw taskNotFound(runId);
-    }
-    const mailboxRoot = path.dirname(snapshot.input_requests_dir);
-    const inputRequests = await listInputRequests({ mailboxRoot, runId });
-    const eventProjection = await loadSnapshotEvents(snapshot);
-    if (snapshot.status === "working" || snapshot.status === "input_required") {
-      const clientStartOwnerLiveness = await clientStartSnapshotOwnerLiveness(snapshot);
-      if (clientStartOwnerLiveness === "live") {
-        return persistedActiveRunView(snapshot, eventProjection, inputRequests);
-      }
-      if (clientStartOwnerLiveness === "unknown") {
-        throw new ValidationError(
-          "run liveness is unknown because its client_start_id owner binding cannot be verified",
-          "run_liveness_unknown",
-        );
-      }
-      if (clientStartOwnerLiveness === null) {
-        const leaseLiveness = await activeChildLeaseLiveness(runId);
-        if (leaseLiveness === "live" || await hasLiveQueuedRunTicket(runId)) {
-          return persistedActiveRunView(snapshot, eventProjection, inputRequests);
-        }
-        if (leaseLiveness === "unknown") {
-          throw new ValidationError(
-            "run liveness is unknown because a legacy active-child lease is unreadable",
-            "run_liveness_unknown",
-          );
-        }
-      }
-      const descendantTerminalStatuses = { ...(snapshot.descendant_terminal_statuses ?? {}) };
-      for (const descendantRunId of snapshot.descendant_run_ids ?? []) {
-        const descendant = await getRunTask(descendantRunId);
-        if (descendant && !isTerminalRunStatus(descendant.status)) {
-          return persistedActiveRunView(snapshot, eventProjection, inputRequests);
-        }
-        if (descendant && isTerminalRunStatus(descendant.status)) {
-          descendantTerminalStatuses[descendantRunId] = descendant.status as RunTaskTerminalStatus;
-        }
-      }
-      snapshot = { ...snapshot, descendant_terminal_statuses: descendantTerminalStatuses };
-      return persistRestartDriftSnapshotOnce(
-        { ...contractFields(), ...snapshot, input_requests: inputRequests },
-        eventProjection,
-      );
-    }
-    return {
-      ...contractFields(),
-      ...snapshot,
-      ...eventProjection,
-      input_requests: snapshot.input_requests ?? inputRequests,
-    };
-  }
-  const inputRequests = state.terminalInputRequests ?? await listInputRequests({
-    mailboxRoot: state.mailboxRoot,
-    runId: state.runId,
-  });
-  if (
-    (state.result || state.error) &&
-    (!state.terminalSnapshotStarted || (!state.capacityReleased && !allowUnreleasedTerminal))
-  ) {
-    return activeRunTaskView(state, inputRequests);
-  }
-  if (state.result) {
-    return {
-      ...contractFields(),
-      ...state.result,
-      ...promotionView(state),
-      ...activationView(state),
-      run_id: state.runId,
-      task_id: state.runId,
-      task_kind: state.taskKind,
-      ...lineageView(state),
-      status: terminalRunTaskStatus(state.result),
-      started_at: state.startedAt,
-      finished_at: state.finishedAt,
-      input_requests_dir: state.inputRequestsDir,
-      input_requests: inputRequests,
-      ...admissionView(state),
-      ...terminalProgressView(state, state.result),
-    };
-  }
-  if (state.error) {
-    const cancelledBeforeLaunch = state.cancelRequested && !state.childStarted;
-    const taxonomy = errorTaxonomyForError(state.error);
-    const sessionId = sessionIdFromEvents(state.recentEvents);
-    const failureEnvelope = syntheticTerminalFailureEnvelope({
-      startedAt: state.startedAt,
-      finishedAt: state.finishedAt ?? new Date().toISOString(),
-      errorClass: taxonomy.error_class,
-      reasonCode: taxonomy.reason_code,
-      sessionId,
-    });
-    return {
-      ...contractFields(),
-      run_id: state.runId,
-      task_id: state.runId,
-      task_kind: state.taskKind,
-      ...lineageView(state),
-      ...promotionView(state),
-      ...activationView(state),
-      ...(state.sessionKey ? { session_key: state.sessionKey } : {}),
-      status: state.cancelRequested ? "cancelled" : "failed",
-      started_at: state.startedAt,
-      finished_at: state.finishedAt,
-      input_requests_dir: state.inputRequestsDir,
-      input_requests: inputRequests,
-      ...admissionView(state),
-      ...failureEnvelope,
-      ...(cancelledBeforeLaunch ? { error_class: undefined, reason_code: undefined } : {}),
-      ...activeProgressView(state),
-      ...(cancelledBeforeLaunch ? {} : { error: state.error.message }),
-    };
-  }
-  return activeRunTaskView(state, inputRequests);
+  if (!state) return getPersistedRunTask(runId);
+  // Draft mutations are private and publication is synchronous after the
+  // owner record commits, so a lock-free active read can only observe the
+  // previous or current committed live state, never a partial transition.
+  return runTaskViewFromState(state, state.inputRequests, allowUnreleasedTerminal);
 }
 
 export async function reconcilePersistedActiveRunTasks(): Promise<number> {
@@ -3549,8 +4070,7 @@ async function terminalizeClaimedClientStartFailure(
     }
   }
 
-  state.error = error instanceof Error ? error : new Error(String(error));
-  state.result = undefined;
+  const terminalError = error instanceof Error ? error : new Error(String(error));
   if (tasks.get(state.runId) !== state) {
     if (state.recentEvents.some((event) => event.event === "run_started")) {
       tasks.set(state.runId, state);
@@ -3562,7 +4082,12 @@ async function terminalizeClaimedClientStartFailure(
   const childLease = childAdmission?.kind === "active"
     ? childAdmission.lease
     : { release: async () => {} };
-  await finalizeRegisteredRunTask(state, childLease, "client start admission failed");
+  await finalizeRegisteredRunTask(
+    state,
+    childLease,
+    "client start admission failed",
+    { error: terminalError },
+  );
   if (childAdmission?.kind === "queued") {
     await releaseQueueTicket(childAdmission.ticket);
   }
@@ -3680,6 +4205,7 @@ export async function startRunTask(
     const queuedAdmission = childAdmission;
     state.promise = containBackgroundRunFailure(state, (async () => {
       let childLease: ActiveChildLease = { release: async () => {} };
+      const terminal: RunTaskTerminalIntent = {};
       try {
         childLease = await queuedAdmission.ticket.waitForLease(state.abortController.signal);
         if (state.cancelRequested) {
@@ -3688,13 +4214,18 @@ export async function startRunTask(
         await assertPiChildEntrypointAvailable();
         await assertDiskReserveAvailable(options.runsDir);
         await prepareChildRun(state);
-        state.result = await executeRunTask(state, request, skillFilePath, options);
+        terminal.result = await executeRunTask(state, request, skillFilePath, options);
       } catch (error) {
-        state.error = error as Error;
+        terminal.error = error instanceof Error ? error : new Error(String(error));
         await logBackgroundHandlerError(failureLogTool, request, error);
       } finally {
         await releaseQueueTicket(queuedAdmission.ticket);
-        await finalizeRegisteredRunTask(state, childLease, durableTaskCloseReason(state));
+        await finalizeRegisteredRunTask(
+          state,
+          childLease,
+          durableTaskCloseReason(state),
+          terminal,
+        );
       }
     })());
     ownershipTransferred = true;
@@ -3706,20 +4237,31 @@ export async function startRunTask(
     await prepareChildRun(state);
   } catch (error) {
     if (ownsClaimedClientStart) throw error;
-    state.error = error as Error;
+    const terminalError = error instanceof Error ? error : new Error(String(error));
     await logBackgroundHandlerError(failureLogTool, request, error);
-    await finalizeRegisteredRunTask(state, childLease, durableTaskCloseReason(state));
+    await finalizeRegisteredRunTask(
+      state,
+      childLease,
+      durableTaskCloseReason(state),
+      { error: terminalError },
+    );
     return getRunTask(state.runId);
   }
 
   state.promise = containBackgroundRunFailure(state, (async () => {
+    const terminal: RunTaskTerminalIntent = {};
     try {
-      state.result = await executeRunTask(state, request, skillFilePath, options);
+      terminal.result = await executeRunTask(state, request, skillFilePath, options);
     } catch (error) {
-      state.error = error as Error;
+      terminal.error = error instanceof Error ? error : new Error(String(error));
       await logBackgroundHandlerError(failureLogTool, request, error);
     } finally {
-      await finalizeRegisteredRunTask(state, childLease, durableTaskCloseReason(state));
+      await finalizeRegisteredRunTask(
+        state,
+        childLease,
+        durableTaskCloseReason(state),
+        terminal,
+      );
     }
   })());
 
@@ -3869,15 +4411,21 @@ export async function startSessionRunTask(
   try {
     await prepareChildRun(state);
   } catch (error) {
-    state.error = error as Error;
+    const terminalError = error instanceof Error ? error : new Error(String(error));
     await logBackgroundHandlerError(failureLogTool, request, error);
-    await finalizeRegisteredRunTask(state, childLease, durableTaskCloseReason(state));
+    await finalizeRegisteredRunTask(
+      state,
+      childLease,
+      durableTaskCloseReason(state),
+      { error: terminalError },
+    );
     return getRunTask(state.runId);
   }
 
   state.promise = containBackgroundRunFailure(state, (async () => {
+    const terminal: RunTaskTerminalIntent = {};
     try {
-      state.result = await runSubagentSession(request, {
+      terminal.result = await runSubagentSession(request, {
         sessionsDir: options.sessionsDir,
         mailboxRoot: state.mailboxRoot,
         childRunId: state.runId,
@@ -3888,10 +4436,15 @@ export async function startSessionRunTask(
         ...taskInputControlOptions(state),
       });
     } catch (error) {
-      state.error = error as Error;
+      terminal.error = error instanceof Error ? error : new Error(String(error));
       await logBackgroundHandlerError(failureLogTool, request, error);
     } finally {
-      await finalizeRegisteredRunTask(state, childLease, durableTaskCloseReason(state));
+      await finalizeRegisteredRunTask(
+        state,
+        childLease,
+        durableTaskCloseReason(state),
+        terminal,
+      );
     }
   })());
 
@@ -3953,21 +4506,29 @@ async function runSubagentPromotedTask(
   state.promotion = promotion;
   const childLease = await registerRunTaskStateWithChildLease(state, request);
   try {
-    await appendStatusEvent(state, {
-      kind: "task",
-      event: "auto_promoted",
-      text: "[auto_promoted] run_subagent -> durable_run",
-      occurred_at: new Date().toISOString(),
-      metadata: { ...promotion },
-    }, "run_subagent auto-promoted to durable run");
-    await writeTaskSnapshot(await getRunTask(state.runId));
+    await commitActiveRunTransition(state, (draft, stagedEvents) => {
+      projectStatusEvent(draft, {
+        kind: "task",
+        event: "auto_promoted",
+        text: "[auto_promoted] run_subagent -> durable_run",
+        occurred_at: new Date().toISOString(),
+        metadata: { ...promotion },
+      }, stagedEvents, "run_subagent auto-promoted to durable run");
+      return true;
+    });
   } catch (error) {
-    state.error = error instanceof Error ? error : new Error(String(error));
-    await finalizeRegisteredRunTask(state, childLease, durableTaskCloseReason(state));
+    const terminalError = error instanceof Error ? error : new Error(String(error));
+    await finalizeRegisteredRunTask(
+      state,
+      childLease,
+      durableTaskCloseReason(state),
+      { error: terminalError },
+    );
     throw error;
   }
 
   state.promise = containBackgroundRunFailure(state, (async () => {
+    const terminal: RunTaskTerminalIntent = {};
     try {
       await prepareChildRun(state);
       const result = await runSubagentCore(request, {
@@ -3980,15 +4541,20 @@ async function runSubagentPromotedTask(
         ...taskChildRuntimeOptions(state, options),
         ...taskInputControlOptions(state),
       });
-      state.result = {
+      terminal.result = {
         ...runSubagentResultWithConcreteTimeoutRecoveryHint(result, state.runId),
         ...promotion,
       };
     } catch (error) {
-      state.error = error as Error;
+      terminal.error = error instanceof Error ? error : new Error(String(error));
       await logBackgroundHandlerError("run_subagent", request, error);
     } finally {
-      await finalizeRegisteredRunTask(state, childLease, durableTaskCloseReason(state));
+      await finalizeRegisteredRunTask(
+        state,
+        childLease,
+        durableTaskCloseReason(state),
+        terminal,
+      );
     }
   })());
 
@@ -4031,9 +4597,10 @@ export async function runSubagentOneShotTask(
   const childLease = await registerRunTaskStateWithChildLease(state, request);
 
   state.promise = containBackgroundRunFailure(state, (async () => {
+    const terminal: RunTaskTerminalIntent = {};
     try {
       await prepareChildRun(state);
-      state.result = await runSubagentCore(request, {
+      terminal.result = await runSubagentCore(request, {
         runId: state.runId,
         mailboxRoot: state.mailboxRoot,
         runsDir: options.runsDir,
@@ -4043,27 +4610,80 @@ export async function runSubagentOneShotTask(
         ...taskInputControlOptions(state),
       });
     } catch (error) {
-      state.error = error as Error;
+      terminal.error = error instanceof Error ? error : new Error(String(error));
       await logBackgroundHandlerError("run_subagent", request, error);
     } finally {
-      await finalizeRegisteredRunTask(state, childLease, "run reached a terminal state");
+      await finalizeRegisteredRunTask(
+        state,
+        childLease,
+        "run reached a terminal state",
+        terminal,
+      );
     }
   })());
 
   await state.promise;
   const view = await getRunTask(state.runId);
   if (view.timed_out === true || view.timeout_recovery_hint) {
-    const withConcreteHint: RunTaskView = runSubagentResultWithConcreteTimeoutRecoveryHint(
-      view as RunSubagentResult,
-      state.runId,
-    ) as RunTaskView;
-    await writeTaskSnapshot(withConcreteHint);
-    if (state.result) {
-      state.result = { ...state.result, timeout_recovery_hint: withConcreteHint.timeout_recovery_hint };
-    }
-    return withConcreteHint;
+    return withRunClaimOwner(state, async () => {
+      const currentRecord = await readRunOwnerRecordFile(taskRecordPath(state.runId));
+      if (!currentRecord) throw taskNotFound(state.runId);
+      const current = currentRunClaimView(currentRecord);
+      const withConcreteHint = runSubagentResultWithConcreteTimeoutRecoveryHint(
+        current as RunSubagentResult,
+        state.runId,
+      ) as RunTaskView;
+      if (sameCanonicalOwnerJson(current, withConcreteHint)) return current;
+      const draft = cloneRunTaskTransitionState(state);
+      if (!draft.result) return current;
+      draft.result = {
+        ...draft.result,
+        timeout_recovery_hint: withConcreteHint.timeout_recovery_hint,
+      };
+      const committed = await writeRunClaimOwned(
+        withConcreteHint,
+        runClaimPersistenceEvidence(draft),
+      );
+      publishRunTaskTransitionState(state, draft);
+      return committed;
+    });
   }
   return view;
+}
+
+async function acceptRunCancellation(
+  state: RunTaskState,
+): Promise<{ view: RunTaskView; cancellationAt?: string }> {
+  return withRunOwner(state.runId, async () => {
+    if (tasks.get(state.runId) !== state) throw taskNotFound(state.runId);
+    if (state.terminalSnapshotStarted || state.result || state.error || state.cancelRequested) {
+      return { view: runTaskViewFromState(state, state.inputRequests) };
+    }
+    const draft = cloneRunTaskTransitionState(state);
+    const stagedEvents: CanonicalRunPublicEvent[] = [];
+    const cancellationAt = new Date().toISOString();
+    draft.cancelRequested = true;
+    setTaskPhase(draft, "cancelling", cancellationAt);
+    projectStatusEvent(draft, {
+      kind: "terminal",
+      event: "cancellation_requested",
+      text: "[cancellation_requested] cancellation requested",
+      occurred_at: cancellationAt,
+    }, stagedEvents, "cancellation requested");
+    const inputSettlement = planClosedInputRequests(draft.inputRequests, cancellationAt, "run cancelled");
+    draft.inputRequests = inputSettlement.inputRequests;
+    appendClosedInputEvents(draft, inputSettlement.closed, stagedEvents);
+    const committed = await writeRunClaimOwned(
+      runTaskViewFromState(draft, draft.inputRequests),
+      runClaimPersistenceEvidence(draft),
+    );
+    rejectPendingInputDeliveries(
+      draft,
+      new ValidationError(`input request is already closed: ${state.runId}`, "input_request_already_closed"),
+    );
+    publishRunTaskTransitionState(state, draft);
+    return { view: committed, cancellationAt };
+  });
 }
 
 export async function cancelRunTask(runId: string): Promise<RunTaskView> {
@@ -4075,32 +4695,22 @@ export async function cancelRunTask(runId: string): Promise<RunTaskView> {
     }
     throw taskNotFound(runId);
   }
-  return serializeInputMutation(state, async () => {
-    if (!state.result && !state.error && !state.terminalizing) {
-      state.cancelRequested = true;
-      setTaskPhase(state, "cancelling");
-      rejectPendingInputDeliveries(
-        state,
-        new ValidationError(`input request is already closed: ${runId}`, "input_request_already_closed"),
-      );
-      await appendStatusEvent(state, {
-        kind: "terminal",
-        event: "cancellation_requested",
-        text: "[cancellation_requested] cancellation requested",
-        occurred_at: new Date().toISOString(),
-      }, "cancellation requested");
-      const closed = await closePendingInputRequestsForRun({
+  try {
+    const { view, cancellationAt } = await acceptRunCancellation(state);
+    if (cancellationAt) {
+      await closePendingInputRequestsForRun({
         mailboxRoot: state.mailboxRoot,
         runId,
         reason: "run cancelled",
+        settledAt: cancellationAt,
       });
-      await appendClosedInputEvents(state, closed);
       state.abortController.abort();
     }
-    const view = await getRunTask(runId);
-    await writeTaskSnapshot(view);
     return view;
-  });
+  } catch (error) {
+    if (state.cancelRequested) state.abortController.abort();
+    throw error;
+  }
 }
 
 export interface RunOperationContext {
@@ -4139,8 +4749,7 @@ export async function resolveRunOperationContext(runId: string): Promise<RunOper
   if (!snapshot) {
     return { runId };
   }
-  const events = await readRunPublicEvents(defaultRunTasksDir(), runId);
-  const cwd = cwdFromRunStartedEvent(events.length > 0 ? events : snapshot.recent_events ?? []);
+  const cwd = cwdFromRunStartedEvent(snapshot.recent_events ?? []);
   return {
     runId,
     ...(snapshot.task_kind ? { taskKind: snapshot.task_kind } : {}),
@@ -4157,19 +4766,26 @@ export interface AnswerRunTaskInputResult {
   outcome: "accepted" | "replayed";
 }
 
-async function recordAnsweredInput(
+function recordAnsweredInput(
   state: RunTaskState,
   requestId: string,
   responseId: string,
-): Promise<RunTaskView> {
-  const occurredAt = new Date().toISOString();
-  const remainingPending = await listInputRequests({
-    mailboxRoot: state.mailboxRoot,
-    runId: state.runId,
-    status: "pending",
-  });
+  stagedEvents: CanonicalRunPublicEvent[],
+  occurredAt: string,
+): void {
+  state.inputRequests = state.inputRequests.map((request) =>
+    request.request_id === requestId
+      ? {
+          ...request,
+          status: "answered",
+          settled_at: occurredAt,
+          answered_at: occurredAt,
+        }
+      : request
+  );
+  const remainingPending = state.inputRequests.filter((request) => request.status === "pending");
   setTaskPhase(state, remainingPending.length > 0 ? "input_required" : "running", occurredAt);
-  await appendStatusEvent(state, {
+  projectStatusEvent(state, {
     kind: "input",
     event: "input_answered",
     text: `[input_answered] ${requestId}`,
@@ -4179,17 +4795,14 @@ async function recordAnsweredInput(
       response_id: responseId,
       status: "answered",
     },
-  }, "input answered");
-  const view = await getRunTask(state.runId);
-  await writeTaskSnapshot(view);
-  return view;
+  }, stagedEvents, "input answered");
 }
 
 function settleChildAcceptedInputResponse(
   state: RunTaskState,
   response: { requestId: string; responseId: string },
 ): void {
-  void serializeInputMutation(state, async () => {
+  void withRunOwner(state.runId, async () => {
     const delivery = state.pendingInputDeliveries.get(response.requestId);
     if (!delivery || delivery.responseId !== response.responseId) {
       return;
@@ -4200,20 +4813,36 @@ function settleChildAcceptedInputResponse(
       return;
     }
     try {
+      const stagedEvents: CanonicalRunPublicEvent[] = [];
+      const occurredAt = new Date().toISOString();
+      const draft = cloneRunTaskTransitionState(state);
+      draft.pendingInputDeliveries.delete(response.requestId);
+      draft.acceptedInputResponses.set(response.requestId, {
+        responseId: response.responseId,
+        answerSha256: inputAnswerSha256(delivery.answer),
+        receipt: delivery.receipt,
+      });
+      recordAnsweredInput(
+        draft,
+        response.requestId,
+        response.responseId,
+        stagedEvents,
+        occurredAt,
+      );
       await settleInputResponse({
         mailboxRoot: state.mailboxRoot,
         requestId: response.requestId,
         responseId: response.responseId,
         receipt: delivery.receipt,
+        settledAt: occurredAt,
       });
-      state.pendingInputDeliveries.delete(response.requestId);
-      state.acceptedInputResponses.set(response.requestId, {
-        responseId: response.responseId,
-        answerSha256: inputAnswerSha256(delivery.answer),
-        receipt: delivery.receipt,
-      });
+      const committed = await writeRunClaimOwned(
+        runTaskViewFromState(draft, draft.inputRequests),
+        runClaimPersistenceEvidence(draft),
+      );
+      publishRunTaskTransitionState(state, draft);
       delivery.resolve({
-        view: await recordAnsweredInput(state, response.requestId, response.responseId),
+        view: committed,
         responseId: response.responseId,
         receipt: delivery.receipt,
         outcome: "accepted",
@@ -4245,7 +4874,7 @@ export async function answerRunTaskInput(options: {
   if (!state) {
     throw taskNotFound(options.runId);
   }
-  const prepared = await serializeInputMutation(state, async (): Promise<
+  const prepared = await withRunOwner(state.runId, async (): Promise<
     { result: AnswerRunTaskInputResult } | { delivery: PendingInputDelivery }
   > => {
     const accepted = state.acceptedInputResponses.get(options.requestId);
@@ -4264,7 +4893,7 @@ export async function answerRunTaskInput(options: {
       }
       return {
         result: {
-          view: await getRunTask(options.runId),
+          view: runTaskViewFromState(state, state.inputRequests),
           responseId,
           receipt: accepted.receipt,
           outcome: "replayed",
@@ -4287,10 +4916,7 @@ export async function answerRunTaskInput(options: {
         "input_request_already_answered",
       );
     }
-    const requests = state.terminalInputRequests ?? await listInputRequests({
-      mailboxRoot: state.mailboxRoot,
-      runId: state.runId,
-    });
+    const requests = state.inputRequests;
     const request = requests.find((entry) => entry.request_id === options.requestId);
     if (!request) {
       throw new ValidationError(
@@ -4315,15 +4941,6 @@ export async function answerRunTaskInput(options: {
       throw new ValidationError(`run is not accepting input: ${options.runId}`, "run_not_accepting_input");
     }
     const receipt = `input-${randomBytes(12).toString("hex")}`;
-    const sent = state.childControlSend(`${JSON.stringify({
-      type: "subagent007.input_response",
-      request_id: options.requestId,
-      response_id: responseId,
-      answer: options.answer,
-    })}\n`);
-    if (!sent) {
-      throw new ValidationError(`run is not accepting input: ${options.runId}`, "run_not_accepting_input");
-    }
     let resolve!: (result: AnswerRunTaskInputResult) => void;
     let reject!: (error: Error) => void;
     const completion = new Promise<AnswerRunTaskInputResult>((resolveCompletion, rejectCompletion) => {
@@ -4339,6 +4956,16 @@ export async function answerRunTaskInput(options: {
       reject,
     };
     state.pendingInputDeliveries.set(options.requestId, delivery);
+    const sent = state.childControlSend(`${JSON.stringify({
+      type: "subagent007.input_response",
+      request_id: options.requestId,
+      response_id: responseId,
+      answer: options.answer,
+    })}\n`);
+    if (!sent) {
+      state.pendingInputDeliveries.delete(options.requestId);
+      throw new ValidationError(`run is not accepting input: ${options.runId}`, "run_not_accepting_input");
+    }
     return { delivery };
   });
   return "result" in prepared ? prepared.result : prepared.delivery.completion;

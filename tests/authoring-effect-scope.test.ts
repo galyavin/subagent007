@@ -17,6 +17,10 @@ import { canonicalClientStartRequestSha256 } from "../src/clientStartAdmission.j
 import { runSubagentCore } from "../src/runSubagent.js";
 import { publishSkillSnapshotsRequest, resolveSkillRuntimeBundlesRequest } from "../src/skillSnapshot.js";
 import { createTaskRootAuthoringTools } from "../src/taskRootAuthoringTools.js";
+import {
+  taskRootAuthoringV1ActivationReceipt,
+  validatedProjectedActivationReceipt,
+} from "../src/toolProfile.js";
 import { validateAndResolveRequest } from "../src/validate.js";
 import { createFakePiChild } from "./helpers/fakePiChild.js";
 import { withEnv } from "./helpers/testUtils.js";
@@ -426,6 +430,18 @@ test("effect-scope binding profile and writable-scope shape are exact", async ()
       allowedOutputPaths: [],
     });
     assert.doesNotThrow(() => assertAuthoringEffectScopeBinding(neutral.binding));
+    for (const binding of [
+      { ...neutral.binding, unexpected_top_level: true },
+      {
+        ...neutral.binding,
+        writable_scope: { ...neutral.binding.writable_scope, unexpected_nested: true },
+      },
+    ]) {
+      assert.throws(
+        () => assertAuthoringEffectScopeBinding(binding as typeof neutral.binding),
+        /binding|scope|malformed/i,
+      );
+    }
     assert.throws(
       () => assertAuthoringEffectScopeBinding({
         ...neutral.binding,
@@ -442,6 +458,18 @@ test("effect-scope binding profile and writable-scope shape are exact", async ()
       recursiveDelegation: "disabled",
     });
     assert.doesNotThrow(() => assertAuthoringEffectScopeBinding(bounded.binding));
+    for (const binding of [
+      { ...bounded.binding, unexpected_top_level: true },
+      {
+        ...bounded.binding,
+        writable_scope: { ...bounded.binding.writable_scope, unexpected_nested: true },
+      },
+    ]) {
+      assert.throws(
+        () => assertAuthoringEffectScopeBinding(binding as typeof bounded.binding),
+        /binding|scope|malformed/i,
+      );
+    }
     assert.throws(
       () => assertAuthoringEffectScopeBinding({
         ...bounded.binding,
@@ -459,6 +487,37 @@ test("effect-scope binding profile and writable-scope shape are exact", async ()
       }),
       /binding|scope|profile/i,
     );
+  } finally {
+    await fs.rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test("projected activation rejects open-world effect-scope bindings even when it derives the expected scope", async () => {
+  const fixture = await tempTaskRoot("subagent007-effect-scope-projected-binding-");
+  try {
+    const scope = await captureAuthoringEffectScope({
+      taskRoot: fixture.root,
+      effectProfile: "task_root_authoring_v1",
+      recursiveDelegation: "disabled",
+      allowedOutputPaths: [],
+    });
+    const receipt = taskRootAuthoringV1ActivationReceipt(null, scope.binding);
+    assert.ok(validatedProjectedActivationReceipt({
+      value: receipt,
+      requestedEffectProfile: "task_root_authoring_v1",
+    }));
+    for (const effectScopeBinding of [
+      { ...scope.binding, unexpected_top_level: true },
+      {
+        ...scope.binding,
+        writable_scope: { ...scope.binding.writable_scope, unexpected_nested: true },
+      },
+    ]) {
+      assert.equal(validatedProjectedActivationReceipt({
+        value: { ...receipt, effect_scope_binding: effectScopeBinding },
+        requestedEffectProfile: "task_root_authoring_v1",
+      }), undefined);
+    }
   } finally {
     await fs.rm(fixture.parent, { recursive: true, force: true });
   }

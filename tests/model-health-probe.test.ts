@@ -39,7 +39,7 @@ test("model-health probe rejects unsupported model classes", async () => {
 
   assert.equal(result.ok, false);
   assert.equal(result.code, 2);
-  assert.match(result.stderr, /--model-class must be one of: A, B, C, D, E, Z1, Z2, Z3/);
+  assert.match(result.stderr, /--model-class must be one of: A, B, C, D, E, Z1, Z2, Z3, Z4, Z5/);
 });
 
 test("model-health probe can record a healthy class without running a child", async () => {

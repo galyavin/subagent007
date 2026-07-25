@@ -7,11 +7,79 @@ import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { createFakePiChild } from "./helpers/fakePiChild.js";
-import { readJsonl } from "./helpers/testUtils.js";
+import { readJsonl, sha256File } from "./helpers/testUtils.js";
 
 const execFileAsync = promisify(execFile);
 const harnessPath = path.resolve("scripts/run-observed-campaign.mjs");
 const probePath = path.resolve("scripts/run-observed-mcp-probe.mjs");
+
+async function createSourceServerEntrypoint(directory: string): Promise<string> {
+  const projectRoot = path.resolve(".");
+  const detachedProject = path.join(directory, "compiled-source-server");
+  const outputDir = path.join(detachedProject, "dist");
+  await fs.mkdir(detachedProject);
+  await Promise.all([
+    fs.copyFile(path.join(projectRoot, "package.json"), path.join(detachedProject, "package.json")),
+    fs.symlink(path.join(projectRoot, "node_modules"), path.join(detachedProject, "node_modules"), "dir"),
+  ]);
+  await execFileAsync(
+    process.execPath,
+    [path.join(projectRoot, "node_modules", "typescript", "bin", "tsc"), "-p", path.join(projectRoot, "tsconfig.json"), "--outDir", outputDir, "--noCheck"],
+    { cwd: projectRoot, maxBuffer: 10 * 1024 * 1024 },
+  );
+  return path.join(outputDir, "server.js");
+}
+
+async function waitForNoOwnedProcessCommand(identity: string): Promise<void> {
+  if (process.platform === "win32") return;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const { stdout } = await execFileAsync("ps", ["-ax", "-o", "command="]);
+    if (!stdout.split(/\r?\n/).some((line) => line.includes(identity))) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`campaign-owned process remains: ${identity}`);
+}
+
+async function assertDirectoryEmpty(directory: string): Promise<void> {
+  assert.deepEqual(await fs.readdir(directory).catch(() => []), [], directory);
+}
+
+async function probeFakeRoots(): Promise<Set<string>> {
+  return new Set(
+    (await fs.readdir(os.tmpdir())).filter((name) => name.startsWith("subagent007-probe-fake-pi-")),
+  );
+}
+
+function isolatedRuntimeStateEnv(stateDir: string): NodeJS.ProcessEnv {
+  return {
+    SUBAGENT007_SESSIONS_DIR: path.join(stateDir, "sessions"),
+    SUBAGENT007_RUNS_DIR: path.join(stateDir, "runs"),
+    SUBAGENT007_RUN_TASKS_DIR: path.join(stateDir, "run-tasks"),
+    SUBAGENT007_INPUT_REQUESTS_DIR: path.join(stateDir, "input-requests"),
+    SUBAGENT007_PI_RAW_SESSIONS_DIR: path.join(stateDir, "raw-sessions"),
+    SUBAGENT007_ACTIVE_CHILDREN_DIR: path.join(stateDir, "active-children"),
+    SUBAGENT007_QUEUED_RUNS_DIR: path.join(stateDir, "queued-runs"),
+    SUBAGENT007_TEMP_DIR: path.join(stateDir, "tmp"),
+    SUBAGENT007_MODEL_HEALTH_PATH: path.join(stateDir, "model-health.json"),
+  };
+}
+
+async function assertCampaignRuntimeClean(stateDir: string): Promise<void> {
+  await Promise.all([
+    assertDirectoryEmpty(path.join(stateDir, "active-children")),
+    assertDirectoryEmpty(path.join(stateDir, "queued-runs")),
+    assertDirectoryEmpty(path.join(stateDir, "input-requests")),
+    assertDirectoryEmpty(path.join(stateDir, "raw-sessions")),
+    assertDirectoryEmpty(path.join(stateDir, "tmp")),
+  ]);
+  await waitForNoOwnedProcessCommand(stateDir);
+}
+
+function coverageFailureRecord(stderr: string): Record<string, unknown> {
+  const line = stderr.split(/\r?\n/).find((entry) => entry.startsWith("{\"record_name\":\"subagent007.observed_coverage_failure\""));
+  assert.ok(line, stderr);
+  return JSON.parse(line) as Record<string, unknown>;
+}
 
 type HarnessResult = {
   campaign_id: string;
@@ -260,13 +328,14 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
   await fs.mkdir(projectDir, { recursive: true });
   await fs.mkdir(stateDir, { recursive: true });
   await fs.writeFile(configPath, JSON.stringify({ default_model_class: "C" }));
+  const sourceServerPath = await createSourceServerEntrypoint(tmp);
 
   const result = await execFileAsync(
     process.execPath,
     [
       probePath,
       "--server",
-      path.resolve("dist/server.js"),
+      sourceServerPath,
       "--cwd",
       projectDir,
       "--scenario",
@@ -386,6 +455,8 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
   assert.ok(summary.scenarios.includes("schedule-run-durable-first"));
   assert.ok(summary.scenarios.includes("start-session-run-async-polling"));
   assert.ok(summary.scenarios.includes("start-session-packet-failure"));
+  assert.ok(summary.scenarios.includes("start-session-packet-missing"));
+  assert.ok(summary.scenarios.includes("start-session-packet-invalid"));
   assert.ok(summary.scenarios.includes("start-session-require-existing-missing"));
   assert.ok(summary.scenarios.includes("get-run-missing"));
   assert.ok(summary.scenarios.includes("caller-input"));
@@ -415,6 +486,8 @@ test("observed MCP probe maps all scenario alias to full-current coverage", asyn
   assert.ok(summary.coverage_summary.covered_surfaces.includes("schedule_run-durable-first"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("start_session_run-async-polling"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("start_session_run-packet-failure"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("start_session_run-packet-missing"));
+  assert.ok(summary.coverage_summary.covered_surfaces.includes("start_session_run-packet-invalid"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("start_session_run-require-existing-missing"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("get_run-run-not-found"));
   assert.ok(summary.coverage_summary.covered_surfaces.includes("answer_run_input-caller-input"));
@@ -574,13 +647,14 @@ test("observed MCP probe covers recursive delegate lineage and rejection edges",
   await fs.mkdir(projectDir, { recursive: true });
   await fs.mkdir(stateDir, { recursive: true });
   await fs.writeFile(configPath, JSON.stringify({ default_model_class: "C" }));
+  const sourceServerPath = await createSourceServerEntrypoint(tmp);
 
   const result = await execFileAsync(
     process.execPath,
     [
       probePath,
       "--server",
-      path.resolve("dist/server.js"),
+      sourceServerPath,
       "--cwd",
       projectDir,
       "--scenario",
@@ -906,13 +980,15 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
   await fs.mkdir(projectDir, { recursive: true });
   await fs.mkdir(stateDir, { recursive: true });
   await fs.writeFile(configPath, JSON.stringify({ default_model_class: "C" }));
+  const sourceServerPath = await createSourceServerEntrypoint(tmp);
+  const fakeRootsBefore = await probeFakeRoots();
 
   const result = await execFileAsync(
     process.execPath,
     [
       probePath,
       "--server",
-      path.resolve("dist/server.js"),
+      sourceServerPath,
       "--cwd",
       projectDir,
       "--profile",
@@ -925,12 +1001,7 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
         SUBAGENT007_CONFIG_PATH: configPath,
         SUBAGENT007_FAILURE_LOG_PATH: path.join(stateDir, "failures.jsonl"),
         SUBAGENT007_CAMPAIGN_LEDGER_PATH: path.join(stateDir, "campaign-ledger.jsonl"),
-        SUBAGENT007_SESSIONS_DIR: path.join(stateDir, "sessions"),
-        SUBAGENT007_RUNS_DIR: path.join(stateDir, "runs"),
-        SUBAGENT007_RUN_TASKS_DIR: path.join(stateDir, "run-tasks"),
-        SUBAGENT007_INPUT_REQUESTS_DIR: path.join(stateDir, "input-requests"),
-        SUBAGENT007_PI_RAW_SESSIONS_DIR: path.join(stateDir, "raw-sessions"),
-        SUBAGENT007_MODEL_HEALTH_PATH: path.join(stateDir, "model-health.json"),
+        ...isolatedRuntimeStateEnv(stateDir),
         SUBAGENT007_RECORD_SOURCE: "test",
       },
       maxBuffer: 12 * 1024 * 1024,
@@ -968,6 +1039,11 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
     };
   };
 
+  assert.deepEqual(
+    [...await probeFakeRoots()].filter((name) => !fakeRootsBefore.has(name)),
+    [],
+  );
+
   assert.equal(summary.scenario_set, "full-current");
   assert.equal(summary.mode, "protocol-deterministic");
   assert.deepEqual(summary.coverage_summary.missing_required_surfaces, []);
@@ -983,6 +1059,8 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
     "start_run-local-capacity-exhaustion",
     "start_session_run-async-polling",
     "start_session_run-packet-failure",
+    "start_session_run-packet-missing",
+    "start_session_run-packet-invalid",
     "start_session_run-require-existing-missing",
     "get_run-run-not-found",
     "answer_run_input-caller-input",
@@ -1008,15 +1086,21 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
   assert.equal(toolListingScenario?.observed_result?.skill_alias_guidance_clear, true);
   assert.equal(toolListingScenario?.observed_result?.effect_profile_schema_exact, true);
   assert.deepEqual(toolListingScenario?.observed_result?.unclear_skill_alias_tools, []);
-  const startSessionPacketScenario = summary.coverage_summary.scenarios.find((scenario) =>
-    scenario.scenario === "start-session-packet-failure"
-  );
-  assert.equal(startSessionPacketScenario?.observed_result?.failure_log_matching_tool, "start_session_run");
-  assert.equal(startSessionPacketScenario?.observed_result?.failure_log_matching_task_kind, "session");
-  assert.equal(
-    startSessionPacketScenario?.observed_result?.failure_log_matching_run_id,
-    startSessionPacketScenario?.observed_result?.run_id,
-  );
+  for (const scenarioName of [
+    "start-session-packet-failure",
+    "start-session-packet-missing",
+    "start-session-packet-invalid",
+  ]) {
+    const startSessionPacketScenario = summary.coverage_summary.scenarios.find((scenario) =>
+      scenario.scenario === scenarioName
+    );
+    assert.equal(startSessionPacketScenario?.observed_result?.failure_log_matching_tool, "start_session_run");
+    assert.equal(startSessionPacketScenario?.observed_result?.failure_log_matching_task_kind, "session");
+    assert.equal(
+      startSessionPacketScenario?.observed_result?.failure_log_matching_run_id,
+      startSessionPacketScenario?.observed_result?.run_id,
+    );
+  }
   assert.equal(
     summary.coverage_summary.scenarios.every((scenario) =>
       scenario.observed_result?.public_calibration_fields_absent !== false &&
@@ -1026,6 +1110,7 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
     ),
     true,
   );
+  await assertCampaignRuntimeClean(stateDir);
 
   const ledgerText = await fs.readFile(path.join(stateDir, "campaign-ledger.jsonl"), "utf8");
   assert.doesNotMatch(ledgerText, /SECRET_CAMPAIGN_INPUT_ANSWER/);
@@ -1065,6 +1150,46 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
   );
 });
 
+test("observed MCP probe removes its deterministic fake root when initial server connection fails", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-probe-connect-failure-"));
+  const projectDir = path.join(tmp, "project");
+  const stateDir = path.join(tmp, "state");
+  const configPath = path.join(stateDir, "config.json");
+  await fs.mkdir(projectDir, { recursive: true });
+  await fs.mkdir(stateDir, { recursive: true });
+  await fs.writeFile(configPath, JSON.stringify({ default_model_class: "C" }));
+  const fakeRootsBefore = await probeFakeRoots();
+
+  await assert.rejects(
+    execFileAsync(process.execPath, [
+      probePath,
+      "--server",
+      path.join(tmp, "missing-server.js"),
+      "--cwd",
+      projectDir,
+      "--profile",
+      "protocol-core",
+    ], {
+      cwd: path.resolve("."),
+      env: {
+        ...process.env,
+        ...isolatedRuntimeStateEnv(stateDir),
+        SUBAGENT007_CONFIG_PATH: configPath,
+        SUBAGENT007_FAILURE_LOG_PATH: path.join(stateDir, "failures.jsonl"),
+        SUBAGENT007_CAMPAIGN_LEDGER_PATH: path.join(stateDir, "campaign-ledger.jsonl"),
+        SUBAGENT007_RECORD_SOURCE: "test",
+      },
+      maxBuffer: 8 * 1024 * 1024,
+    }),
+  );
+  assert.deepEqual(
+    [...await probeFakeRoots()].filter((name) => !fakeRootsBefore.has(name)),
+    [],
+  );
+  await assertCampaignRuntimeClean(stateDir);
+  await waitForNoOwnedProcessCommand(tmp);
+});
+
 test("observed MCP probe fails required coverage when selected scenario has wrong result class", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-probe-wrong-result-"));
   const projectDir = path.join(tmp, "project");
@@ -1099,8 +1224,14 @@ test("observed MCP probe fails required coverage when selected scenario has wron
     }),
   );
 
-  await assert.rejects(
-    execFileAsync(
+  const expectedIdentity = {
+    source: { path: probePath, sha256: await sha256File(probePath) },
+    dist: { path: path.resolve("dist/server.js"), sha256: await sha256File(path.resolve("dist/server.js")) },
+    manifest: { path: manifestPath, sha256: await sha256File(manifestPath) },
+  };
+  let failure: { stderr?: string } | undefined;
+  try {
+    await execFileAsync(
       process.execPath,
       [
         probePath,
@@ -1123,9 +1254,114 @@ test("observed MCP probe fails required coverage when selected scenario has wron
         },
         maxBuffer: 8 * 1024 * 1024,
       },
-    ),
-    /missing required coverage surfaces: run_subagent-success/,
-  );
+    );
+  } catch (error) {
+    failure = error as { stderr?: string };
+  }
+  assert.ok(failure);
+  const retainedStderr = failure.stderr ?? "";
+  assert.match(retainedStderr, /missing required coverage surfaces: run_subagent-success/);
+  await fs.rm(tmp, { recursive: true, force: true });
+  const record = coverageFailureRecord(retainedStderr);
+  assert.equal(record.record_version, 1);
+  assert.deepEqual(record.source, expectedIdentity.source);
+  assert.deepEqual(record.dist, expectedIdentity.dist);
+  assert.deepEqual(record.manifest, expectedIdentity.manifest);
+  assert.equal(record.profile, "protocol-core");
+  assert.equal(record.scenario, "schema-error");
+  assert.equal(record.run_id, null);
+  assert.equal(typeof record.observed_result, "object");
+});
+
+test("predicate-specific cancellation wait outlives a premature terminal view and fails with exact terminal evidence when absent", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-cancellation-predicate-"));
+  const projectDir = path.join(tmp, "project");
+  const manifestPath = path.join(tmp, "cancellation-manifest.json");
+  await fs.mkdir(projectDir, { recursive: true });
+  await fs.writeFile(manifestPath, JSON.stringify({
+    saf_required_surfaces: ["cancel_run-cancellation-settlement"],
+    surfaces: {
+      "cancel_run-cancellation-settlement": { evidence_classes: ["protocol-deterministic"] },
+    },
+    scenarios: {
+      cancellation: {
+        tool: "cancel_run",
+        result_classes: ["cancelled"],
+        surfaces: ["cancel_run-cancellation-settlement"],
+      },
+    },
+    profiles: {
+      "protocol-core": {
+        mode: "protocol-deterministic",
+        scenarios: ["cancellation"],
+        required_surfaces: ["cancel_run-cancellation-settlement"],
+      },
+    },
+    aliases: {},
+  }));
+  const campaignEnv = async (label: string, settlementMask: "once" | "always") => {
+    const stateDir = path.join(tmp, `state-${label}`);
+    const configPath = path.join(stateDir, "config.json");
+    await fs.mkdir(stateDir, { recursive: true });
+    await fs.writeFile(configPath, JSON.stringify({ default_model_class: "C" }));
+    return {
+      stateDir,
+      env: {
+        ...process.env,
+        ...isolatedRuntimeStateEnv(stateDir),
+        SUBAGENT007_CONFIG_PATH: configPath,
+        SUBAGENT007_COVERAGE_MANIFEST_PATH: manifestPath,
+        SUBAGENT007_FAILURE_LOG_PATH: path.join(stateDir, "failures.jsonl"),
+        SUBAGENT007_CAMPAIGN_LEDGER_PATH: path.join(stateDir, "campaign-ledger.jsonl"),
+        SUBAGENT007_RECORD_SOURCE: "test",
+        SUBAGENT007_TEST_WAIT_FOR_RUN_TIMEOUT_MS: "1000",
+        SUBAGENT007_TEST_MASK_CANCELLATION_SETTLEMENT: settlementMask,
+      },
+    };
+  };
+  const args = [
+    probePath,
+    "--server",
+    path.resolve("dist/server.js"),
+    "--cwd",
+    projectDir,
+    "--profile",
+    "protocol-core",
+  ];
+
+  const recoveredCampaign = await campaignEnv("once", "once");
+  const recovered = await execFileAsync(process.execPath, args, {
+    cwd: path.resolve("."),
+    env: recoveredCampaign.env,
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  const recoveredSummary = JSON.parse(recovered.stdout) as {
+    coverage_summary: { missing_required_surfaces: string[] };
+  };
+  assert.deepEqual(recoveredSummary.coverage_summary.missing_required_surfaces, []);
+  await assertCampaignRuntimeClean(recoveredCampaign.stateDir);
+
+  const failedCampaign = await campaignEnv("always", "always");
+  let failure: { stderr?: string } | undefined;
+  try {
+    await execFileAsync(process.execPath, args, {
+      cwd: path.resolve("."),
+      env: failedCampaign.env,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+  } catch (error) {
+    failure = error as { stderr?: string };
+  }
+  assert.ok(failure);
+  const record = coverageFailureRecord(failure.stderr ?? "");
+  assert.equal(record.scenario, "cancellation");
+  assert.equal(typeof record.run_id, "string");
+  assert.deepEqual(record.observed_result, {
+    ...(record.observed_result as Record<string, unknown>),
+    status: "cancelled",
+    cancellation_settled: false,
+  });
+  await assertCampaignRuntimeClean(failedCampaign.stateDir);
 });
 
 test("observed MCP probe fails tool-listing coverage when required public tools are absent", async () => {
@@ -1292,6 +1528,39 @@ test("observed campaign harness preserves child command exit code", async () => 
   assert.equal(result.json?.campaign_id, "campaign.exit-7");
   assert.equal(result.json?.evidence_class, "campaign-scoped");
   assert.equal(result.json?.command_exit_code, 7);
+});
+
+test("live observed probes reject a configured fake Pi child before claiming live evidence", async () => {
+  const tmp = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-live-provenance-")),
+  );
+  await assert.rejects(
+    execFileAsync(
+      process.execPath,
+      [
+        probePath,
+        "--server",
+        path.resolve("dist/server.js"),
+        "--cwd",
+        tmp,
+        "--profile",
+        "live-current",
+        "--quiet",
+      ],
+      {
+        cwd: path.resolve("."),
+        env: {
+          ...process.env,
+          SUBAGENT007_PI_CHILD_PATH: path.join(tmp, "fake-child.js"),
+          SUBAGENT007_FAILURE_LOG_PATH: path.join(tmp, "failures.jsonl"),
+          SUBAGENT007_CAMPAIGN_LEDGER_PATH: path.join(tmp, "campaign-ledger.jsonl"),
+          SUBAGENT007_RECORD_SOURCE: "test",
+        },
+        maxBuffer: 8 * 1024 * 1024,
+      },
+    ),
+    /live-model observed probes reject SUBAGENT007_PI_CHILD_PATH/,
+  );
 });
 
 test("observed campaign harness rejects invalid campaign ids before running command", async () => {

@@ -1,10 +1,15 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { Type, type TSchema } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { AuthoringEffectScopeBinding, EffectProfile } from "./types.js";
+import type {
+  AuthoringEffectScopeBinding,
+  EffectProfile,
+  ResearchControllerTerminalReceipt,
+} from "./types.js";
 import { assertAuthoringEffectScopeBinding, assertAuthoringWritableClosure } from "./authoringEffectScope.js";
 
 const execFileAsync = promisify(execFile);
@@ -13,6 +18,7 @@ export const BOUNDED_CONTROLLER_TOOL_NAMES = ["researchctl", "aj_switchboard"] a
 export type BoundedControllerToolName = (typeof BOUNDED_CONTROLLER_TOOL_NAMES)[number];
 
 const RESEARCH_COMMANDS = [
+  "state-paths",
   "init",
   "plan",
   "advance",
@@ -65,6 +71,12 @@ export type BoundedControllerEffectProfile = Extract<
 export interface ResolvedBoundedControllerPython {
   realpath: string;
   file_sha256: string;
+}
+
+export interface ResearchControllerStatePaths {
+  schema_version: 1;
+  job_path: string;
+  input_root: string;
 }
 
 const CONTROLLER_RUNTIME_IMPORTS: Record<BoundedControllerEffectProfile, readonly string[]> = {
@@ -272,12 +284,15 @@ function assertMutationPathInStateSubtree(
   if (!binding) return;
   const candidate = path.isAbsolute(value) ? path.resolve(value) : path.resolve(taskRoot, value);
   if (!isWithin(binding.writable_scope.paths[0], candidate)) {
-    throw new Error(`${label} is outside the fixed profile-owned state subtree writable scope`);
+    throw new Error(
+      `${label} is outside the fixed profile-owned state subtree writable scope; use ${binding.writable_scope.paths[0]}`,
+    );
   }
 }
 
 function positionalPathIndexes(tool: BoundedControllerToolName, subcommand: string): Set<number> {
   if (tool === "researchctl") {
+    if (subcommand === "state-paths") return new Set();
     return new Set([0]);
   }
   if (subcommand === "run") {
@@ -392,11 +407,60 @@ function envForController(): NodeJS.ProcessEnv {
   };
 }
 
-function toolDescription(tool: BoundedControllerToolName): string {
+function researchControllerStatePaths(
+  binding: AuthoringEffectScopeBinding | undefined,
+): ResearchControllerStatePaths {
+  if (
+    !binding ||
+    binding.effect_profile !== "researcher_bounded_v1" ||
+    binding.writable_scope.kind !== "fixed_state_subtree"
+  ) {
+    throw new Error("researchctl state-paths requires its exact researcher_bounded_v1 effect binding");
+  }
+  const stateRoot = binding.writable_scope.paths[0];
+  return {
+    schema_version: 1,
+    job_path: path.join(stateRoot, "job.json"),
+    input_root: path.join(stateRoot, "inputs"),
+  };
+}
+
+function toolDescription(
+  tool: BoundedControllerToolName,
+  binding: AuthoringEffectScopeBinding | undefined,
+): string {
   if (tool === "researchctl") {
-    return "Run one allowlisted researchctl workflow command against task-root state. The immutable researcher snapshot supplies the script; URLs are data and no shell is available.";
+    const discovery = binding?.effect_profile === "researcher_bounded_v1"
+      ? " Call state-paths first and use only its exact job_path and input_root; do not guess state paths."
+      : "";
+    return `Run one allowlisted researchctl workflow command against task-root state. The immutable researcher snapshot supplies the script; URLs are data and no shell is available.${discovery}`;
   }
   return "Run one allowlisted AJ switchboard command against task-root state. The immutable assumption-judge snapshot supplies the script; URLs are data and no shell is available.";
+}
+
+async function verifiedControllerCommand(input: {
+  tool: BoundedControllerToolName;
+  scriptPath: string;
+  controllerPython: ResolvedBoundedControllerPython;
+}): Promise<{ scriptPath: string; pythonPath: string }> {
+  const resolvedScript = await fs.realpath(input.scriptPath);
+  const scriptDirectory = path.dirname(resolvedScript);
+  const expectedScript = input.tool === "researchctl" ? "researchctl.py" : "aj.py";
+  const expectedRuntimeRoot = await fs.realpath(path.dirname(path.dirname(path.resolve(input.scriptPath))));
+  const expectedScriptPath = path.join(expectedRuntimeRoot, "scripts", expectedScript);
+  if (
+    resolvedScript !== expectedScriptPath ||
+    path.basename(scriptDirectory) !== "scripts" ||
+    path.basename(resolvedScript) !== expectedScript ||
+    !resolvedScript.startsWith(path.sep)
+  ) {
+    throw new Error(`${input.tool} controller script identity is invalid`);
+  }
+  const verifiedPython = await assertResolvedBoundedControllerPython(
+    input.controllerPython,
+    input.tool === "researchctl" ? "researcher_bounded_v1" : "assumption_audit_bounded_v1",
+  );
+  return { scriptPath: resolvedScript, pythonPath: verifiedPython.realpath };
 }
 
 async function executeController(
@@ -415,29 +479,28 @@ async function executeController(
   const args = argv as string[];
   const taskRootReal = await fs.realpath(taskRoot);
   await assertBoundEffectScopeRoot(taskRootReal, effectScopeBinding);
-  await validateArguments(taskRootReal, tool, subcommand, args, effectScopeBinding);
-  const resolvedScript = await fs.realpath(scriptPath);
-  const scriptDirectory = path.dirname(resolvedScript);
-  const expectedScript = tool === "researchctl" ? "researchctl.py" : "aj.py";
-  const expectedRuntimeRoot = await fs.realpath(path.dirname(path.dirname(path.resolve(scriptPath))));
-  const expectedScriptPath = path.join(expectedRuntimeRoot, "scripts", expectedScript);
-  if (
-    resolvedScript !== expectedScriptPath ||
-    path.basename(scriptDirectory) !== "scripts" ||
-    path.basename(resolvedScript) !== expectedScript ||
-    !resolvedScript.startsWith(path.sep)
-  ) {
-    throw new Error(`${tool} controller script identity is invalid`);
+  if (tool === "researchctl" && subcommand === "state-paths") {
+    if (args.length !== 0) {
+      throw new Error("researchctl state-paths does not accept argv");
+    }
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          success: true,
+          subcommand,
+          state_paths: researchControllerStatePaths(effectScopeBinding),
+        }),
+      }],
+    } as Awaited<ReturnType<ToolDefinition<any>["execute"]>>;
   }
+  await validateArguments(taskRootReal, tool, subcommand, args, effectScopeBinding);
   // The caller supplies only the command and its data arguments. The script path
   // is fixed by the immutable snapshot activation and is never an argv value.
-  const verifiedPython = await assertResolvedBoundedControllerPython(
-    controllerPython,
-    tool === "researchctl" ? "researcher_bounded_v1" : "assumption_audit_bounded_v1",
-  );
-  const commandArgs = [resolvedScript, subcommand, ...args];
+  const verified = await verifiedControllerCommand({ tool, scriptPath, controllerPython });
+  const commandArgs = [verified.scriptPath, subcommand, ...args];
   try {
-    const result = await execFileAsync(verifiedPython.realpath, commandArgs, {
+    const result = await execFileAsync(verified.pythonPath, commandArgs, {
       cwd: taskRootReal,
       env: envForController(),
       shell: false,
@@ -478,6 +541,68 @@ async function executeController(
   }
 }
 
+export async function inspectResearchControllerCompletion(input: {
+  taskRoot: string;
+  scriptPath: string;
+  controllerPython: ResolvedBoundedControllerPython;
+  effectScopeBinding: AuthoringEffectScopeBinding;
+}): Promise<ResearchControllerTerminalReceipt | undefined> {
+  try {
+    const taskRootReal = await fs.realpath(input.taskRoot);
+    await assertBoundEffectScopeRoot(taskRootReal, input.effectScopeBinding);
+    const statePaths = researchControllerStatePaths(input.effectScopeBinding);
+    const jobStat = await fs.lstat(statePaths.job_path);
+    if (!jobStat.isFile() || jobStat.isSymbolicLink() || jobStat.nlink !== 1 || jobStat.size > MAX_JSON_BYTES) {
+      return undefined;
+    }
+    const jobBytes = await fs.readFile(statePaths.job_path);
+    const job = JSON.parse(jobBytes.toString("utf8")) as { state?: unknown };
+    if (job.state !== "complete") return undefined;
+    const verified = await verifiedControllerCommand({
+      tool: "researchctl",
+      scriptPath: input.scriptPath,
+      controllerPython: input.controllerPython,
+    });
+    await execFileAsync(
+      verified.pythonPath,
+      [verified.scriptPath, "validate", statePaths.job_path],
+      {
+        cwd: taskRootReal,
+        env: envForController(),
+        shell: false,
+        timeout: BOUNDED_CONTROLLER_TIMEOUT_MS,
+        maxBuffer: MAX_STDOUT_BYTES + MAX_STDERR_BYTES,
+        windowsHide: true,
+      },
+    );
+    const rendered = await execFileAsync(
+      verified.pythonPath,
+      [verified.scriptPath, "render", statePaths.job_path, "--profile", "full"],
+      {
+        cwd: taskRootReal,
+        env: envForController(),
+        shell: false,
+        timeout: BOUNDED_CONTROLLER_TIMEOUT_MS,
+        maxBuffer: MAX_STDOUT_BYTES + MAX_STDERR_BYTES,
+        windowsHide: true,
+      },
+    );
+    const finalJobBytes = await fs.readFile(statePaths.job_path);
+    if (!jobBytes.equals(finalJobBytes)) return undefined;
+    return {
+      schema_version: 1,
+      controller: "researchctl",
+      state: "complete",
+      validation: "passed",
+      job_sha256: createHash("sha256").update(jobBytes).digest("hex"),
+      render_profile: "full",
+      render_sha256: createHash("sha256").update(rendered.stdout, "utf8").digest("hex"),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export function createBoundedControllerTool(
   taskRoot: string,
   tool: BoundedControllerToolName,
@@ -489,12 +614,17 @@ export function createBoundedControllerTool(
   return {
     name: tool,
     label: tool,
-    description: toolDescription(tool),
-    promptSnippet: `Use ${tool} for bounded workflow state transitions; do not use shell commands.`,
+    description: toolDescription(tool, effectScopeBinding),
+    promptSnippet: tool === "researchctl"
+      ? "Use researchctl for bounded workflow state transitions. Call state-paths before init, use the returned paths exactly, and do not use shell commands."
+      : "Use aj_switchboard for bounded workflow state transitions; do not use shell commands.",
     promptGuidelines: [
       "Use only the declared subcommands and task-root paths.",
       "Treat HTTP(S) references as data; never provide an executable path.",
       "The controller owns campaign state and its evidence remains under the task root.",
+      ...(tool === "researchctl"
+        ? ["Use state-paths as the sole authority for the job path and controller input root."]
+        : []),
     ],
     parameters,
     executionMode: "sequential",
