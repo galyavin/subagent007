@@ -101,7 +101,8 @@ export function durableRunContractView(): {
     field: "output_references";
     kind: "file";
     name: "primary";
-    cardinality: "exactly_one_for_terminal_child_output";
+    additive_names: ["packet"];
+    cardinality: "exactly_one_primary_with_at_most_one_packet";
     locator_field: "relative_path";
     locator_policy: "canonical_single_component_provider_basename";
     locator_root: "configured_runs_root";
@@ -328,9 +329,10 @@ export function durableRunContractView(): {
       provider_binding: "explicit_identity_and_sha256";
       controller_binding: "fixed_wrapper_exact_snapshot_script_and_resolved_python_sha256";
       controller_state_discovery: "researchctl_state_paths_v1";
+      controller_protocol: "researchctl_strict_v2";
       enforcement_boundary: "pi_create_agent_session_tools_allowlist_and_task_root_path_guards_and_execfile_controller";
       task_root: "exact_run_cwd";
-      task_root_write_scope: "exact_fixed_profile_state_subtree";
+      task_root_write_scope: "exact_controller_input_root";
       snapshot_runtime_read_scope: "active_validated_snapshot_runtime_root";
       state_scope: ".subagent007/researcher_bounded_v1";
       state_initialization: "state_root_absent_at_parent_and_child_pre_prompt_capture";
@@ -347,7 +349,7 @@ export function durableRunContractView(): {
         result_field: "activation_receipt";
         event_type: "subagent007.activation_confirmed";
         required_before_prompt: true;
-        schema_version: 3;
+        schema_version: 4;
         fields: [
           "schema_version",
           "confirmed_before_prompt",
@@ -359,6 +361,7 @@ export function durableRunContractView(): {
           "skill_binding",
           "effect_scope_binding",
           "controller_state_discovery",
+          "controller_protocol",
         ];
       };
     };
@@ -446,7 +449,8 @@ export function durableRunContractView(): {
       field: "output_references",
       kind: "file",
       name: "primary",
-      cardinality: "exactly_one_for_terminal_child_output",
+      additive_names: ["packet"],
+      cardinality: "exactly_one_primary_with_at_most_one_packet",
       locator_field: "relative_path",
       locator_policy: "canonical_single_component_provider_basename",
       locator_root: "configured_runs_root",
@@ -673,9 +677,10 @@ export function durableRunContractView(): {
         provider_binding: "explicit_identity_and_sha256",
         controller_binding: "fixed_wrapper_exact_snapshot_script_and_resolved_python_sha256",
         controller_state_discovery: "researchctl_state_paths_v1",
+        controller_protocol: "researchctl_strict_v2",
         enforcement_boundary: "pi_create_agent_session_tools_allowlist_and_task_root_path_guards_and_execfile_controller",
         task_root: "exact_run_cwd",
-        task_root_write_scope: "exact_fixed_profile_state_subtree",
+        task_root_write_scope: "exact_controller_input_root",
         snapshot_runtime_read_scope: "active_validated_snapshot_runtime_root",
         state_scope: ".subagent007/researcher_bounded_v1",
         state_initialization: "state_root_absent_at_parent_and_child_pre_prompt_capture",
@@ -692,7 +697,7 @@ export function durableRunContractView(): {
           result_field: "activation_receipt",
           event_type: "subagent007.activation_confirmed",
           required_before_prompt: true,
-          schema_version: 3,
+          schema_version: 4,
           fields: [
             "schema_version",
             "confirmed_before_prompt",
@@ -704,6 +709,7 @@ export function durableRunContractView(): {
             "skill_binding",
             "effect_scope_binding",
             "controller_state_discovery",
+            "controller_protocol",
           ],
         },
       },

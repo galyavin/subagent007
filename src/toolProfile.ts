@@ -384,17 +384,25 @@ function record(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-export function validatedActivationReceipt(input: {
+interface ActivationReceiptValidationInput {
   value: unknown;
   effectProfile?: EffectProfile;
   skillBinding: ActivationSkillBinding | null;
   expectedSkillSha256?: string;
   expectedToolBindings?: readonly ActivationToolBinding[];
   expectedEffectScopeBinding?: AuthoringEffectScopeBinding;
-}): ActivationReceipt | undefined {
+}
+
+function validatedActivationReceiptVersion(
+  input: ActivationReceiptValidationInput,
+  allowProjectedResearcherV3: boolean,
+): ActivationReceipt | undefined {
   const receipt = record(input.value);
   const requiresEffectScope = isEffectScopedAuthoringProfile(input.effectProfile);
   const requiresResearchStateDiscovery = input.effectProfile === "researcher_bounded_v1";
+  const projectedResearcherV3 = allowProjectedResearcherV3 &&
+    requiresResearchStateDiscovery &&
+    receipt?.schema_version === 3;
   if (requiresEffectScope !== Boolean(input.expectedEffectScopeBinding)) {
     return undefined;
   }
@@ -408,13 +416,20 @@ export function validatedActivationReceipt(input: {
     "toolset_sha256",
     "skill_binding",
     ...(requiresEffectScope ? ["effect_scope_binding"] : []),
-    ...(requiresResearchStateDiscovery ? ["controller_state_discovery"] : []),
+    ...(requiresResearchStateDiscovery ? [
+      "controller_state_discovery",
+      ...(projectedResearcherV3 ? [] : ["controller_protocol"]),
+    ] : []),
   ];
   if (!receipt || !exactKeys(receipt, expectedKeys)) {
     return undefined;
   }
   if (
-    receipt.schema_version !== (requiresResearchStateDiscovery ? 3 : requiresEffectScope ? 2 : 1) ||
+    receipt.schema_version !== (
+      requiresResearchStateDiscovery
+        ? projectedResearcherV3 ? 3 : 4
+        : requiresEffectScope ? 2 : 1
+    ) ||
     receipt.confirmed_before_prompt !== true
   ) {
     return undefined;
@@ -498,7 +513,10 @@ export function validatedActivationReceipt(input: {
   }
   if (
     requiresResearchStateDiscovery &&
-    receipt.controller_state_discovery !== "researchctl_state_paths_v1"
+    (
+      receipt.controller_state_discovery !== "researchctl_state_paths_v1" ||
+      (!projectedResearcherV3 && receipt.controller_protocol !== "researchctl_strict_v2")
+    )
   ) {
     return undefined;
   }
@@ -524,6 +542,12 @@ export function validatedActivationReceipt(input: {
     }
   }
   return receipt as unknown as ActivationReceipt;
+}
+
+export function validatedActivationReceipt(
+  input: ActivationReceiptValidationInput,
+): ActivationReceipt | undefined {
+  return validatedActivationReceiptVersion(input, false);
 }
 
 /**
@@ -552,14 +576,14 @@ export function validatedProjectedActivationReceipt(input: {
   const expectedToolBindings = isBoundedEffectProfile(input.requestedEffectProfile) && Array.isArray(receipt.tool_bindings)
     ? receipt.tool_bindings as ActivationToolBinding[]
     : undefined;
-  return validatedActivationReceipt({
+  return validatedActivationReceiptVersion({
     value: receipt,
     effectProfile: input.requestedEffectProfile,
     skillBinding,
     expectedSkillSha256: input.expectedSkillSha256,
     expectedToolBindings,
     expectedEffectScopeBinding,
-  });
+  }, true);
 }
 
 export function workspaceReadOnlyActivationReceipt(input: {
@@ -675,8 +699,9 @@ export function boundedAuthoringActivationReceipt(input: {
   if (input.effectProfile === "researcher_bounded_v1") {
     return {
       ...common,
-      schema_version: 3,
+      schema_version: 4,
       controller_state_discovery: "researchctl_state_paths_v1",
+      controller_protocol: "researchctl_strict_v2",
     };
   }
   return { ...common, schema_version: 2 };

@@ -19,11 +19,31 @@ export const MAX_TERMINAL_OUTPUT_BYTES = 1024 * 1024;
 const FINALIZER_READ_CHUNK_BYTES = 64 * 1024;
 const TIMESTAMPED_RANDOM_ID_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{9}Z-[0-9a-f]{12}$/;
 
-interface StoredRunOutput {
+export interface StoredRunOutput {
   reference: RunOutputReference;
   hasPublicAssistantText: boolean;
   hasPublicSubagentWarning: boolean;
   hasPublicSubagentError: boolean;
+}
+
+export interface PendingTerminalOutputFile {
+  name: "primary" | "packet";
+  staging_path: string;
+  output_path: string;
+  size_bytes: number;
+  content_sha256: string;
+}
+
+export interface PendingTerminalOutputs {
+  schema_version: 1;
+  run_id: string;
+  outputs: [PendingTerminalOutputFile, PendingTerminalOutputFile];
+}
+
+export interface PreparedRunOutput {
+  ownership: PendingTerminalOutputFile;
+  publish: () => Promise<StoredRunOutput>;
+  discard: () => Promise<void>;
 }
 
 interface FinalizeHooks {
@@ -74,6 +94,19 @@ function canonicalOutputBasename(value: unknown): value is string {
   return TIMESTAMPED_RANDOM_ID_PATTERN.test(value.slice(0, -".md".length));
 }
 
+function canonicalStagingPath(stagingPath: unknown, outputPath: unknown): stagingPath is string {
+  if (
+    typeof stagingPath !== "string" ||
+    typeof outputPath !== "string" ||
+    !path.isAbsolute(stagingPath) ||
+    !path.isAbsolute(outputPath) ||
+    path.dirname(stagingPath) !== path.dirname(outputPath)
+  ) return false;
+  const outputBasename = path.basename(outputPath);
+  return canonicalOutputBasename(outputBasename) &&
+    path.basename(stagingPath) === `.${outputBasename.slice(0, -".md".length)}.partial`;
+}
+
 function exactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
   return Object.keys(value).sort().join("\0") === [...expected].sort().join("\0");
 }
@@ -86,7 +119,7 @@ export function decodeRunOutputReference(value: unknown): RunOutputReference | u
     "content_type", "encoding", "output_mode",
   ])) return undefined;
   if (
-    reference.kind !== "file" || reference.name !== "primary" ||
+    reference.kind !== "file" || (reference.name !== "primary" && reference.name !== "packet") ||
     !canonicalOutputBasename(reference.relative_path) ||
     !Number.isSafeInteger(reference.size_bytes) || (reference.size_bytes as number) < 0 ||
     (reference.size_bytes as number) > MAX_TERMINAL_OUTPUT_BYTES ||
@@ -316,6 +349,199 @@ async function writePreparedRunOutput(
   } finally {
     await handle.close();
   }
+}
+
+export async function prepareRunOutput(
+  rawOutput: string,
+  name: "primary" | "packet",
+  runsDir = resolveRunsDir(),
+): Promise<PreparedRunOutput> {
+  const cleaned = stripAnsiAndControls(rawOutput);
+  const bytes = Buffer.from(cleaned, "utf8");
+  if (bytes.length > MAX_TERMINAL_OUTPUT_BYTES) throw terminalOutputLimitError();
+  const resolvedRunsDir = resolveRunsDir(runsDir);
+  await fs.mkdir(resolvedRunsDir, { recursive: true });
+  const id = timestampedRandomId();
+  const stagingPath = path.join(resolvedRunsDir, `.${id}.partial`);
+  const outputPath = path.join(resolvedRunsDir, `${id}.md`);
+  const handle = await fs.open(stagingPath, "wx+");
+  let closed = false;
+  const closeHandle = async (): Promise<void> => {
+    if (closed) return;
+    closed = true;
+    await handle.close();
+  };
+  try {
+    await writeAllBounded(handle, bytes);
+    await handle.sync();
+    const inspected = await inspectBoundedDescriptor(handle);
+    await assertPathStillNamesDescriptor(stagingPath, inspected.stat);
+    const ownership: PendingTerminalOutputFile = {
+      name,
+      staging_path: stagingPath,
+      output_path: outputPath,
+      size_bytes: inspected.sizeBytes,
+      content_sha256: inspected.contentSha256,
+    };
+    return {
+      ownership,
+      publish: async () => {
+        if (closed) throw new Error("prepared run output is already closed");
+        try {
+          const reference = await finalizeDescriptorToOutput({
+            handle,
+            stagingPath,
+            outputPath,
+            outputMode: "final",
+          });
+          return {
+            reference: { ...reference, name },
+            hasPublicAssistantText: false,
+            hasPublicSubagentWarning: false,
+            hasPublicSubagentError: false,
+          };
+        } finally {
+          await closeHandle();
+        }
+      },
+      discard: async () => {
+        await closeHandle().catch(() => {});
+        await fs.rm(stagingPath, { force: true });
+        await fs.rm(outputPath, { force: true });
+      },
+    };
+  } catch (error) {
+    await closeHandle().catch(() => {});
+    await fs.rm(stagingPath, { force: true }).catch(() => {});
+    await fs.rm(outputPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+export function pendingTerminalOutputs(
+  runId: string,
+  primary: PendingTerminalOutputFile,
+  packet: PendingTerminalOutputFile,
+): PendingTerminalOutputs {
+  const value: PendingTerminalOutputs = {
+    schema_version: 1,
+    run_id: runId,
+    outputs: [primary, packet],
+  };
+  assertPendingTerminalOutputs(value, runId);
+  return value;
+}
+
+export function assertPendingTerminalOutputs(
+  value: unknown,
+  expectedRunId?: string,
+): asserts value is PendingTerminalOutputs {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("pending terminal output ownership must be an object");
+  }
+  const record = value as Record<string, unknown>;
+  if (!exactKeys(record, ["schema_version", "run_id", "outputs"]) ||
+    record.schema_version !== 1 ||
+    typeof record.run_id !== "string" ||
+    record.run_id === "" ||
+    (expectedRunId !== undefined && record.run_id !== expectedRunId) ||
+    !Array.isArray(record.outputs) ||
+    record.outputs.length !== 2) {
+    throw new Error("pending terminal output ownership is malformed");
+  }
+  const roles = new Set<string>();
+  const paths = new Set<string>();
+  for (const candidate of record.outputs) {
+    if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
+      throw new Error("pending terminal output entry is malformed");
+    }
+    const output = candidate as Record<string, unknown>;
+    if (!exactKeys(output, [
+      "name", "staging_path", "output_path", "size_bytes", "content_sha256",
+    ]) ||
+      (output.name !== "primary" && output.name !== "packet") ||
+      !canonicalStagingPath(output.staging_path, output.output_path) ||
+      !Number.isSafeInteger(output.size_bytes) ||
+      (output.size_bytes as number) < 0 ||
+      (output.size_bytes as number) > MAX_TERMINAL_OUTPUT_BYTES ||
+      typeof output.content_sha256 !== "string" ||
+      !/^[0-9a-f]{64}$/.test(output.content_sha256)) {
+      throw new Error("pending terminal output entry is invalid");
+    }
+    roles.add(output.name);
+    paths.add(output.staging_path as string);
+    paths.add(output.output_path as string);
+  }
+  if (roles.size !== 2 || !roles.has("primary") || !roles.has("packet") || paths.size !== 4) {
+    throw new Error("pending terminal output roles or paths are not exact");
+  }
+  const directories = new Set(
+    (record.outputs as Array<Record<string, unknown>>).map((output) =>
+      path.dirname(output.output_path as string)),
+  );
+  if (directories.size !== 1) {
+    throw new Error("pending terminal outputs must share one runs directory");
+  }
+}
+
+async function removeOwnedTerminalOutputPath(
+  filePath: string,
+  expected: PendingTerminalOutputFile,
+): Promise<void> {
+  let handle: FileHandle;
+  try {
+    handle = await openNoFollowRegular(filePath, fsConstants.O_RDONLY);
+  } catch (error) {
+    const missing = await fs.lstat(filePath).then(
+      () => false,
+      (failure: NodeJS.ErrnoException) => failure.code === "ENOENT",
+    );
+    if (missing) return;
+    throw error;
+  }
+  try {
+    const inspected = await inspectBoundedDescriptor(handle);
+    if (
+      inspected.sizeBytes !== expected.size_bytes ||
+      inspected.contentSha256 !== expected.content_sha256
+    ) {
+      throw new Error("owned terminal output bytes changed before cleanup");
+    }
+    await assertPathStillNamesDescriptor(filePath, inspected.stat);
+    await fs.rm(filePath);
+  } finally {
+    await handle.close();
+  }
+}
+
+export async function cleanupPendingTerminalOutputs(value: PendingTerminalOutputs): Promise<void> {
+  assertPendingTerminalOutputs(value, value.run_id);
+  for (const output of value.outputs) {
+    await removeOwnedTerminalOutputPath(output.staging_path, output);
+    await removeOwnedTerminalOutputPath(output.output_path, output);
+  }
+  const directory = path.dirname(value.outputs[0].output_path);
+  const handle = await fs.open(directory, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+export function terminalReferencesOwnPendingOutputs(
+  references: readonly RunOutputReference[] | undefined,
+  pending: PendingTerminalOutputs,
+): boolean {
+  if (!references || references.length !== 2) return false;
+  return pending.outputs.every((output) => {
+    const reference = references.find((candidate) => candidate.name === output.name);
+    return reference !== undefined &&
+      reference.relative_path === path.basename(output.output_path) &&
+      reference.size_bytes === output.size_bytes &&
+      reference.content_sha256 === output.content_sha256 &&
+      reference.output_mode === "final";
+  });
 }
 
 export async function writeRunOutput(

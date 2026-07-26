@@ -405,9 +405,20 @@ export interface ActivationReceiptV3 extends ActivationReceiptBase {
   controller_state_discovery: "researchctl_state_paths_v1";
 }
 
-export type ActivationReceipt = ActivationReceiptV1 | ActivationReceiptV2 | ActivationReceiptV3;
+export interface ActivationReceiptV4 extends ActivationReceiptBase {
+  schema_version: 4;
+  effect_scope_binding: AuthoringEffectScopeBinding;
+  controller_state_discovery: "researchctl_state_paths_v1";
+  controller_protocol: "researchctl_strict_v2";
+}
 
-export interface ResearchControllerTerminalReceipt {
+export type ActivationReceipt =
+  | ActivationReceiptV1
+  | ActivationReceiptV2
+  | ActivationReceiptV3
+  | ActivationReceiptV4;
+
+export interface ResearchControllerTerminalReceiptV1 {
   schema_version: 1;
   controller: "researchctl";
   state: "complete";
@@ -416,6 +427,23 @@ export interface ResearchControllerTerminalReceipt {
   render_profile: "full";
   render_sha256: string;
 }
+
+export interface ResearchControllerTerminalReceiptV2 {
+  schema_version: 2;
+  controller: "researchctl";
+  state: "complete";
+  validation: "passed";
+  dispatch_protocol: "research_web_dispatch_v1";
+  job_sha256: string;
+  primary_profile: "primary";
+  primary_sha256: string;
+  packet_profile: "bendum";
+  packet_sha256: string;
+}
+
+export type ResearchControllerTerminalReceipt =
+  | ResearchControllerTerminalReceiptV1
+  | ResearchControllerTerminalReceiptV2;
 
 export interface RecursiveDelegationReceipt {
   schema_version: 1;
@@ -488,7 +516,7 @@ interface SubagentRunResultBase {
 
 export interface RunOutputReference {
   kind: "file";
-  name: "primary";
+  name: "primary" | "packet";
   relative_path: string;
   size_bytes: number;
   content_sha256: string;

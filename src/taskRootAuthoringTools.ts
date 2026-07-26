@@ -73,7 +73,10 @@ async function assertBoundTaskRootIdentity(
   }
 }
 
-function assertWritableScope(candidate: string, binding: AuthoringEffectScopeBinding | undefined): void {
+function assertWritableScope(
+  candidate: string,
+  binding: AuthoringEffectScopeBinding | undefined,
+): void {
   if (!binding) return;
   if (binding.writable_scope.kind === "exact_output_files") {
     if (!binding.writable_scope.paths.includes(candidate)) {
@@ -84,6 +87,12 @@ function assertWritableScope(candidate: string, binding: AuthoringEffectScopeBin
   const stateRoot = binding.writable_scope.paths[0];
   if (!isWithin(stateRoot, candidate)) {
     throw new Error("write path is outside the fixed profile-owned state subtree writable scope");
+  }
+  if (binding.effect_profile === "researcher_bounded_v1") {
+    const directWritableRoot = path.join(stateRoot, "inputs");
+    if (!isWithin(directWritableRoot, candidate)) {
+      throw new Error("write path is outside the runtime-owned direct writable subtree");
+    }
   }
 }
 
@@ -167,6 +176,23 @@ export async function assertTaskRootAuthoringPath(
   const checkedPath = tool === "write" ? await nearestExistingPath(candidate) : await fs.realpath(candidate);
   if (!allowedRoots.some((root) => isWithin(root, checkedPath))) {
     throw new Error(`${tool} path must remain under the exact task root`);
+  }
+  if (
+    !isReadOnlyTool(tool) &&
+    effectScopeBinding?.effect_profile === "researcher_bounded_v1" &&
+    effectScopeBinding.writable_scope.kind === "fixed_state_subtree"
+  ) {
+    const directWritableRoot = path.join(effectScopeBinding.writable_scope.paths[0], "inputs");
+    const directRootStat = await fs.lstat(directWritableRoot).catch(() => undefined);
+    const directRootReal = await fs.realpath(directWritableRoot).catch(() => undefined);
+    if (
+      !directRootStat?.isDirectory() ||
+      directRootStat.isSymbolicLink() ||
+      directRootReal !== directWritableRoot ||
+      !isWithin(directWritableRoot, checkedPath)
+    ) {
+      throw new Error("runtime-owned direct writable subtree is absent or changed identity");
+    }
   }
   return tool === "write" ? candidate : checkedPath;
 }

@@ -49,9 +49,9 @@ import { assertDeadlineRiskTimeoutBudget, validateAndResolveRequest } from "./va
 const SESSION_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 type RunSubagentCoreOptions = NonNullable<Parameters<typeof runSubagentCore>[1]>;
 
-const runOutputReferenceSchema = z.custom<import("./types.js").RunOutputReference>(
-  (value) => decodeRunOutputReference(value) !== undefined,
-  "invalid run output reference",
+const primaryRunOutputReferenceSchema = z.custom<import("./types.js").RunOutputReference>(
+  (value) => decodeRunOutputReference(value)?.name === "primary",
+  "invalid primary run output reference",
 );
 
 const sessionManifestSchema = z.object({
@@ -65,7 +65,7 @@ const sessionManifestSchema = z.object({
   created_at: z.string(),
   last_run_at: z.string(),
   run_count: z.number().int().nonnegative(),
-  last_output_reference: runOutputReferenceSchema,
+  last_output_reference: primaryRunOutputReferenceSchema,
   status: z.literal("active"),
 });
 
@@ -79,7 +79,7 @@ const sessionRunRecordSchema = z.object({
   attempt_subagent_session_id: z.string().nullable().optional(),
   attempt_session_established: z.boolean().optional(),
   resume_mode: z.enum(RESUME_MODES),
-  output_reference: runOutputReferenceSchema,
+  output_reference: primaryRunOutputReferenceSchema,
   packet_path: z.string().nullable(),
   packet_policy: z.enum(SESSION_PACKET_POLICIES),
   packet_parse_status: z.enum(PACKET_PARSE_STATUSES),
@@ -826,7 +826,9 @@ export async function runSubagentSession(
     const primaryOutputReference = runResult.output_references.length === 1
       ? decodeRunOutputReference(runResult.output_references[0])
       : undefined;
-    if (!primaryOutputReference) throw new Error("session run did not emit one exact primary output reference");
+    if (primaryOutputReference?.name !== "primary") {
+      throw new Error("session run did not emit one exact primary output reference");
+    }
     const outputText = await fs.readFile(runOutputPath(primaryOutputReference, sessionRunsDir), "utf8");
     const attemptSubagentSessionId = attemptSession.runManifest?.subagent_session_id ?? runResult.session_id;
     const attemptSessionEstablished = attemptSubagentSessionId !== null;

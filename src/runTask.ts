@@ -100,10 +100,18 @@ import {
   validateAndResolveRequest,
 } from "./validate.js";
 import {
+  assertPendingTerminalOutputs,
+  cleanupPendingTerminalOutputs,
   decodeRunOutputReference,
   defaultSubagentStatePath,
   recoverStreamingRunTranscript,
+  terminalReferencesOwnPendingOutputs,
+  type PendingTerminalOutputs,
 } from "./output.js";
+import {
+  terminalProjectionIsValid,
+  type TerminalActivationClass,
+} from "./terminalProjection.js";
 import { assertModelClassUsableForOneShot } from "./modelHealth.js";
 import { safeIntegerFromEnv } from "./env.js";
 import {
@@ -283,6 +291,7 @@ interface RunTaskState {
   pendingInputDeliveries: Map<string, PendingInputDelivery>;
   terminalizing: boolean;
   partialOutputPath?: string;
+  pendingTerminalOutputs?: PendingTerminalOutputs;
   childStarted: boolean;
   queuedAt?: string;
   childStartedAt?: string;
@@ -391,6 +400,7 @@ interface CurrentRunClaimV1 extends RunTaskView {
   record_version: typeof RUN_OWNER_RECORD_VERSION;
   declarations: OwnerRequestDeclarations;
   launch_observation?: RunOwnerLaunchObservation;
+  pending_terminal_outputs?: PendingTerminalOutputs;
 }
 
 function currentRunClaimView(claim: CurrentRunClaimV1): RunTaskView {
@@ -399,6 +409,7 @@ function currentRunClaimView(claim: CurrentRunClaimV1): RunTaskView {
     record_version: _recordVersion,
     declarations: _declarations,
     launch_observation: _launch,
+    pending_terminal_outputs: _pendingTerminalOutputs,
     ...view
   } = claim;
   if (isTerminalRunStatus(view.status) && view.recent_events?.length && !view.last_public_output_excerpt) {
@@ -514,6 +525,13 @@ function assertRunOwnerRecord(record: CurrentRunClaimV1): void {
     invalidOwnerRecord("run claim has an invalid representation");
   }
   const view = currentRunClaimView(record);
+  if (record.pending_terminal_outputs !== undefined) {
+    try {
+      assertPendingTerminalOutputs(record.pending_terminal_outputs, view.run_id);
+    } catch {
+      invalidOwnerRecord("run claim pending terminal output ownership is invalid");
+    }
+  }
   const declarations = record.declarations;
   if (!isRecord(declarations) || !isNonemptyString(view.run_id) || view.task_id !== view.run_id ||
     (view.task_kind !== "run" && view.task_kind !== "session") ||
@@ -652,6 +670,7 @@ function runClaimSnapshot(snapshot: RunTaskView): RunTaskView {
 interface RunClaimPersistenceEvidence {
   declarations: NonNullable<RunTaskState["claimDeclarations"]>;
   launchObservation?: NonNullable<RunTaskState["ownerLaunchObservation"]>;
+  pendingTerminalOutputs?: PendingTerminalOutputs;
 }
 
 function runClaimPersistenceEvidence(state: RunTaskState): RunClaimPersistenceEvidence {
@@ -659,6 +678,7 @@ function runClaimPersistenceEvidence(state: RunTaskState): RunClaimPersistenceEv
   return {
     declarations: state.claimDeclarations,
     ...(state.ownerLaunchObservation ? { launchObservation: state.ownerLaunchObservation } : {}),
+    ...(state.pendingTerminalOutputs ? { pendingTerminalOutputs: state.pendingTerminalOutputs } : {}),
   };
 }
 
@@ -680,6 +700,9 @@ function ownerRecordForSnapshot(
     record_version: RUN_OWNER_RECORD_VERSION,
     declarations,
     ...(launch ? { launch_observation: launch } : {}),
+    ...(evidence.pendingTerminalOutputs
+      ? { pending_terminal_outputs: evidence.pendingTerminalOutputs }
+      : {}),
   };
 }
 
@@ -1029,11 +1052,26 @@ function hasTerminalCoreEvidence(view: RunTaskView): boolean {
 
 function hasProcessResultEvidence(view: RunTaskView): boolean {
   const outputReferences = view.output_references;
-  const reference = Array.isArray(outputReferences) && outputReferences.length === 1
-    ? decodeRunOutputReference(outputReferences[0])
-    : undefined;
-  return !hasOwnDefined(view, "output_path") && reference !== undefined &&
-    reference.size_bytes === view.size_bytes && reference.output_mode === view.written_output_mode &&
+  const references = Array.isArray(outputReferences)
+    ? outputReferences.map((candidate) => decodeRunOutputReference(candidate))
+    : [];
+  const validReferences = references.length >= 1 &&
+    references.every((reference) => reference !== undefined);
+  const decodedReferences = validReferences
+    ? references as NonNullable<(typeof references)[number]>[]
+    : [];
+  const primary = decodedReferences.find((reference) => reference.name === "primary");
+  const activationClass = terminalActivationClass(view);
+  return !hasOwnDefined(view, "output_path") && validReferences && primary !== undefined &&
+    activationClass !== undefined &&
+    terminalProjectionIsValid({
+      requestedEffectProfile: view.requested_effect_profile,
+      activationClass,
+      status: view.status as RunTaskTerminalStatus,
+      outputReferences: decodedReferences,
+      controllerTerminalReceipt: view.controller_terminal_receipt,
+    }) &&
+    primary.size_bytes === view.size_bytes && primary.output_mode === view.written_output_mode &&
     typeof view.timeout_floor_ms === "number" && Number.isFinite(view.timeout_floor_ms) && view.timeout_floor_ms >= 0 &&
     typeof view.timeout_headroom_ms === "number" && Number.isFinite(view.timeout_headroom_ms) && view.timeout_headroom_ms >= 0 &&
     typeof view.kill_grace_ms === "number" && Number.isFinite(view.kill_grace_ms) && view.kill_grace_ms >= 0 &&
@@ -1103,6 +1141,7 @@ const OWNER_ONLY_FORBIDDEN_FIELDS = [
   "usage_limit_secondary_used_percent",
   "usage_limit_primary_reset_after_seconds",
   "usage_limit_secondary_reset_after_seconds",
+  "controller_terminal_receipt",
 ] as const;
 
 const OWNER_PROMOTION_FIELDS = [
@@ -1207,6 +1246,35 @@ function ownerRequestDeclarations(view: RunTaskView): OwnerRequestDeclarations |
     ...(rawSnapshotBinding ? { skillSnapshotBinding: rawSnapshotBinding } : {}),
     requestedRecursiveDelegation,
   };
+}
+
+function terminalActivationClass(view: RunTaskView): TerminalActivationClass | undefined {
+  const declarations = ownerRequestDeclarations(view);
+  if (!declarations) return undefined;
+  const triggered =
+    declarations.effectProfile !== undefined ||
+    declarations.expectedSkillSha256 !== undefined;
+  const hasReceipt = hasOwnDefined(view, "activation_receipt");
+  const hasResolvedProfile = hasOwnDefined(view, "resolved_effect_profile");
+  if (!hasReceipt) {
+    return hasResolvedProfile ? undefined : "other";
+  }
+  if (!triggered || !view.activation_receipt) return undefined;
+  const receipt = validatedProjectedActivationReceipt({
+    value: view.activation_receipt,
+    requestedEffectProfile: declarations.effectProfile,
+    expectedSkillSha256: declarations.expectedSkillSha256,
+  });
+  if (!receipt) return undefined;
+  if (receipt.resolved_effect_profile === null) {
+    if (hasResolvedProfile) return undefined;
+  } else if (view.resolved_effect_profile !== receipt.resolved_effect_profile) {
+    return undefined;
+  }
+  if (declarations.effectProfile !== "researcher_bounded_v1") return "other";
+  if (receipt.schema_version === 3) return "researcher_v3_legacy";
+  if (receipt.schema_version === 4) return "researcher_v4_strict";
+  return undefined;
 }
 
 function hasChildLifecycleEvent(view: RunTaskView): boolean {
@@ -1333,7 +1401,7 @@ function ownerOutputClosureIsExact(view: RunTaskView, restartDrift: boolean): bo
   }
   if (outputReferences.length !== 1) return false;
   const reference = decodeRunOutputReference(outputReferences[0]);
-  return reference !== undefined && reference.output_mode === "transcript";
+  return reference?.name === "primary" && reference.output_mode === "transcript";
 }
 
 function ownerTerminalEventProjection(view: RunTaskView): Pick<RunPublicEvent, "kind" | "event" | "text" | "occurred_at" | "metadata"> | null {
@@ -2106,6 +2174,7 @@ function publishRunTaskTransitionState(state: RunTaskState, draft: RunTaskState)
   state.pendingInputDeliveries = draft.pendingInputDeliveries;
   state.terminalizing = draft.terminalizing;
   state.partialOutputPath = draft.partialOutputPath;
+  state.pendingTerminalOutputs = draft.pendingTerminalOutputs;
   state.childStarted = draft.childStarted;
   state.queuedAt = draft.queuedAt;
   state.childStartedAt = draft.childStartedAt;
@@ -2814,6 +2883,30 @@ function maybeEvictTerminalTask(state: RunTaskState): void {
   }
 }
 
+async function cleanupUncommittedTerminalOutputs(
+  state: RunTaskState,
+  terminal: RunTaskTerminalIntent,
+): Promise<void> {
+  const pending = state.pendingTerminalOutputs;
+  if (!pending) return;
+  if (
+    terminal.result &&
+    "output_references" in terminal.result &&
+    terminalReferencesOwnPendingOutputs(terminal.result.output_references, pending)
+  ) {
+    return;
+  }
+  try {
+    await cleanupPendingTerminalOutputs(pending);
+    await clearPendingTerminalOutputs(state, pending);
+  } catch (error) {
+    console.error(
+      `[subagent007 warning] pending terminal output cleanup failed for run ${state.runId}: ${String(error)}`,
+    );
+    // The exact ownership stays in the durable run claim for startup retry.
+  }
+}
+
 async function finalizeRegisteredRunTask(
   state: RunTaskState,
   childLease: ActiveChildLease,
@@ -2823,6 +2916,7 @@ async function finalizeRegisteredRunTask(
   let terminalDurable = false;
   try {
     await settleDescendantSubtreeBeforeTerminal(state, terminal);
+    await cleanupUncommittedTerminalOutputs(state, terminal);
     await settleRunClaim(state, closeReason, terminal);
     terminalDurable = true;
   } finally {
@@ -3041,6 +3135,17 @@ async function settleRunClaim(
     }
     draft.result = terminal.result;
     draft.error = terminal.error;
+    if (
+      draft.pendingTerminalOutputs &&
+      terminal.result &&
+      "output_references" in terminal.result &&
+      terminalReferencesOwnPendingOutputs(
+        terminal.result.output_references,
+        draft.pendingTerminalOutputs,
+      )
+    ) {
+      draft.pendingTerminalOutputs = undefined;
+    }
     draft.terminalizing = true;
     draft.finishedAt = new Date().toISOString();
     normalizeAcceptedCancellation(draft);
@@ -3527,6 +3632,51 @@ async function grantRunClaimFromLaunchObservation(state: RunTaskState, observati
   });
 }
 
+async function acceptPendingTerminalOutputs(
+  state: RunTaskState,
+  ownership: PendingTerminalOutputs,
+): Promise<void> {
+  assertPendingTerminalOutputs(ownership, state.runId);
+  await withRunClaimOwner(state, async () => {
+    if (tasks.get(state.runId) !== state) throw taskNotFound(state.runId);
+    if (state.terminalSnapshotStarted || state.result || state.error) {
+      invalidOwnerRecord("terminal output ownership arrived after terminalization");
+    }
+    const draft = cloneRunTaskTransitionState(state);
+    if (draft.pendingTerminalOutputs) {
+      if (sameCanonicalOwnerJson(draft.pendingTerminalOutputs, ownership)) return;
+      invalidOwnerRecord("pending terminal output ownership conflicts with its prior bytes");
+    }
+    draft.pendingTerminalOutputs = ownership;
+    await writeRunClaimOwned(
+      runTaskViewFromState(draft, draft.inputRequests),
+      runClaimPersistenceEvidence(draft),
+    );
+    publishRunTaskTransitionState(state, draft);
+  });
+}
+
+async function clearPendingTerminalOutputs(
+  state: RunTaskState,
+  ownership: PendingTerminalOutputs,
+): Promise<void> {
+  assertPendingTerminalOutputs(ownership, state.runId);
+  await withRunClaimOwner(state, async () => {
+    if (tasks.get(state.runId) !== state) throw taskNotFound(state.runId);
+    if (!state.pendingTerminalOutputs) return;
+    if (!sameCanonicalOwnerJson(state.pendingTerminalOutputs, ownership)) {
+      invalidOwnerRecord("pending terminal output cleanup identity changed");
+    }
+    const draft = cloneRunTaskTransitionState(state);
+    draft.pendingTerminalOutputs = undefined;
+    await writeRunClaimOwned(
+      runTaskViewFromState(draft, draft.inputRequests),
+      runClaimPersistenceEvidence(draft),
+    );
+    publishRunTaskTransitionState(state, draft);
+  });
+}
+
 function taskChildRuntimeOptions(
   state: RunTaskState,
   options: { heartbeat?: HeartbeatNotify; heartbeatIntervalMs?: number },
@@ -3536,6 +3686,7 @@ function taskChildRuntimeOptions(
   abortSignal: AbortSignal;
   onOutputLine: (line: string) => Promise<void>;
   onTranscriptStaged: (stagingPath: string) => Promise<void>;
+  onTerminalOutputsPrepared: (ownership: PendingTerminalOutputs) => Promise<void>;
   onChildSpawned: (occurredAt: string) => Promise<void>;
   onActivationConfirmed: (receipt: NonNullable<RunSubagentResult["activation_receipt"]>) => Promise<void>;
   onSkillSnapshotActivationConfirmed: (receipt: NonNullable<RunSubagentResult["skill_snapshot_activation_receipt"]>) => Promise<void>;
@@ -3554,6 +3705,7 @@ function taskChildRuntimeOptions(
       acceptRecursiveDelegationReceipt(state, receipt),
     // This durable grant is deliberately before writeChildRequestFile/runChildProcess.
     onOwnerLaunchObservation: (observation) => grantRunClaimFromLaunchObservation(state, observation),
+    onTerminalOutputsPrepared: (ownership) => acceptPendingTerminalOutputs(state, ownership),
     onTranscriptStaged: async (stagingPath) => {
       await commitActiveRunTransition(state, (draft) => {
         if (draft.partialOutputPath === stagingPath) return false;
@@ -3777,7 +3929,11 @@ async function getPersistedRunTask(runId: string): Promise<RunTaskView> {
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const phaseOne = await withRunOwner(runId, async (): Promise<
       | { kind: "return"; view: RunTaskView }
-      | { kind: "inspect"; descendantRunIds: string[] }
+      | {
+          kind: "inspect";
+          descendantRunIds: string[];
+          pendingTerminalOutputs?: PendingTerminalOutputs;
+        }
     > => {
       let snapshot = await readTaskSnapshot(runId);
       if (!snapshot) {
@@ -3791,9 +3947,14 @@ async function getPersistedRunTask(runId: string): Promise<RunTaskView> {
       if (await persistedRunLiveness(snapshot) === "live") {
         return { kind: "return", view: persistedOwnerView(snapshot) };
       }
+      const currentRecord = await readRunOwnerRecordFile(taskRecordPath(runId));
+      if (!currentRecord) throw taskNotFound(runId);
       return {
         kind: "inspect",
         descendantRunIds: [...(snapshot.descendant_run_ids ?? [])],
+        ...(currentRecord.pending_terminal_outputs
+          ? { pendingTerminalOutputs: currentRecord.pending_terminal_outputs }
+          : {}),
       };
     });
     if (phaseOne.kind === "return") return phaseOne.view;
@@ -3807,6 +3968,17 @@ async function getPersistedRunTask(runId: string): Promise<RunTaskView> {
         isTerminalRunStatus(descendant.status) ? descendant.status as RunTaskTerminalStatus : null,
       );
     }
+    let pendingTerminalOutputsCleaned = false;
+    if (phaseOne.pendingTerminalOutputs) {
+      try {
+        await cleanupPendingTerminalOutputs(phaseOne.pendingTerminalOutputs);
+        pendingTerminalOutputsCleaned = true;
+      } catch (error) {
+        console.error(
+          `[subagent007 warning] restart terminal-output cleanup failed for run ${runId}: ${String(error)}`,
+        );
+      }
+    }
 
     let failureLog: { snapshot: RunTaskView; view: RunTaskView; settledAt: string } | undefined;
     const phaseTwo = await withRunOwner(runId, () =>
@@ -3817,6 +3989,12 @@ async function getPersistedRunTask(runId: string): Promise<RunTaskView> {
         const currentRecord = await readRunOwnerRecordFile(taskRecordPath(runId));
         if (!currentRecord) throw taskNotFound(runId);
         const snapshot = currentRunClaimView(currentRecord);
+        if (!sameCanonicalOwnerJson(
+          currentRecord.pending_terminal_outputs ?? null,
+          phaseOne.pendingTerminalOutputs ?? null,
+        )) {
+          return { kind: "retry" };
+        }
         if (snapshot.status !== "working" && snapshot.status !== "input_required") {
           return { kind: "return", view: persistedOwnerView(snapshot) };
         }
@@ -3860,6 +4038,9 @@ async function getPersistedRunTask(runId: string): Promise<RunTaskView> {
           ...(currentRecord.launch_observation
             ? { launchObservation: currentRecord.launch_observation }
             : {}),
+          ...(!pendingTerminalOutputsCleaned && currentRecord.pending_terminal_outputs
+            ? { pendingTerminalOutputs: currentRecord.pending_terminal_outputs }
+            : {}),
         });
         failureLog = { snapshot: freshSnapshot, view, settledAt: ownerLossEvidence.finishedAt };
         return { kind: "return", view };
@@ -3894,11 +4075,55 @@ export async function getRunTask(runId: string, allowUnreleasedTerminal = false)
   return runTaskViewFromState(state, state.inputRequests, allowUnreleasedTerminal);
 }
 
-export async function reconcilePersistedActiveRunTasks(): Promise<number> {
-  await reconcileRunTaskSnapshotTemps();
+async function reconcileTerminalOutputCleanupOwners(): Promise<number> {
   const runTasksDir = defaultRunTasksDir();
   const entries = await fs.readdir(runTasksDir).catch(() => []);
   let reconciled = 0;
+  for (const entry of entries) {
+    if (entry.startsWith(".") || !entry.endsWith(".json")) continue;
+    const runId = entry.slice(0, -".json".length);
+    const pending = await withRunOwner(runId, async () => {
+      const record = await readRunOwnerRecordFile(path.join(runTasksDir, entry)).catch(() => undefined);
+      const snapshot = record ? currentRunClaimView(record) : undefined;
+      return snapshot && isTerminalRunStatus(snapshot.status)
+        ? record?.pending_terminal_outputs
+        : undefined;
+    });
+    if (!pending) continue;
+    try {
+      await cleanupPendingTerminalOutputs(pending);
+    } catch (error) {
+      console.error(
+        `[subagent007 warning] retained terminal-output cleanup failed for run ${runId}: ${String(error)}`,
+      );
+      continue;
+    }
+    const cleared = await withRunOwner(runId, () =>
+      withRunClaimLock(runTasksDir, runId, async () => {
+        const record = await readRunOwnerRecordFile(path.join(runTasksDir, entry));
+        if (!record || !record.pending_terminal_outputs) return false;
+        if (!sameCanonicalOwnerJson(record.pending_terminal_outputs, pending)) return false;
+        const snapshot = currentRunClaimView(record);
+        if (!isTerminalRunStatus(snapshot.status)) return false;
+        await writeRunClaimOwned(snapshot, {
+          declarations: record.declarations,
+          ...(record.launch_observation
+            ? { launchObservation: record.launch_observation }
+            : {}),
+        });
+        return true;
+      })
+    );
+    if (cleared) reconciled += 1;
+  }
+  return reconciled;
+}
+
+export async function reconcilePersistedActiveRunTasks(): Promise<number> {
+  await reconcileRunTaskSnapshotTemps();
+  let reconciled = await reconcileTerminalOutputCleanupOwners();
+  const runTasksDir = defaultRunTasksDir();
+  const entries = await fs.readdir(runTasksDir).catch(() => []);
   for (const entry of entries) {
     if (!entry.endsWith(".json")) {
       continue;

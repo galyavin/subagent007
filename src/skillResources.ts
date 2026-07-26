@@ -4,6 +4,7 @@ import path from "node:path";
 import {
   DefaultResourceLoader,
   loadSkills,
+  type InlineExtension,
   type Skill,
 } from "@earendil-works/pi-coding-agent";
 import { ValidationError } from "./types.js";
@@ -23,6 +24,7 @@ export interface SkillResourceOptions {
   lookupPaths?: string[];
   noAmbientExtensions?: boolean;
   explicitExtensionPaths?: string[];
+  extensionFactories?: InlineExtension[];
 }
 
 export type SkillResolutionFailureCode = "skill_not_found" | "skill_ambiguous";
@@ -128,6 +130,7 @@ export function createSkillScopedResourceLoader(options: SkillResourceOptions): 
     agentDir: options.agentDir,
     additionalSkillPaths: skillResourcePathsForRequest(options),
     noSkills: true,
+    extensionFactories: options.extensionFactories,
     ...(options.noAmbientExtensions
       ? {
           noExtensions: true,

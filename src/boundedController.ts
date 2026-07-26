@@ -11,13 +11,14 @@ import type {
   ResearchControllerTerminalReceipt,
 } from "./types.js";
 import { assertAuthoringEffectScopeBinding, assertAuthoringWritableClosure } from "./authoringEffectScope.js";
+import { stripAnsiAndControls } from "./output.js";
 
 const execFileAsync = promisify(execFile);
 
 export const BOUNDED_CONTROLLER_TOOL_NAMES = ["researchctl", "aj_switchboard"] as const;
 export type BoundedControllerToolName = (typeof BOUNDED_CONTROLLER_TOOL_NAMES)[number];
 
-const RESEARCH_COMMANDS = [
+const RESEARCH_MODEL_COMMANDS = [
   "state-paths",
   "init",
   "plan",
@@ -32,11 +33,16 @@ const RESEARCH_COMMANDS = [
   "status",
   "render",
 ] as const;
+const RESEARCH_DISPATCH_COMMANDS = [
+  "claim-dispatch",
+  "record-dispatch-result",
+] as const;
+export type ResearchDispatchControllerCommand = (typeof RESEARCH_DISPATCH_COMMANDS)[number];
 const AJ_COMMANDS = ["gate", "anchors", "reconcile", "triage", "validate", "emit", "run"] as const;
 const AJ_RUN_COMMANDS = ["init", "next", "commit", "status", "check"] as const;
 
 export const BOUNDED_CONTROLLER_COMMANDS = {
-  researchctl: RESEARCH_COMMANDS,
+  researchctl: RESEARCH_MODEL_COMMANDS,
   aj_switchboard: AJ_COMMANDS,
 } as const;
 
@@ -77,6 +83,24 @@ export interface ResearchControllerStatePaths {
   schema_version: 1;
   job_path: string;
   input_root: string;
+}
+
+export class BoundedControllerExecutionQueue {
+  private tail: Promise<void> = Promise.resolve();
+
+  async run<T>(operation: () => Promise<T>): Promise<T> {
+    const prior = this.tail;
+    let release!: () => void;
+    this.tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await prior;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
 }
 
 const CONTROLLER_RUNTIME_IMPORTS: Record<BoundedControllerEffectProfile, readonly string[]> = {
@@ -197,7 +221,7 @@ export async function assertResolvedBoundedControllerPython(
 
 const CONTROLLER_TOOL_PARAMETERS: Record<BoundedControllerToolName, TSchema> = {
   researchctl: Type.Object({
-    subcommand: Type.Union(RESEARCH_COMMANDS.map((command) => Type.Literal(command)) as unknown as [TSchema, ...TSchema[]]),
+    subcommand: Type.Union(RESEARCH_MODEL_COMMANDS.map((command) => Type.Literal(command)) as unknown as [TSchema, ...TSchema[]]),
     argv: Type.Optional(Type.Array(Type.String({ maxLength: MAX_ARGUMENT_CHARS }), { maxItems: MAX_ARGUMENTS })),
   }),
   aj_switchboard: Type.Object({
@@ -338,10 +362,6 @@ async function validateArguments(
   argv: readonly string[],
   effectScopeBinding?: AuthoringEffectScopeBinding,
 ): Promise<void> {
-  const allowed = BOUNDED_CONTROLLER_COMMANDS[tool] as readonly string[];
-  if (!allowed.includes(subcommand)) {
-    throw new Error(`${tool} subcommand is not allowed`);
-  }
   if (argv.length > MAX_ARGUMENTS) {
     throw new Error(`${tool} argv exceeds ${MAX_ARGUMENTS} arguments`);
   }
@@ -471,7 +491,8 @@ async function executeController(
   scriptPath: string,
   controllerPython: ResolvedBoundedControllerPython,
   effectScopeBinding?: AuthoringEffectScopeBinding,
-): Promise<ReturnType<ToolDefinition<any>["execute"]>> {
+  allowedCommands: readonly string[] = BOUNDED_CONTROLLER_COMMANDS[tool],
+): Promise<Awaited<ReturnType<ToolDefinition<any>["execute"]>>> {
   const argv = rawArgv === undefined ? [] : rawArgv;
   if (!Array.isArray(argv) || argv.some((value) => typeof value !== "string")) {
     throw new Error(`${tool} argv must be an array of strings`);
@@ -479,6 +500,9 @@ async function executeController(
   const args = argv as string[];
   const taskRootReal = await fs.realpath(taskRoot);
   await assertBoundEffectScopeRoot(taskRootReal, effectScopeBinding);
+  if (!allowedCommands.includes(subcommand)) {
+    throw new Error(`${tool} subcommand is not allowed`);
+  }
   if (tool === "researchctl" && subcommand === "state-paths") {
     if (args.length !== 0) {
       throw new Error("researchctl state-paths does not accept argv");
@@ -603,12 +627,132 @@ export async function inspectResearchControllerCompletion(input: {
   }
 }
 
+export interface ResearchControllerTerminalProduct {
+  receipt: Extract<ResearchControllerTerminalReceipt, { schema_version: 2 }>;
+  primaryMarkdown: string;
+  packetMarkdown: string;
+}
+
+export async function materializeResearchControllerCompletion(input: {
+  taskRoot: string;
+  scriptPath: string;
+  controllerPython: ResolvedBoundedControllerPython;
+  effectScopeBinding: AuthoringEffectScopeBinding;
+}): Promise<ResearchControllerTerminalProduct | undefined> {
+  try {
+    const taskRootReal = await fs.realpath(input.taskRoot);
+    await assertBoundEffectScopeRoot(taskRootReal, input.effectScopeBinding);
+    const statePaths = researchControllerStatePaths(input.effectScopeBinding);
+    const jobStat = await fs.lstat(statePaths.job_path);
+    if (!jobStat.isFile() || jobStat.isSymbolicLink() || jobStat.nlink !== 1 || jobStat.size > MAX_JSON_BYTES) {
+      return undefined;
+    }
+    const jobBytes = await fs.readFile(statePaths.job_path);
+    const job = JSON.parse(jobBytes.toString("utf8")) as {
+      state?: unknown;
+      dispatch_protocol?: unknown;
+    };
+    if (
+      job.state !== "complete" ||
+      job.dispatch_protocol !== "research_web_dispatch_v1"
+    ) {
+      return undefined;
+    }
+    const verified = await verifiedControllerCommand({
+      tool: "researchctl",
+      scriptPath: input.scriptPath,
+      controllerPython: input.controllerPython,
+    });
+    const run = (argv: string[]) => execFileAsync(verified.pythonPath, argv, {
+      cwd: taskRootReal,
+      env: envForController(),
+      shell: false,
+      timeout: BOUNDED_CONTROLLER_TIMEOUT_MS,
+      maxBuffer: MAX_STDOUT_BYTES + MAX_STDERR_BYTES,
+      windowsHide: true,
+    });
+    await run([verified.scriptPath, "validate", statePaths.job_path]);
+    if (!jobBytes.equals(await fs.readFile(statePaths.job_path))) return undefined;
+    const primary = await run([
+      verified.scriptPath,
+      "render",
+      statePaths.job_path,
+      "--profile",
+      "primary",
+    ]);
+    if (!jobBytes.equals(await fs.readFile(statePaths.job_path))) return undefined;
+    const packet = await run([
+      verified.scriptPath,
+      "render",
+      statePaths.job_path,
+      "--profile",
+      "bendum",
+    ]);
+    if (!jobBytes.equals(await fs.readFile(statePaths.job_path))) return undefined;
+    const primaryMarkdown = stripAnsiAndControls(primary.stdout);
+    const packetMarkdown = stripAnsiAndControls(packet.stdout);
+    return {
+      primaryMarkdown,
+      packetMarkdown,
+      receipt: {
+        schema_version: 2,
+        controller: "researchctl",
+        state: "complete",
+        validation: "passed",
+        dispatch_protocol: "research_web_dispatch_v1",
+        job_sha256: createHash("sha256").update(jobBytes).digest("hex"),
+        primary_profile: "primary",
+        primary_sha256: createHash("sha256").update(primaryMarkdown, "utf8").digest("hex"),
+        packet_profile: "bendum",
+        packet_sha256: createHash("sha256").update(packetMarkdown, "utf8").digest("hex"),
+      },
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+export interface ResearchDispatchController {
+  execute(
+    subcommand: ResearchDispatchControllerCommand,
+    argv: readonly string[],
+  ): Promise<Awaited<ReturnType<ToolDefinition<any>["execute"]>>>;
+}
+
+/**
+ * Runtime-private provider accounting capability. This is deliberately not a
+ * Pi ToolDefinition, so it cannot be registered in the model-visible toolset.
+ */
+export function createResearchDispatchController(
+  taskRoot: string,
+  scriptPath: string,
+  controllerPython: ResolvedBoundedControllerPython,
+  effectScopeBinding: AuthoringEffectScopeBinding,
+  executionQueue: BoundedControllerExecutionQueue,
+): ResearchDispatchController {
+  return {
+    execute: (subcommand, argv) =>
+      executionQueue.run(() =>
+        executeController(
+          taskRoot,
+          "researchctl",
+          subcommand,
+          [...argv],
+          scriptPath,
+          controllerPython,
+          effectScopeBinding,
+          RESEARCH_DISPATCH_COMMANDS,
+        )),
+  };
+}
+
 export function createBoundedControllerTool(
   taskRoot: string,
   tool: BoundedControllerToolName,
   scriptPath: string,
   controllerPython: ResolvedBoundedControllerPython,
   effectScopeBinding?: AuthoringEffectScopeBinding,
+  executionQueue?: BoundedControllerExecutionQueue,
 ): ToolDefinition<any> {
   const parameters = CONTROLLER_TOOL_PARAMETERS[tool];
   return {
@@ -633,15 +777,18 @@ export function createBoundedControllerTool(
       if (typeof record.subcommand !== "string") {
         throw new Error(`${tool} subcommand is required`);
       }
-      return executeController(
-        taskRoot,
-        tool,
-        record.subcommand,
-        record.argv,
-        scriptPath,
-        controllerPython,
-        effectScopeBinding,
-      );
+      const subcommand = record.subcommand;
+      const operation = () =>
+        executeController(
+          taskRoot,
+          tool,
+          subcommand,
+          record.argv,
+          scriptPath,
+          controllerPython,
+          effectScopeBinding,
+        );
+      return executionQueue ? executionQueue.run(operation) : operation();
     },
   };
 }

@@ -13,7 +13,12 @@ import {
   createStreamingRunTranscript,
   createFinalMessageTarget,
   defaultSubagentStatePath,
+  pendingTerminalOutputs,
+  prepareRunOutput,
   readFinalMessage,
+  type PendingTerminalOutputs,
+  type PreparedRunOutput,
+  type StoredRunOutput,
   type StreamingRunTranscript,
   writeRunOutput,
 } from "./output.js";
@@ -33,10 +38,14 @@ import {
 import type { FailureReasonCode, RunStopReason } from "./types.js";
 import {
   assertResolvedBoundedControllerPython,
-  inspectResearchControllerCompletion,
+  materializeResearchControllerCompletion,
   resolveBoundedControllerPython,
   type ResolvedBoundedControllerPython,
 } from "./boundedController.js";
+import {
+  terminalProjectionIsValid,
+  type TerminalProjectionInput,
+} from "./terminalProjection.js";
 import type {
   ActivationReceipt,
   ActivationToolBinding,
@@ -707,6 +716,7 @@ export async function runSubagentCore(
     onChildControlReady?: (send: (message: string) => boolean) => void;
     onInputResponseAccepted?: (response: ChildInputResponseAccepted) => void;
     onTranscriptStaged?: (stagingPath: string) => void | Promise<void>;
+    onTerminalOutputsPrepared?: (ownership: PendingTerminalOutputs) => void | Promise<void>;
     onChildSpawned?: (occurredAt: string) => void | Promise<void>;
     onActivationConfirmed?: (receipt: ActivationReceipt) => void | Promise<void>;
     onSkillSnapshotActivationConfirmed?: (receipt: SkillSnapshotActivationReceipt) => void | Promise<void>;
@@ -764,6 +774,8 @@ export async function runSubagentCore(
 
   let childRequest: { requestPath: string; cleanup: () => Promise<void> } | undefined;
   let transcript: StreamingRunTranscript | undefined;
+  const strictPreparedOutputs: PreparedRunOutput[] = [];
+  let strictOwnershipAccepted = false;
   try {
     const childEntrypoint = await assertPiChildEntrypointAvailable();
     const boundedActivation = await expectedBoundedActivationToolBindings({
@@ -924,7 +936,7 @@ export async function runSubagentCore(
       },
     });
     let terminalEffectScopeError: ValidationError | undefined;
-    let controllerTerminalReceipt: RunSubagentResult["controller_terminal_receipt"];
+    let strictResearchOutput: Awaited<ReturnType<typeof materializeResearchControllerCompletion>>;
     if (authoringEffectScope) {
       try {
         await assertAuthoringEffectScopeTerminal(authoringEffectScope);
@@ -946,10 +958,11 @@ export async function runSubagentCore(
     if (
       !terminalEffectScopeError &&
       resolved.effectProfile === "researcher_bounded_v1" &&
+      activationReceipt?.schema_version === 4 &&
       boundedActivation &&
       authoringEffectScope
     ) {
-      controllerTerminalReceipt = await inspectResearchControllerCompletion({
+      strictResearchOutput = await materializeResearchControllerCompletion({
         taskRoot: resolved.cwd,
         scriptPath: boundedActivation.scriptPath,
         controllerPython: boundedActivation.controllerPython,
@@ -957,11 +970,54 @@ export async function runSubagentCore(
       });
     }
     const finalMessage = await readFinalMessage(finalMessageTarget.outputLastMessagePath);
-    const writtenOutputMode: OutputMode = finalMessage ? "final" : "transcript";
-    const output = finalMessage
-      ? await writeRunOutput(finalMessage, options.runsDir)
-      : await transcript.finalize();
-    if (finalMessage) {
+    const writtenOutputMode: OutputMode = strictResearchOutput || finalMessage ? "final" : "transcript";
+    let output: StoredRunOutput;
+    let packetOutput: StoredRunOutput | undefined;
+    if (strictResearchOutput) {
+      if (!options.onTerminalOutputsPrepared) {
+        throw new Error("strict Researcher output requires durable terminal-output ownership");
+      }
+      const primaryPrepared = await prepareRunOutput(
+        strictResearchOutput.primaryMarkdown,
+        "primary",
+        options.runsDir,
+      );
+      strictPreparedOutputs.push(primaryPrepared);
+      const packetPrepared = await prepareRunOutput(
+        strictResearchOutput.packetMarkdown,
+        "packet",
+        options.runsDir,
+      );
+      strictPreparedOutputs.push(packetPrepared);
+      const strictPendingOwnership = pendingTerminalOutputs(
+        runId,
+        primaryPrepared.ownership,
+        packetPrepared.ownership,
+      );
+      if (
+        primaryPrepared.ownership.content_sha256 !== strictResearchOutput.receipt.primary_sha256 ||
+        packetPrepared.ownership.content_sha256 !== strictResearchOutput.receipt.packet_sha256
+      ) {
+        throw new Error("strict Researcher prepared bytes do not match the controller receipt");
+      }
+      await options.onTerminalOutputsPrepared(strictPendingOwnership);
+      strictOwnershipAccepted = true;
+      output = await primaryPrepared.publish();
+      packetOutput = await packetPrepared.publish();
+    } else {
+      output = finalMessage
+        ? await writeRunOutput(finalMessage, options.runsDir)
+        : await transcript.finalize();
+    }
+    const strictResearchOutputsMatch = !strictResearchOutput || (
+      output.reference.content_sha256 === strictResearchOutput.receipt.primary_sha256 &&
+      packetOutput?.reference.content_sha256 === strictResearchOutput.receipt.packet_sha256
+    );
+    const controllerTerminalReceipt =
+      strictResearchOutput && strictResearchOutputsMatch
+        ? strictResearchOutput.receipt
+        : undefined;
+    if (strictResearchOutput || finalMessage) {
       await transcript.discard();
     }
     const processSuccess =
@@ -983,9 +1039,15 @@ export async function runSubagentCore(
       : sessionMode.kind === "resume"
         ? processSuccess
         : false;
-    const missingFinalOutput = processSuccess && resolved.outputMode === "final" && !finalMessage;
+    const missingFinalOutput = processSuccess && resolved.outputMode === "final" &&
+      (resolved.effectProfile === "researcher_bounded_v1" ? !strictResearchOutput : !finalMessage);
+    const controllerCompletionConfirmed =
+      resolved.effectProfile !== "researcher_bounded_v1" ||
+      (strictResearchOutput !== undefined && strictResearchOutputsMatch);
     const success =
-      processSuccess && !terminalEffectScopeError && activationConfirmed && skillSnapshotActivationConfirmed && recursiveDelegationConfirmed && !missingFinalOutput && (sessionMode.kind !== "fresh" || sessionEstablished);
+      processSuccess && !terminalEffectScopeError && activationConfirmed && skillSnapshotActivationConfirmed &&
+      recursiveDelegationConfirmed && controllerCompletionConfirmed && !missingFinalOutput &&
+      (sessionMode.kind !== "fresh" || sessionEstablished);
     const partialOutputAvailable = partialOutputAvailableForRun({
       timedOut: processResult.timedOut,
       resourceExhausted: processResult.resourceExhausted,
@@ -1013,7 +1075,12 @@ export async function runSubagentCore(
           : success
             ? "completed"
             : "failed",
-      output_references: [{ ...output.reference, output_mode: writtenOutputMode }],
+      output_references: [
+        { ...output.reference, output_mode: writtenOutputMode },
+        ...(packetOutput
+          ? [{ ...packetOutput.reference, name: "packet" as const, output_mode: "final" as const }]
+          : []),
+      ],
       success,
       exit_code: processResult.exitCode,
       timed_out: processResult.timedOut,
@@ -1085,8 +1152,29 @@ export async function runSubagentCore(
       session_established: sessionEstablished,
       input_requests_dir: inputRequestsDir,
     };
+    if (!terminalProjectionIsValid({
+      requestedEffectProfile: resolved.effectProfile,
+      activationClass: resolved.effectProfile === "researcher_bounded_v1" &&
+          activationReceipt?.schema_version === 4
+        ? "researcher_v4_strict"
+        : "other",
+      status: result.status as TerminalProjectionInput["status"],
+      outputReferences: result.output_references,
+      controllerTerminalReceipt: result.controller_terminal_receipt,
+    })) {
+      throw new Error(
+        "terminal output projection is inconsistent with its validated activation and controller receipt",
+      );
+    }
     return result;
   } finally {
+    if (!strictOwnershipAccepted && strictPreparedOutputs.length > 0) {
+      for (const prepared of strictPreparedOutputs) {
+        try {
+          await prepared.discard();
+        } catch {}
+      }
+    }
     await finalMessageTarget.cleanup();
     await childRequest?.cleanup();
     // An unsettled .partial transcript is intentionally retained for crash/failure recovery.

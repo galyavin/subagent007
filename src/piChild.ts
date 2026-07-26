@@ -22,9 +22,12 @@ import { createSkillScopedResourceLoader } from "./skillResources.js";
 import { createTaskRootAuthoringTools } from "./taskRootAuthoringTools.js";
 import {
   assertResolvedBoundedControllerPython,
+  BoundedControllerExecutionQueue,
   createBoundedControllerTool,
+  createResearchDispatchController,
   type ResolvedBoundedControllerPython,
 } from "./boundedController.js";
+import { createResearchDispatchExtension } from "./researchDispatchMediator.js";
 import {
   activateAllRegisteredTools,
   activateEffectProfileTools,
@@ -508,11 +511,43 @@ async function main(): Promise<void> {
       throw asChildContractError(error, "effect_profile_activation_failed");
     }
   }
+  const boundedControllerQueue =
+    boundedController && request.effectProfile === "researcher_bounded_v1"
+    ? new BoundedControllerExecutionQueue()
+    : undefined;
+  const boundedControllerTool = boundedController
+    ? createBoundedControllerTool(
+        request.cwd,
+        boundedController.tool,
+        boundedController.scriptPath,
+        controllerPython!,
+        effectScopeBinding,
+        boundedControllerQueue,
+      )
+    : undefined;
+  const researchDispatchExtension =
+    request.effectProfile === "researcher_bounded_v1" &&
+    boundedController &&
+    boundedControllerQueue &&
+    controllerPython &&
+    effectScopeBinding?.writable_scope.kind === "fixed_state_subtree"
+      ? createResearchDispatchExtension({
+          controller: createResearchDispatchController(
+            request.cwd,
+            boundedController.scriptPath,
+            controllerPython,
+            effectScopeBinding,
+            boundedControllerQueue,
+          ),
+          jobPath: path.join(effectScopeBinding.writable_scope.paths[0], "job.json"),
+        })
+      : undefined;
   const resourceLoader = createSkillScopedResourceLoader({
     cwd: request.cwd,
     agentDir,
     skill: request.skill,
     skillFilePath: request.skillFilePath,
+    ...(researchDispatchExtension ? { extensionFactories: [researchDispatchExtension] } : {}),
     ...(request.effectProfile
       ? {
           noAmbientExtensions: true,
@@ -555,14 +590,8 @@ async function main(): Promise<void> {
           effectScopeBinding,
         )
       : []),
-    ...(boundedController
-      ? [createBoundedControllerTool(
-          request.cwd,
-          boundedController.tool,
-          boundedController.scriptPath,
-          controllerPython!,
-          effectScopeBinding,
-        )]
+    ...(boundedControllerTool
+      ? [boundedControllerTool]
       : []),
   ];
   if (!request.effectProfile && request.recursiveDelegation === "enabled") {
