@@ -1,7 +1,7 @@
 ---
 name: runtime-artifact-ownership
 description: Prevent disk and build garbage by assigning every runtime artifact an observable owner, successor, and cleanup condition.
-last_updated: 2026-07-24
+last_updated: 2026-07-26
 ---
 
 # Runtime Artifact Ownership
@@ -15,6 +15,7 @@ Use this pattern when adding or changing child output, temporary directories, so
 - Private or redundant raw capture is not a durable output. Prefer direct sanitized streaming into the canonical staging artifact.
 - Every transient directory records the creating PID and artifact kind. Automatic cleanup requires proof that the owner process is gone.
 - A transient artifact is removed immediately after its durable successor is atomically published.
+- When one terminal result requires multiple public files, prepare and witness all files first, persist their exact private ownership before the first non-atomic publish, and clear that ownership only in the terminal commit that references the complete set. Consumers select references by their exact role name, never array position or single-reference cardinality. Owner-loss cleanup must remove staged and partially published members; failed cleanup keeps a retryable durable owner rather than an orphan.
 - A protected free-space reserve stops new or active work before the host reaches filesystem exhaustion; it does not silently truncate a continuing run.
 - Builds compile away from the runtime-visible release, publish through one atomic pointer switch, and retain any release with a live server lease.
 

@@ -12,7 +12,7 @@ edges:
     condition: when a decision relates to system structure
   - target: context/stack.md
     condition: when a decision relates to technology choice
-last_updated: 2026-07-25
+last_updated: 2026-07-26
 ---
 
 # Decisions
@@ -246,11 +246,20 @@ last_updated: 2026-07-25
 **Alternatives considered:** Storing raw child streams directly in public events (rejected because it would conflate auditability with disclosure).
 **Consequences:** Changes to transcript, event, and failure-log code need tests for what is omitted as well as what is included.
 
-### Researcher state discovery and completion proof are adapter-owned
+### Researcher state discovery and terminal projection are adapter-owned
 
-**Date:** 2026-07-24
+**Date:** 2026-07-25
 **Status:** Active
-**Decision:** `researcher_bounded_v1` activation receipt v3 advertises `researchctl_state_paths_v1`. Its native controller returns the exact bound job and input paths through read-only `state-paths`. After child settlement, Subagent007 may emit `controller_terminal_receipt` only when the exact snapshot controller validates and full-renders an unchanged job whose state is `complete`.
-**Reasoning:** A confined child cannot reliably infer a hidden adapter-owned state root, and a clean child exit cannot prove that the Researcher workflow reached its controller-defined terminal state.
-**Alternatives considered:** Exposing the hidden path only in prose (rejected as non-authoritative), letting the child search or derive it (rejected as brittle and confinement-hostile), changing generic `success` semantics (rejected because Subagent007 is an attempt substrate), and trusting the child’s prose claim (rejected because it cannot enforce controller state).
-**Consequences:** Direct CLI Researcher runs keep their existing `${TMPDIR:-/tmp}` path. Bounded Researcher workers must discover native state before the first controller command. Workflow callers such as Bendum require the controller receipt for Researcher completion; generic callers may continue treating `success` as transport/process success. AJ remains on bounded activation receipt v2.
+**Decision:** `researcher_bounded_v1` live activation requires exact receipt v4 advertising `researchctl_state_paths_v1` and `researchctl_strict_v2`; exact v3 remains durable-readback-only. Its native controller returns exact bound job/input paths through read-only `state-paths`. One Researcher-only queue serializes mediator and model-visible controller writes while leaving provider/web I/O outside it; AJ keeps its direct unqueued controller path. After child settlement, the existing materializer is the sole source of primary+Bendum bytes and exact v2 receipt. One pure validator, called on producer return and current-run readback, enforces profile/activation/status/output/receipt projection consistency and role-named hash joins without claiming that controller execution ran.
+**Reasoning:** A confined child cannot reliably infer a hidden adapter-owned state root, and a clean child exit or self-consistent receipt cannot prove controller-defined completion. Durable evidence must reject forged, cross-profile, reordered, duplicated, or hash-swapped projections while preserving the weaker exact historical v3 ceiling. Queue ownership must cover only Researcher controller writes; applying it to AJ would add unsupported serialization.
+**Alternatives considered:** Exposing the hidden path only in prose (rejected as non-authoritative), letting the child search or derive it (rejected as brittle and confinement-hostile), validating receipt shape without joining named output references (rejected because forged/cross-profile evidence remains admissible), treating `run_id` as an execution join (rejected because it proves no controller observation), changing generic `success` semantics (rejected because Subagent007 is an attempt substrate), or sharing the new queue with AJ (rejected because AJ has no mediator concurrency requirement).
+**Consequences:** Strict v4 completion requires the exact v2 receipt plus one primary and one Bendum packet; materialized failed/cancelled/timed-out results may preserve that pair, while non-complete and activation-failure results have one diagnostic primary without receipt/packet. Non-Researcher projections admit neither. Legacy v3 durable projections have exactly one primary and may retain only the exact weaker v1 receipt, with no output-hash join. Live ingress never produces, coerces, defaults, or upgrades v3. Direct CLI Researcher runs keep their existing `${TMPDIR:-/tmp}` path. Generic callers may continue treating `success` as process/transport outcome.
+
+### Researcher evidence and terminal pairs have exclusive observable owners
+
+**Date:** 2026-07-26
+**Status:** Active
+**Decision:** Model-visible Researcher `researchctl` excludes provider claim/result commands, and model write/edit is confined to the exact real controller `input_root`; a non-registerable runtime adapter alone performs dispatch accounting through the shared queue. Strict primary and packet renders are canonicalized before receipt hashing, prepared together, and recorded as one private pending pair in the durable run claim before the first public rename. Terminal commit clears that pending ownership only when exact output references own both files; failure and owner-loss paths remove the recorded pair, retaining failed cleanup for startup retry. Primary-only session/restart consumers enforce the role after generic lexical decoding.
+**Reasoning:** A controller receipt cannot certify provider observation when the model can author the same dispatch state or edit `job.json`. Likewise, two independent public renames cannot provide durable pair ownership, and a raw-render hash cannot identify bytes that publication later sanitizes. The existing run owner, controller queue, canonicalizer, and consumer boundaries already observe the necessary mechanics.
+**Alternatives considered:** Terminal signatures over shared state (rejected because the writer remains shared), controller-side content rejection (rejected as cross-repository policy motion), catch-only output deletion (rejected because host death skips it), restart completion phases (rejected because a restarted attempt already fails), and global role-specific decoder APIs (rejected as broader than the three primary-only consumers).
+**Consequences:** Researcher direct inputs remain writable without exposing job/dispatch authority. Strict receipt and durable hashes share exact bytes. A crash after one publish leaves a durable cleanup owner rather than an orphan. The public output/result shape and legacy v3 readback remain unchanged; the Researcher contract reports `task_root_write_scope:"exact_controller_input_root"`.

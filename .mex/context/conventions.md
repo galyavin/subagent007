@@ -11,7 +11,7 @@ triggers:
 edges:
   - target: context/architecture.md
     condition: when a convention depends on understanding the system structure
-last_updated: 2026-07-24
+last_updated: 2026-07-26
 ---
 
 # Conventions
@@ -26,7 +26,7 @@ last_updated: 2026-07-24
 ## Structure
 - `src/server.ts` owns MCP registration and handler-level result shaping.
 - `src/runTask.ts` owns durable task lifecycle; do not duplicate task state transitions in handlers.
-- `src/runSubagent.ts` owns the Pi child request-file contract and child result projection.
+- `src/runSubagent.ts` owns the Pi child request-file contract and result orchestration. `src/output.ts` owns terminal artifact preparation/publication, and `src/terminalProjection.ts` owns structural receipt/reference admission.
 - `src/skillBinding.ts` owns `skill_name`/legacy `skill` validation, prompt-invocation rejection, and MCP schema description text.
 - `src/skillVerification.ts` owns public batch-verification request binding and the shared resolved-skill read/hash/compare primitive; launch code must call that primitive rather than reproduce hashing or compare logic.
 - `src/types.ts` is the public type/reason-code source; update tests and README when public fields change.
@@ -39,7 +39,7 @@ last_updated: 2026-07-24
 - Tool descriptions are part of the agent-facing lifecycle contract. Keep `get_run` and `cancel_run` explicit that `working`/`running_silent`, elapsed silence, live heartbeats, and recursive child activity do not authorize cancellation.
 - Named-session manifest eligibility failures that are knowable before child launch must reject before durable task registration with `kind:"preflight_rejected"` and `child_started:false`; keep the locked session execution checks as race protection.
 - Public event views and transcripts must stay sanitized; never expose raw thinking, private tool payloads, caller prompt text, full composed prompts, or answer values. Use the shared public prompt projection marker instead of writing `request.prompt` into public events or transcript provenance.
-- Public MCP result projection must also omit backend Pi session identifiers, internal mailbox filesystem paths, and every final/partial output pathname. Terminal child output uses one exact primary reference with a canonical single-component `relative_path`, bounded `size_bytes`, and lowercase `content_sha256`; callers derive bytes only from their configured runs root.
+- Public MCP result projection must also omit backend Pi session identifiers, internal mailbox filesystem paths, and every final/partial output pathname. Terminal child output uses exactly one primary reference and may add one Researcher packet reference; each has a canonical single-component `relative_path`, bounded `size_bytes`, and lowercase `content_sha256`. Callers derive bytes only from their configured runs root and select roles by `name`, not list position.
 - Recursive parent public events are part of the caller contract: descendant registration/finalization should project through sanitized `recursive_child_started` and `recursive_child_finished` events whose child ids match the direct `child_run_ids`/delegated run id and whose metadata contains only lineage/status/success fields.
 - Public model calibration must stay class-level on caller surfaces: expose `model_class`/`resolved_model_class` and health/migration actions, not concrete model IDs or thinking-level calibration values in MCP results, failure logs, session ledgers, observed campaign summaries, or README. Z1-Z5 are external expert classes, not aliases for A-E.
 - Required named-session packet failures use distinct reason codes: missing packet -> `packet_required_missing`, malformed packet -> `packet_required_invalid`, parse-valid not-ready packet -> `packet_required_not_ready`.
