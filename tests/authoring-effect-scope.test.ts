@@ -676,7 +676,7 @@ test("authoring terminal reinspection rejects immutable skill snapshot mutation"
   }
 });
 
-test("bounded profiles own one fixed state subtree and keep the remaining task tree immutable", async () => {
+test("Researcher writes only controller inputs and keeps the remaining task tree immutable", async () => {
   const fixture = await tempTaskRoot("subagent007-bounded-state-scope-");
   try {
     const input = path.join(fixture.root, "semantic-input.json");
@@ -701,7 +701,13 @@ test("bounded profiles own one fixed state subtree and keep the remaining task t
     const write = tools.find((tool) => tool.name === "write")!;
     const edit = tools.find((tool) => tool.name === "edit")!;
     const context = {} as never;
-    await write.execute("state", { path: path.join(expectedStateRoot, "job.json"), content: "{}\n" }, undefined, undefined, context);
+    const inputRoot = path.join(expectedStateRoot, "inputs");
+    await fs.mkdir(inputRoot, { recursive: true });
+    await write.execute("input", { path: path.join(inputRoot, "plan.json"), content: "{}\n" }, undefined, undefined, context);
+    await assert.rejects(
+      () => write.execute("job", { path: path.join(expectedStateRoot, "job.json"), content: "{}\n" }, undefined, undefined, context),
+      /direct writable subtree/i,
+    );
     await assert.rejects(
       () => write.execute("outside-state", { path: input, content: "changed\n" }, undefined, undefined, context),
       /state subtree|writable scope|immutable/i,

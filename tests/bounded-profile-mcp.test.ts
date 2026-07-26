@@ -140,6 +140,7 @@ test("bounded researcher profile activates through every supported start surface
         run_id?: string;
         status: string;
         activation_receipt?: { active_tool_names?: string[]; tool_bindings?: Array<{ tool_name: string }> };
+        output_references?: Array<{ name?: string; content_sha256?: string }>;
         controller_terminal_receipt?: {
           schema_version?: number;
           controller?: string;
@@ -148,6 +149,11 @@ test("bounded researcher profile activates through every supported start surface
           job_sha256?: string;
           render_profile?: string;
           render_sha256?: string;
+          dispatch_protocol?: string;
+          primary_profile?: string;
+          primary_sha256?: string;
+          packet_profile?: string;
+          packet_sha256?: string;
         };
       };
       const terminal = view.status === "working" || view.status === "input_required"
@@ -156,14 +162,26 @@ test("bounded researcher profile activates through every supported start surface
       assert.equal((terminal.activation_receipt?.active_tool_names ?? []).join(","), "read,grep,find,ls,write,edit,web_search,web_read,researchctl", `${name}: ${JSON.stringify(terminal)}`);
       assert.deepEqual(terminal.activation_receipt?.tool_bindings?.map((entry) => entry.tool_name), ["web_read", "web_search", "researchctl"]);
       assert.deepEqual(terminal.controller_terminal_receipt, {
-        schema_version: 1,
+        schema_version: 2,
         controller: "researchctl",
         state: "complete",
         validation: "passed",
+        dispatch_protocol: "research_web_dispatch_v1",
         job_sha256: terminal.controller_terminal_receipt?.job_sha256,
-        render_profile: "full",
-        render_sha256: terminal.controller_terminal_receipt?.render_sha256,
+        primary_profile: "primary",
+        primary_sha256: terminal.controller_terminal_receipt?.primary_sha256,
+        packet_profile: "bendum",
+        packet_sha256: terminal.controller_terminal_receipt?.packet_sha256,
       });
+      assert.equal(
+        terminal.output_references?.find((reference) => reference.name === "primary")?.content_sha256,
+        terminal.controller_terminal_receipt?.primary_sha256,
+      );
+      assert.equal(
+        terminal.output_references?.find((reference) => reference.name === "packet")?.content_sha256,
+        terminal.controller_terminal_receipt?.packet_sha256,
+      );
+      assert.equal(Object.hasOwn(terminal as object, "pending_terminal_outputs"), false);
       await fs.rm(path.join(projectDir, ".subagent007"), { recursive: true, force: true });
     }
     const ajResolved = await client.callTool({
@@ -331,6 +349,7 @@ test("bounded researcher profile activates through every supported start surface
 async function waitForTerminal(client: Client, runId: string): Promise<{
   status: string;
   reason_code?: string;
+  output_references?: Array<{ name?: string; content_sha256?: string }>;
   activation_receipt?: { active_tool_names?: string[]; tool_bindings?: Array<{ tool_name: string }> };
   controller_terminal_receipt?: {
     schema_version?: number;
@@ -340,6 +359,11 @@ async function waitForTerminal(client: Client, runId: string): Promise<{
     job_sha256?: string;
     render_profile?: string;
     render_sha256?: string;
+    dispatch_protocol?: string;
+    primary_profile?: string;
+    primary_sha256?: string;
+    packet_profile?: string;
+    packet_sha256?: string;
   };
 }> {
   const deadline = Date.now() + 5_000;

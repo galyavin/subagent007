@@ -7,10 +7,15 @@ import path from "node:path";
 import { test } from "node:test";
 import {
   MAX_TERMINAL_OUTPUT_BYTES,
+  cleanupPendingTerminalOutputs,
   createStreamingRunTranscript,
   decodeRunOutputReference,
+  pendingTerminalOutputs,
+  prepareRunOutput,
   recoverStreamingRunTranscript,
   runOutputPath,
+  stripAnsiAndControls,
+  terminalReferencesOwnPendingOutputs,
   writeRunOutput,
 } from "../src/output.js";
 
@@ -83,6 +88,51 @@ async function withShortReadHook<T>(
   }
 }
 
+test("terminal output canonicalization is idempotent", () => {
+  const raw = "\u001b[31mred\u001b[0m\u0000\u0007\n";
+  const canonical = stripAnsiAndControls(raw);
+  assert.equal(canonical, "red\n");
+  assert.equal(stripAnsiAndControls(canonical), canonical);
+});
+
+test("pending strict output ownership reclaims a partially published pair", async () => {
+  const f = await fixture();
+  try {
+    const primary = await prepareRunOutput("# primary\n", "primary", f.root);
+    const packet = await prepareRunOutput("# packet\n", "packet", f.root);
+    const pending = pendingTerminalOutputs(
+      "2026-07-26T120000000Z-111111111111",
+      primary.ownership,
+      packet.ownership,
+    );
+    const publishedPrimary = await primary.publish();
+    assert.equal(await fs.readFile(primary.ownership.output_path, "utf8"), "# primary\n");
+    assert.equal(await fs.readFile(packet.ownership.staging_path, "utf8"), "# packet\n");
+    assert.equal(
+      terminalReferencesOwnPendingOutputs(
+        [
+          publishedPrimary.reference,
+          {
+            ...publishedPrimary.reference,
+            name: "packet",
+            relative_path: path.basename(packet.ownership.output_path),
+            size_bytes: packet.ownership.size_bytes,
+            content_sha256: packet.ownership.content_sha256,
+          },
+        ],
+        pending,
+      ),
+      true,
+    );
+    await cleanupPendingTerminalOutputs(pending);
+    await assert.rejects(fs.lstat(primary.ownership.output_path), { code: "ENOENT" });
+    await assert.rejects(fs.lstat(packet.ownership.staging_path), { code: "ENOENT" });
+    await packet.discard();
+  } finally {
+    await f.cleanup();
+  }
+});
+
 function reference(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     kind: "file",
@@ -117,6 +167,11 @@ test("terminal output emits one exact canonical relative digest reference", asyn
   } finally {
     await f.cleanup();
   }
+});
+
+test("output reference decoder admits the additive packet role without weakening file checks", () => {
+  const packet = reference({ name: "packet" });
+  assert.deepEqual(decodeRunOutputReference(packet), packet);
 });
 
 test("rename-window rewrite emits the post-rename digest and bytes", async () => {

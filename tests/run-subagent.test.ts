@@ -35,7 +35,7 @@ type RunSubagentMetadata = {
   status: "working" | "input_required" | "completed" | "failed" | "cancelled" | "timed_out" | "rejected";
   output_references?: Array<{
     kind: "file";
-    name: "primary";
+    name: "primary" | "packet";
     relative_path: string;
     size_bytes: number;
     content_sha256: string;
@@ -139,7 +139,9 @@ type RunSubagentMetadata = {
 let currentMcpRunsDir: string | undefined;
 
 function outputPathFor(metadata: Pick<RunSubagentMetadata, "output_references"> & { session_dir?: string }, runsDir?: string): string {
-  const reference = metadata.output_references?.length === 1 ? metadata.output_references[0] : undefined;
+  const references = metadata.output_references ?? [];
+  const reference = references.find((candidate) => candidate.name === "primary");
+  assert.equal(references.filter((candidate) => candidate.name === "primary").length, 1);
   assert.ok(reference, "one primary output reference is required");
   const root = runsDir ?? currentMcpRunsDir ?? process.env.SUBAGENT007_RUNS_DIR;
   assert.ok(root, "a configured runs root is required to resolve output bytes");
@@ -2939,7 +2941,8 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       field: "output_references",
       kind: "file",
       name: "primary",
-      cardinality: "exactly_one_for_terminal_child_output",
+      additive_names: ["packet"],
+      cardinality: "exactly_one_primary_with_at_most_one_packet",
       locator_field: "relative_path",
       locator_policy: "canonical_single_component_provider_basename",
       locator_root: "configured_runs_root",

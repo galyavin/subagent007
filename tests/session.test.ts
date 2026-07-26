@@ -481,6 +481,33 @@ test("run_subagent_session fails closed on invalid persisted session state", asy
         /session manifest is invalid/,
       );
 
+      const packetManifest = await runSubagentSession(
+        {
+          cwd: fixture.projectDir,
+          prompt: "FAST",
+          session_key: "coherent-execution:T002-packet-manifest",
+          model_class: "C",
+        },
+        { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
+      );
+      const packetManifestBytes = JSON.parse(
+        await fs.readFile(packetManifest.manifest_path, "utf8"),
+      ) as { last_output_reference: { name: string } };
+      packetManifestBytes.last_output_reference.name = "packet";
+      await fs.writeFile(packetManifest.manifest_path, `${JSON.stringify(packetManifestBytes)}\n`);
+      await assert.rejects(
+        runSubagentSession(
+          {
+            cwd: fixture.projectDir,
+            prompt: "FAST",
+            session_key: "coherent-execution:T002-packet-manifest",
+            model_class: "C",
+          },
+          { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
+        ),
+        /session manifest is invalid/,
+      );
+
       const invalidLedger = await runSubagentSession(
         {
           cwd: fixture.projectDir,
@@ -503,6 +530,36 @@ test("run_subagent_session fails closed on invalid persisted session state", asy
             cwd: fixture.projectDir,
             prompt: "FAST",
             session_key: "coherent-execution:T002-invalid-ledger",
+            model_class: "C",
+          },
+          { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
+        ),
+        /session ledger is invalid/,
+      );
+
+      const packetLedger = await runSubagentSession(
+        {
+          cwd: fixture.projectDir,
+          prompt: "FAST",
+          session_key: "coherent-execution:T002-packet-ledger",
+          model_class: "C",
+        },
+        { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },
+      );
+      const packetRecords = await readJsonl<Record<string, unknown> & {
+        output_reference: { name: string };
+      }>(packetLedger.ledger_path);
+      packetRecords[0].output_reference.name = "packet";
+      await fs.writeFile(
+        packetLedger.ledger_path,
+        `${packetRecords.map((record) => JSON.stringify(record)).join("\n")}\n`,
+      );
+      await assert.rejects(
+        runSubagentSession(
+          {
+            cwd: fixture.projectDir,
+            prompt: "FAST",
+            session_key: "coherent-execution:T002-packet-ledger",
             model_class: "C",
           },
           { sessionsDir: fixture.sessionsDir, runsDir: fixture.runsDir },

@@ -11,10 +11,15 @@ import {
 import { boundedProfileStateRoot, captureAuthoringEffectScope } from "../src/authoringEffectScope.js";
 import {
   assertResolvedBoundedControllerPython,
+  BOUNDED_CONTROLLER_COMMANDS,
+  BoundedControllerExecutionQueue,
   createBoundedControllerTool,
+  createResearchDispatchController,
   inspectResearchControllerCompletion,
+  materializeResearchControllerCompletion,
   resolveBoundedControllerPython,
 } from "../src/boundedController.js";
+import { createTaskRootAuthoringTools } from "../src/taskRootAuthoringTools.js";
 import { validateAndResolveRequest } from "../src/validate.js";
 import { durableRunContractView } from "../src/durableRunContract.js";
 import type { ActivationToolBinding } from "../src/types.js";
@@ -80,7 +85,7 @@ test("bounded profiles expose the exact ordered tool ceilings and strict control
       recursiveDelegation: "disabled",
     });
     const receipt = {
-      schema_version: 3,
+      schema_version: 4,
       confirmed_before_prompt: true,
       requested_effect_profile: "researcher_bounded_v1",
       resolved_effect_profile: "researcher_bounded_v1",
@@ -90,6 +95,7 @@ test("bounded profiles expose the exact ordered tool ceilings and strict control
       skill_binding: null,
       effect_scope_binding: effectScope.binding,
       controller_state_discovery: "researchctl_state_paths_v1",
+      controller_protocol: "researchctl_strict_v2",
     };
     assert.equal(validatedActivationReceipt({
       value: receipt,
@@ -300,6 +306,83 @@ test("researchctl exposes exact bound state paths without creating state", async
   }
 });
 
+test("Researcher model authority excludes provider accounting and direct job writes", async () => {
+  const fixture = await boundedFixture();
+  try {
+    const captured = await captureAuthoringEffectScope({
+      taskRoot: await fs.realpath(fixture.taskRoot),
+      effectProfile: "researcher_bounded_v1",
+      recursiveDelegation: "disabled",
+    });
+    const controllerPython = await resolveBoundedControllerPython("researcher_bounded_v1");
+    const publicTool = createBoundedControllerTool(
+      fixture.taskRoot,
+      "researchctl",
+      fixture.scriptPath,
+      controllerPython,
+      captured.binding,
+      new BoundedControllerExecutionQueue(),
+    );
+    assert.equal(BOUNDED_CONTROLLER_COMMANDS.researchctl.includes("claim-dispatch" as never), false);
+    assert.equal(BOUNDED_CONTROLLER_COMMANDS.researchctl.includes("record-dispatch-result" as never), false);
+    await assert.rejects(
+      () => publicTool.execute(
+        "forged-provider-claim",
+        { subcommand: "claim-dispatch", argv: [] },
+        undefined,
+        undefined,
+        {} as never,
+      ),
+      /subcommand is not allowed/,
+    );
+
+    const stateRoot = captured.binding.writable_scope.paths[0];
+    const inputRoot = path.join(stateRoot, "inputs");
+    await fs.mkdir(inputRoot, { recursive: true });
+    await fs.writeFile(path.join(stateRoot, "job.json"), "{}\n");
+    const write = createTaskRootAuthoringTools(
+      fixture.taskRoot,
+      fixture.skillFile,
+      ["write"],
+      captured.binding,
+    )[0]!;
+    await write.execute(
+      "input-write",
+      { path: path.join(inputRoot, "plan.json"), content: "{}\n" },
+      undefined,
+      undefined,
+      {} as never,
+    );
+    await assert.rejects(
+      () => write.execute(
+        "job-write",
+        { path: path.join(stateRoot, "job.json"), content: "{\"forged\":true}\n" },
+        undefined,
+        undefined,
+        {} as never,
+      ),
+      /direct writable subtree/,
+    );
+
+    const privateController = createResearchDispatchController(
+      fixture.taskRoot,
+      fixture.scriptPath,
+      controllerPython,
+      captured.binding,
+      new BoundedControllerExecutionQueue(),
+    );
+    const privateResult = await privateController.execute("claim-dispatch", [
+      path.join(stateRoot, "job.json"),
+    ]);
+    assert.match(
+      (privateResult.content.find((item) => item.type === "text") as { text: string }).text,
+      /controller:claim-dispatch/,
+    );
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("research controller terminal receipt requires complete validated renderable state", async () => {
   const fixture = await boundedFixture();
   try {
@@ -350,6 +433,54 @@ test("research controller terminal receipt requires complete validated renderabl
       controllerPython: await resolveBoundedControllerPython("researcher_bounded_v1"),
       effectScopeBinding: captured.binding,
     }), undefined);
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("strict research receipt hashes the same canonical control-free bytes that publication receives", async () => {
+  const fixture = await boundedFixture();
+  try {
+    const captured = await captureAuthoringEffectScope({
+      taskRoot: await fs.realpath(fixture.taskRoot),
+      effectProfile: "researcher_bounded_v1",
+      recursiveDelegation: "disabled",
+    });
+    const stateRoot = boundedProfileStateRoot(fixture.taskRoot, "researcher_bounded_v1");
+    await fs.mkdir(stateRoot, { recursive: true });
+    await fs.writeFile(
+      path.join(stateRoot, "job.json"),
+      '{"state":"complete","dispatch_protocol":"research_web_dispatch_v1"}\n',
+    );
+    await fs.writeFile(fixture.scriptPath, [
+      "import json, sys",
+      "with open(sys.argv[2], 'r', encoding='utf-8') as handle:",
+      "    job = json.load(handle)",
+      "if sys.argv[1] == 'validate':",
+      "    assert job['state'] == 'complete'",
+      "elif sys.argv[1] == 'render':",
+      "    profile = sys.argv[4]",
+      "    print('\\x1b[31m# primary\\x1b[0m\\x00' if profile == 'primary' else '\\x1b[34m# packet\\x1b[0m\\x07')",
+      "else:",
+      "    raise SystemExit(2)",
+    ].join("\n"), "utf8");
+    const product = await materializeResearchControllerCompletion({
+      taskRoot: fixture.taskRoot,
+      scriptPath: fixture.scriptPath,
+      controllerPython: await resolveBoundedControllerPython("researcher_bounded_v1"),
+      effectScopeBinding: captured.binding,
+    });
+    assert.equal(product?.primaryMarkdown, "# primary\n");
+    assert.equal(product?.packetMarkdown, "# packet\n");
+    assert.equal(product?.receipt.schema_version, 2);
+    const primary = await import("../src/output.js").then(({ writeRunOutput }) =>
+      writeRunOutput(product!.primaryMarkdown, path.join(fixture.root, "runs")),
+    );
+    const packet = await import("../src/output.js").then(({ writeRunOutput }) =>
+      writeRunOutput(product!.packetMarkdown, path.join(fixture.root, "runs")),
+    );
+    assert.equal(product?.receipt.primary_sha256, primary.reference.content_sha256);
+    assert.equal(product?.receipt.packet_sha256, packet.reference.content_sha256);
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
@@ -464,13 +595,18 @@ test("bounded public descriptors state the exact controller/interpreter enforcem
     assert.equal(profile.snapshot_runtime_read_scope, "active_validated_snapshot_runtime_root");
     assert.match(profile.state_scope, /^\.subagent007\/(researcher_bounded_v1|assumption_audit_bounded_v1)$/u);
     assert.equal(profile.state_initialization, "state_root_absent_at_parent_and_child_pre_prompt_capture");
-    assert.equal(profile.task_root_write_scope, "exact_fixed_profile_state_subtree");
+    assert.equal(
+      profile.task_root_write_scope,
+      profile === profiles.researcher_bounded_v1
+        ? "exact_controller_input_root"
+        : "exact_fixed_profile_state_subtree",
+    );
     assert.equal(profile.controller_mutation_scope, "exact_fixed_profile_state_subtree");
     assert.equal(profile.immutable_input_scope, "bounded_initial_task_root_tree_outside_fixed_state_subtree");
     assert.equal(profile.terminal_reinspection, "every_settled_child_outcome");
     assert.equal(
       profile.activation_receipt.schema_version,
-      profile === profiles.researcher_bounded_v1 ? 3 : 2,
+      profile === profiles.researcher_bounded_v1 ? 4 : 2,
     );
     assert.equal(profile.activation_receipt.fields.includes("effect_scope_binding"), true);
     assert.equal(profile.claim_ceiling, "pi_tool_dispatch_path_controller_and_terminal_reinspection_not_os_sandbox");
