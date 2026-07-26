@@ -1187,8 +1187,8 @@ function responseSummary(response) {
           .map((reference) => reference?.output_mode)
           .filter((value) => typeof value === "string")
       : [],
-    primary_output_reference: Array.isArray(structured.output_references) && structured.output_references.length === 1
-      ? structured.output_references[0]
+    primary_output_reference: Array.isArray(structured.output_references)
+      ? structured.output_references.find((reference) => reference?.name === "primary")
       : undefined,
     packet_parse_status: typeof structured.packet_parse_status === "string"
       ? structured.packet_parse_status
@@ -1232,8 +1232,8 @@ function responseOutputPath(response) {
     : structured?.primary_output_reference
       ? [structured.primary_output_reference]
       : undefined;
-  if (!Array.isArray(references) || references.length !== 1) return undefined;
-  const reference = references[0];
+  if (!Array.isArray(references)) return undefined;
+  const reference = references.find((candidate) => candidate?.name === "primary");
   const relativePath = reference?.relative_path;
   const runsRoot = serverEnv.SUBAGENT007_RUNS_DIR;
   if (typeof relativePath !== "string" || relativePath === "" || relativePath !== relativePath.normalize("NFC") ||
