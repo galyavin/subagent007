@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { describe, test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -136,14 +137,14 @@ type RunSubagentMetadata = {
   session_dir?: string;
 };
 
-let currentMcpRunsDir: string | undefined;
+const currentMcpRunsDir = new AsyncLocalStorage<string>();
 
 function outputPathFor(metadata: Pick<RunSubagentMetadata, "output_references"> & { session_dir?: string }, runsDir?: string): string {
   const references = metadata.output_references ?? [];
   const reference = references.find((candidate) => candidate.name === "primary");
   assert.equal(references.filter((candidate) => candidate.name === "primary").length, 1);
   assert.ok(reference, "one primary output reference is required");
-  const root = runsDir ?? currentMcpRunsDir ?? process.env.SUBAGENT007_RUNS_DIR;
+  const root = runsDir ?? currentMcpRunsDir.getStore() ?? process.env.SUBAGENT007_RUNS_DIR;
   assert.ok(root, "a configured runs root is required to resolve output bytes");
   return path.join(path.resolve(root), reference.relative_path);
 }
@@ -246,23 +247,23 @@ async function connectFakeClient<T>(
   });
   const client = new Client({ name: "subagent007-pi-runner-test", version: "0.1.0" });
 
-  const previousMcpRunsDir = currentMcpRunsDir;
-  currentMcpRunsDir = runsDir;
   try {
     await client.connect(transport);
-    return await run(client, {
-      projectDir,
-      configPath,
-      fakeLogPath: fake.logPath,
-      modelHealthPath,
-      inputRequestsDir: options.env?.SUBAGENT007_INPUT_REQUESTS_DIR ??
-        process.env.SUBAGENT007_INPUT_REQUESTS_DIR ??
-        path.join(stateDir, "input-requests"),
-      activeChildrenDir: options.env?.SUBAGENT007_ACTIVE_CHILDREN_DIR ??
-        path.join(stateDir, "active-children"),
-    });
+    return await currentMcpRunsDir.run(
+      runsDir,
+      () => run(client, {
+        projectDir,
+        configPath,
+        fakeLogPath: fake.logPath,
+        modelHealthPath,
+        inputRequestsDir: options.env?.SUBAGENT007_INPUT_REQUESTS_DIR ??
+          process.env.SUBAGENT007_INPUT_REQUESTS_DIR ??
+          path.join(stateDir, "input-requests"),
+        activeChildrenDir: options.env?.SUBAGENT007_ACTIVE_CHILDREN_DIR ??
+          path.join(stateDir, "active-children"),
+      }),
+    );
   } finally {
-    currentMcpRunsDir = previousMcpRunsDir;
     await client.close();
   }
 }
@@ -646,6 +647,7 @@ function assertDirectClaimSyncs(evidence: DirectSyncEvidence, transitions: numbe
   assert.equal(evidence.paths.filter((entry) => entry.startsWith(`${path.resolve(evidence.runsDir)}${path.sep}`)).length, outputs);
 }
 
+describe("run owner state integration", () => {
 test("durable persistence has exact sync targets and constant event-volume growth", async () => {
   const fresh = await collectDirectSyncEvidence(async (f, measure) => {
     const started = await measure(() => startRunTask({ cwd: f.projectDir, prompt: "CANCEL_WAIT", client_start_id: "sync-fresh" }));
@@ -696,7 +698,7 @@ test("durable persistence has exact sync targets and constant event-volume growt
   assertDirectClaimSyncs(thousand, 5, 1);
 });
 
-test("accepted control crash cuts recover only canonical same-run facts from fresh processes", async (t) => {
+test("accepted control crash cuts recover only canonical same-run facts from fresh processes", { concurrency: 5 }, async (t) => {
   type CrashCut =
     | "input_after_ack_before_claim"
     | "claim_after_file_sync_before_rename"
@@ -813,8 +815,7 @@ test("accepted control crash cuts recover only canonical same-run facts from fre
     `;
   }
 
-  for (const spec of cuts) {
-    await t.test(spec.cut, async () => {
+  await Promise.all(cuts.map((spec) => t.test(spec.cut, async () => {
       const fixture = await createDirectRunTestFixture(`subagent007-control-crash-${spec.cut}-`);
       const env = { ...process.env, ...fixture.env };
       try {
@@ -947,8 +948,7 @@ test("accepted control crash cuts recover only canonical same-run facts from fre
       } finally {
         await removeDirectRunTestFixture(fixture);
       }
-    });
-  }
+    })));
 });
 
 test("resident public cancel and accepted input settlement do not acquire the claim lock", async (t) => {
@@ -1406,6 +1406,9 @@ test("lineage cannot publish a stale claim after child-spawn publication overtak
   }
 });
 
+});
+
+describe("core execution and effect profile integration", () => {
 test("extracts only Subagent007 Pi session events from child output", () => {
   assert.equal(
     extractSubagentSessionId(
@@ -1514,6 +1517,7 @@ test("runSubagent accepts skill_name and passes a normalized skill to the Pi chi
   );
 });
 
+describe("MCP admission and constrained-surface integration", { concurrency: 4 }, () => {
 test("start_run rejects before child launch when the configured local child fuse is exhausted", async () => {
   const activeChildrenDir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-active-children-"));
   await connectFakeClient(
@@ -1704,6 +1708,7 @@ test("start_run returns typed disk-reserve preflight rejection before child laun
     },
     { env: { SUBAGENT007_MIN_FREE_DISK_BYTES: String(Number.MAX_SAFE_INTEGER) } },
   );
+});
 });
 
 test("runSubagent accepts legacy explicit tool profile without runtime profile state", async () => {
@@ -2609,6 +2614,9 @@ test("partial output availability requires terminal interruption plus public chi
   );
 });
 
+});
+
+describe("MCP public tool integration", { concurrency: 4 }, () => {
 test("MCP server exposes run_subagent names and not old run_codex names", async () => {
   await connectFakeClient(async (client) => {
     const response = await client.listTools();
@@ -4455,7 +4463,9 @@ test("MCP start_run/get_run exposes active liveness and pending-input progress",
     },
   );
 });
+});
 
+describe("owner-loss and lifecycle integration", () => {
 test("delayed consequential-effect fixture fires with its exact nonce while the owner stays alive", async () => {
   const fixture = await createDirectRunTestFixture("subagent007-delayed-effect-positive-");
   const nonce = `positive-${process.pid}-${Date.now()}`;
@@ -5246,6 +5256,9 @@ test("producer-real lifecycle order projects activation before snapshot when bot
   }
 });
 
+});
+
+describe("MCP input and session integration", { concurrency: 4 }, () => {
 test("MCP input waits for child acceptance before returning an idempotent receipt", async () => {
   await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
     const startedResponse = await client.callTool({
@@ -5686,7 +5699,9 @@ test("MCP run_subagent_session returns structured preflight rejection for invali
     );
   });
 });
+});
 
+describe("persisted run readback integration", () => {
 test("getRunTask rejects a terminal direct-v2 snapshot without a current claim and without mutation", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-direct-v2-read-"));
   const runTasksDir = path.join(tmp, "run-tasks");
@@ -6082,4 +6097,5 @@ test("cancel_run closes pending input requests and rejects late answers", async 
       },
     },
   );
+});
 });

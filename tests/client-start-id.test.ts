@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { describe, test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { createFakePiChild } from "./helpers/fakePiChild.js";
@@ -762,6 +762,7 @@ test("client start identity is strict, schema-normalized, and deterministically 
   assert.throws(() => normalize({ ...left, ambient_private_field: true }), /unrecognized|unknown|strict/i);
 });
 
+describe("live client-start admission", { concurrency: 2 }, () => {
 test("client_start_id exact replay returns one run while body drift rejects and distinct keys admit", async () => {
   const f = await fixture();
   try {
@@ -838,6 +839,7 @@ test("concurrent exact replay observes the same admitted run during a slow live-
   } finally {
     await fs.rm(f.root, { recursive: true, force: true });
   }
+});
 });
 
 test("constrained client start cancelled during capacity scan durably settles declaration-only", async () => {
@@ -1012,6 +1014,7 @@ test("current claim retains launch grant evidence and rejects forged accepted co
   }
 });
 
+describe("client-start restart and replay integration", { concurrency: 4 }, () => {
 test("get_run, startup reconciliation, and exact replay preserve a live pre-capacity client-start admission", async () => {
   const f = await fixture();
   const request = { cwd: f.project, prompt: "FAST", client_start_id: "live-owner-observation" };
@@ -1558,7 +1561,9 @@ test("full-capacity queued client-start run stays prompt and single-owner across
     await fs.rm(f.root, { recursive: true, force: true });
   }
 });
+});
 
+describe("invalid client-start owner bindings", { concurrency: 3 }, () => {
 for (const bindingFault of ["missing", "corrupt", "mismatched"] as const) {
   test(`${bindingFault} client-start owner binding fails closed without restart mutation or duplicate child`, async () => {
     const f = await fixture();
@@ -1608,7 +1613,9 @@ for (const bindingFault of ["missing", "corrupt", "mismatched"] as const) {
     }
   });
 }
+});
 
+describe("recoverable client-start publication faults", { concurrency: 2 }, () => {
 for (const fault of ["after_binding", "promotion_read"] as const) {
   test(`recoverable ${fault} fault terminalizes the bound run while the server remains live`, async () => {
     const f = await fixture();
@@ -1644,3 +1651,4 @@ for (const fault of ["after_binding", "promotion_read"] as const) {
     }
   });
 }
+});

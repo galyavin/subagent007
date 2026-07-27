@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { describe, test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import {
@@ -226,6 +226,20 @@ async function waitForRunStatus(client: Client, runId: string, expectedStatus: s
   assert.fail(`timed out waiting for run ${runId} to reach ${expectedStatus}; last status was ${lastStatus}`);
 }
 
+async function waitForFailureRecords(filePath: string): Promise<FailureRecord[]> {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    const records = await readJsonl<FailureRecord>(filePath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
+    if (records.length > 0) return records;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.fail(`timed out waiting for a failure record at ${filePath}`);
+}
+
+describe("failure telemetry process integration", { concurrency: 4 }, () => {
 test("run_subagent appends one central record for a nonzero child failure", async () => {
   await withFakeClient(async (client, { projectDir, failureLogPath }) => {
     const response = await client.callTool({
@@ -240,7 +254,7 @@ test("run_subagent appends one central record for a nonzero child failure", asyn
 
     assert.notEqual(response.isError, true);
     const metadata = response.structuredContent as { run_id: string; stop_signal: string | null };
-    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    const failures = await waitForFailureRecords(failureLogPath);
     assert.equal(failures.length, 1);
     assert.equal(failures[0].tool, "run_subagent");
     assert.equal(failures[0].schema_version, 2);
@@ -299,7 +313,7 @@ test("run_subagent records missing final output as a typed terminal failure", as
     assert.equal(metadata.reason_code, "missing_final_output");
     assert.equal(metadata.written_output_mode, "transcript");
 
-    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    const failures = await waitForFailureRecords(failureLogPath);
     assert.equal(failures.length, 1);
     assert.equal(failures[0].tool, "run_subagent");
     assert.equal(failures[0].run_id, metadata.run_id);
@@ -351,7 +365,7 @@ test("run_subagent classifies Codex usage limits and preserves provider reset me
     assert.equal(metadata.usage_limit_primary_reset_after_seconds, 3600);
     assert.equal(metadata.usage_limit_secondary_reset_after_seconds, 205140);
 
-    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    const failures = await waitForFailureRecords(failureLogPath);
     assert.equal(failures.length, 1);
     assert.equal(failures[0].tool, "run_subagent");
     assert.equal(failures[0].failure_class, "nonzero_exit");
@@ -380,7 +394,7 @@ test("run_subagent timeout failure records include canonical run identity and st
       assert.notEqual(response.isError, true);
       const metadata = response.structuredContent as { run_id: string; timed_out: boolean };
       assert.equal(metadata.timed_out, true);
-      const failures = await readJsonl<FailureRecord>(failureLogPath);
+      const failures = await waitForFailureRecords(failureLogPath);
       assert.equal(failures.length, 1);
       assert.equal(failures[0].tool, "run_subagent");
       assert.equal(failures[0].run_id, metadata.run_id);
@@ -418,7 +432,7 @@ test("auto-promoted run_subagent failures log promotion context without one-shot
     const metadata = response.structuredContent as { run_id: string; success: boolean; promotion_reason_code?: string };
     assert.equal(metadata.success, false);
     assert.equal(metadata.promotion_reason_code, "broad_work");
-    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    const failures = await waitForFailureRecords(failureLogPath);
     assert.equal(failures.length, 1);
     assert.equal(failures[0].tool, "run_subagent");
     assert.equal(failures[0].run_id, metadata.run_id);
@@ -451,7 +465,7 @@ test("run_subagent raw Pi session establishment failures keep the missing-sessio
     const metadata = response.structuredContent as { run_id: string; success: boolean; session_established: boolean };
     assert.equal(metadata.success, false);
     assert.equal(metadata.session_established, false);
-    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    const failures = await waitForFailureRecords(failureLogPath);
     assert.equal(failures.length, 1);
     assert.equal(failures[0].tool, "run_subagent");
     assert.equal(failures[0].run_id, metadata.run_id);
@@ -477,13 +491,15 @@ test("schedule_run terminal child failures keep the schedule_run tool identity",
     assert.notEqual(response.isError, true);
     const metadata = response.structuredContent as { run_id: string; success: boolean };
     assert.equal(metadata.success, false);
-    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    const failures = await waitForFailureRecords(failureLogPath);
     assert.equal(failures.length, 1);
     assert.equal(failures[0].tool, "schedule_run");
     assert.equal(failures[0].run_id, metadata.run_id);
     assert.equal(failures[0].task_kind, "run");
     assert.equal(failures[0].failure_class, "nonzero_exit");
   });
+});
+
 });
 
 test("restart drift is logged once after the owner process exits", async () => {
@@ -561,9 +577,7 @@ test("restart drift is logged once after the owner process exits", async () => {
     assert.equal(drift.error_class, "restart_drift");
     assert.equal(drift.reason_code, "server_restarted_active_run");
 
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-
-    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    const failures = await waitForFailureRecords(failureLogPath);
     assert.equal(failures.length, 1);
     assert.equal(failures[0].tool, "start_run");
     assert.equal(failures[0].run_id, started.run_id);
@@ -594,6 +608,7 @@ test("restart drift is logged once after the owner process exits", async () => {
   }
 });
 
+describe("failure telemetry MCP integration", { concurrency: 4 }, () => {
 test("failure records include a valid campaign id from environment", async () => {
   await withFakeClient(
     async (client, { projectDir, failureLogPath }) => {
@@ -607,7 +622,7 @@ test("failure records include a valid campaign id from environment", async () =>
       });
 
       assert.notEqual(response.isError, true);
-      const failures = await readJsonl<FailureRecord>(failureLogPath);
+      const failures = await waitForFailureRecords(failureLogPath);
       assert.equal(failures.length, 1);
       assert.equal(failures[0].campaign_id, "campaign.test-1");
     },
@@ -628,7 +643,7 @@ test("failure records omit invalid campaign ids from environment", async () => {
       });
 
       assert.notEqual(response.isError, true);
-      const failures = await readJsonl<FailureRecord>(failureLogPath);
+      const failures = await waitForFailureRecords(failureLogPath);
       assert.equal(failures.length, 1);
       assert.equal(failures[0].campaign_id, undefined);
     },
@@ -649,7 +664,7 @@ test("handler-level validation failures are logged without prompt text", async (
 
     assert.notEqual(response.isError, true);
     assert.equal((response.structuredContent as { kind?: string }).kind, "preflight_rejected");
-    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    const failures = await waitForFailureRecords(failureLogPath);
     assert.equal(failures.length, 1);
     assert.equal(failures[0].tool, "run_subagent");
     assert.equal(failures[0].failure_class, "validation_error");
@@ -706,7 +721,7 @@ test("missing child entrypoint preflight failures are logged without spawning a 
       );
       assert.equal((response.structuredContent as { child_started?: boolean }).child_started, false);
 
-      const failures = await readJsonl<FailureRecord>(failureLogPath);
+      const failures = await waitForFailureRecords(failureLogPath);
       assert.equal(failures.length, 1);
       assert.equal(failures[0].tool, "start_run");
       assert.equal(failures[0].failure_class, "validation_error");
@@ -793,7 +808,7 @@ test("run_subagent_session logs missing Pi session establishment failures", asyn
     });
 
     assert.notEqual(response.isError, true);
-    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    const failures = await waitForFailureRecords(failureLogPath);
     assert.equal(failures.length, 1);
     assert.equal(failures[0].tool, "run_subagent_session");
     assert.equal(failures[0].failure_class, "missing_session_id");
@@ -822,7 +837,7 @@ test("run_subagent_session logs non-ready required packets as packet failures", 
     const metadata = response.structuredContent as { run_id: string; success: boolean; packet_parse_status: string };
     assert.equal(metadata.success, false);
     assert.equal(metadata.packet_parse_status, "valid");
-    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    const failures = await waitForFailureRecords(failureLogPath);
     assert.equal(failures.length, 1);
     assert.equal(failures[0].tool, "run_subagent_session");
     assert.equal(failures[0].failure_class, "packet_failed");
@@ -850,7 +865,7 @@ test("start_session_run logs packet failures with async session caller context",
     assert.equal(started.status, "working");
     await waitForRunStatus(client, started.run_id, "failed");
 
-    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    const failures = await waitForFailureRecords(failureLogPath);
     assert.equal(failures.length, 1);
     assert.equal(failures[0].tool, "start_session_run");
     assert.equal(failures[0].failure_class, "packet_failed");
@@ -948,7 +963,7 @@ test("truly silent cancelled start_run tasks append a targeted pre-output record
 
       await waitForRunStatus(client, started.run_id, "cancelled");
 
-      const failures = await readJsonl<FailureRecord>(failureLogPath);
+      const failures = await waitForFailureRecords(failureLogPath);
       assert.equal(failures.length, 1);
       assert.equal(failures[0].tool, "start_run");
       assert.equal(failures[0].run_id, started.run_id);
@@ -1127,7 +1142,7 @@ test("run-scoped input failures log resolved run context", async () => {
         "input_request_already_answered",
       );
 
-      const failures = await readJsonl<FailureRecord>(failureLogPath);
+      const failures = await waitForFailureRecords(failureLogPath);
       assert.equal(failures.length, 1);
       assert.equal(failures[0].tool, "answer_run_input");
       assert.equal(failures[0].failure_class, "validation_error");
@@ -1160,7 +1175,7 @@ test("unknown run-scoped tools log run_not_found without cwd", async () => {
     assert.equal((response.structuredContent as { kind?: string }).kind, "operation_rejected");
     assert.equal((response.structuredContent as { reason_code?: string }).reason_code, "run_not_found");
 
-    const failures = await readJsonl<FailureRecord>(failureLogPath);
+    const failures = await waitForFailureRecords(failureLogPath);
     assert.equal(failures.length, 1);
     assert.equal(failures[0].tool, "get_run");
     assert.equal(failures[0].failure_class, "validation_error");
@@ -1202,6 +1217,7 @@ test("busy failure telemetry never delays an MCP rejection response", async () =
     assert.ok(Date.now() - startedAt < 500);
     await fs.rm(lockPath, { recursive: true, force: true });
   });
+});
 });
 
 async function appendBudgetedFailure(failureLogPath: string, sequence: number): Promise<void> {

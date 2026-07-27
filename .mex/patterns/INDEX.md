@@ -17,3 +17,4 @@ For a multi-section pattern, add one row per task anchor.
 | [runtime-artifact-ownership.md](runtime-artifact-ownership.md) | Adding child output, runtime temp state, or build artifacts that need explicit lifecycle ownership |
 | [skill-snapshot-foundation.md](skill-snapshot-foundation.md) | Changing complete skill-bundle validation, immutable snapshot publication, retention, deletion, or activation |
 | [terminal-state-compaction.md](terminal-state-compaction.md) | Removing redundant run/session filesystem state without weakening durable views or live-state safety |
+| [test-suite-performance.md](test-suite-performance.md) | Reducing full-suite runtime without weakening process, recovery, or public-contract assurance |
