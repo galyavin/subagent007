@@ -74,7 +74,6 @@ import type {
   RecursiveDelegationReceipt,
   RunPublicEvent,
   RunPublicEventName,
-  RunSubagentPromotion,
   RunSubagentRequest,
   RunSubagentResult,
   RunSubagentSessionRequest,
@@ -93,12 +92,7 @@ import {
   ValidationError,
 } from "./types.js";
 import { loadConfig } from "./config.js";
-import {
-  assertDeadlineRiskTimeoutBudget,
-  runSubagentOneShotIncompatibility,
-  type RunSubagentOneShotIncompatibility,
-  validateAndResolveRequest,
-} from "./validate.js";
+import { validateAndResolveRequest } from "./validate.js";
 import {
   assertPendingTerminalOutputs,
   cleanupPendingTerminalOutputs,
@@ -279,7 +273,6 @@ interface RunTaskState {
   cwd?: string;
   failureLogTool?: RunTaskFailureLogTool;
   sessionKey?: string;
-  promotion?: RunSubagentPromotion;
   parentRunId?: string;
   rootRunId: string;
   recursionDepth: number;
@@ -362,10 +355,11 @@ type RunTaskProgressView = Pick<
 
 const tasks = new Map<string, RunTaskState>();
 const residentTransitionChains = new Map<string, Promise<void>>();
+const residentPublicationWaiters = new Map<string, Set<() => void>>();
+const pendingResidentPublications = new Set<string>();
 const DEFAULT_SCHEDULE_WAIT_MS = 1_000;
 const DEFAULT_SCHEDULE_MAX_WAIT_MS = 30_000;
 const SCHEDULE_MAX_WAIT_ENV = "SUBAGENT007_SCHEDULE_RUN_MAX_WAIT_MS";
-const PROMOTED_RUN_WAIT_MS = DEFAULT_SCHEDULE_WAIT_MS;
 
 function defaultRunTasksDir(): string {
   return defaultSubagentStatePath("SUBAGENT007_RUN_TASKS_DIR", "run-tasks");
@@ -736,6 +730,7 @@ async function withRunOwner<T>(runId: string, operation: () => Promise<T>): Prom
   } finally {
     release();
     if (residentTransitionChains.get(runId) === queued) residentTransitionChains.delete(runId);
+    if (pendingResidentPublications.delete(runId)) notifyResidentRunTaskPublication(runId);
   }
 }
 
@@ -1144,7 +1139,7 @@ const OWNER_ONLY_FORBIDDEN_FIELDS = [
   "controller_terminal_receipt",
 ] as const;
 
-const OWNER_PROMOTION_FIELDS = [
+const RETIRED_RUN_SUBAGENT_ROUTING_FIELDS = [
   "auto_promoted_from",
   "promotion_reason_code",
   "promotion_reason",
@@ -1164,11 +1159,11 @@ const OWNER_VALIDATION_REASON_CODES = new Set<FailureReasonCode>([
   "invalid_skill_snapshot_binding", "skill_snapshot_not_found", "skill_snapshot_altered",
   "skill_snapshot_reference_mismatch", "skill_snapshot_reference_closed", "skill_snapshot_activation_failed",
   "invalid_timeout_ms", "invalid_wait_ms", "local_capacity_exhausted", "local_queue_exhausted",
-  "timeout_underbudget_for_deadline_risk", "missing_session_id", "missing_final_output",
+  "missing_session_id", "missing_final_output",
   "nonzero_exit", "packet_required_invalid", "packet_required_missing", "packet_required_not_ready",
   "prompt_missing", "raw_session_id_unsupported", "recursive_control_invalid", "recursive_depth_exceeded",
-  "run_not_accepting_input", "run_liveness_unknown", "run_not_found", "run_subagent_incompatible_workload",
-  "run_subagent_timeout_unsupported", "input_request_already_answered", "input_request_already_closed",
+  "run_not_accepting_input", "run_liveness_unknown", "run_not_found", "run_subagent_timeout_unsupported",
+  "input_request_already_answered", "input_request_already_closed",
   "input_request_already_timed_out", "input_request_not_found", "input_request_not_part_of_run",
   "input_response_id_conflict", "session_already_exists", "session_already_running", "session_cwd_mismatch",
   "session_does_not_exist", "session_ledger_invalid", "session_commit_invalid", "session_manifest_invalid",
@@ -1185,15 +1180,6 @@ function hasOwnDefined(view: RunTaskView, field: string): boolean {
 
 function sameJsonValue(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function ownerPromotionIsExact(view: RunTaskView): boolean {
-  const hasAny = OWNER_PROMOTION_FIELDS.some((field) => hasOwnDefined(view, field));
-  if (!hasAny) return true;
-  return view.task_kind === "run" && view.client_start_binding === undefined &&
-    view.auto_promoted_from === "run_subagent" &&
-    ["skill_bound", "prompt_too_long", "broad_work", "workspace_write"].includes(view.promotion_reason_code ?? "") &&
-    isNonemptyString(view.promotion_reason) && view.poll_with === "get_run" && view.cancel_with === "cancel_run";
 }
 
 type DerivedOwnerObservation =
@@ -1620,8 +1606,8 @@ export function assertCurrentRunTaskSnapshot(view: RunTaskView, admission?: Clie
   if (admission) {
     assertCurrentRunTaskSnapshotAdmission(view, admission);
   }
-  if (!ownerPromotionIsExact(view)) {
-    invalidCurrentRunTaskSnapshot(view, "current durable run snapshot has invalid promotion evidence");
+  if (hasAnyOwnField(view, RETIRED_RUN_SUBAGENT_ROUTING_FIELDS)) {
+    invalidCurrentRunTaskSnapshot(view, "current durable run snapshot contains retired run_subagent routing fields");
   }
   if (!isTerminalRunStatus(view.status)) {
     const hasTerminalEvidence = view.finished_at !== undefined ||
@@ -2042,10 +2028,6 @@ function terminalProgressView(state: RunTaskState, result: RunTaskTerminalResult
   };
 }
 
-function promotionView(state: RunTaskState): Partial<RunSubagentPromotion> {
-  return state.promotion ?? {};
-}
-
 function admissionView(state: RunTaskState): Pick<
   RunTaskView,
   "child_started" | "queued_at" | "child_started_at" | "queue_wait_ms" | "client_start_binding"
@@ -2114,7 +2096,6 @@ function activeRunTaskView(state: RunTaskState, inputRequests: InputRequestView[
     task_id: state.runId,
     task_kind: state.taskKind,
     ...lineageView(state),
-    ...promotionView(state),
     ...(state.sessionKey ? { session_key: state.sessionKey } : {}),
     status: hasPendingInput
       ? "input_required"
@@ -2142,6 +2123,12 @@ function cloneRunTaskTransitionState(state: RunTaskState): RunTaskState {
   };
 }
 
+function notifyResidentRunTaskPublication(runId: string): void {
+  const waiters = residentPublicationWaiters.get(runId);
+  if (!waiters) return;
+  for (const waiter of [...waiters]) waiter();
+}
+
 function publishRunTaskTransitionState(state: RunTaskState, draft: RunTaskState): void {
   state.finishedAt = draft.finishedAt;
   state.inputRequests = draft.inputRequests;
@@ -2162,7 +2149,6 @@ function publishRunTaskTransitionState(state: RunTaskState, draft: RunTaskState)
   state.cwd = draft.cwd;
   state.failureLogTool = draft.failureLogTool;
   state.sessionKey = draft.sessionKey;
-  state.promotion = draft.promotion;
   state.parentRunId = draft.parentRunId;
   state.rootRunId = draft.rootRunId;
   state.recursionDepth = draft.recursionDepth;
@@ -2189,6 +2175,7 @@ function publishRunTaskTransitionState(state: RunTaskState, draft: RunTaskState)
   state.expectedSkillSha256 = draft.expectedSkillSha256;
   state.claimDeclarations = draft.claimDeclarations;
   state.ownerLaunchObservation = draft.ownerLaunchObservation;
+  pendingResidentPublications.add(state.runId);
 }
 
 function runTaskViewFromState(
@@ -2206,7 +2193,6 @@ function runTaskViewFromState(
     return {
       ...contractFields(),
       ...state.result,
-      ...promotionView(state),
       ...activationView(state),
       run_id: state.runId,
       task_id: state.runId,
@@ -2238,7 +2224,6 @@ function runTaskViewFromState(
       task_id: state.runId,
       task_kind: state.taskKind,
       ...lineageView(state),
-      ...promotionView(state),
       ...activationView(state),
       ...(state.sessionKey ? { session_key: state.sessionKey } : {}),
       status: state.cancelRequested ? "cancelled" : "failed",
@@ -2633,10 +2618,8 @@ function bindRequestToRunTaskState(
   request: RunSubagentRequest | RunSubagentSessionRequest,
 ): void {
   state.cwd = typeof request.cwd === "string" ? request.cwd : undefined;
-  if ("effect_profile" in request) {
-    state.requestedEffectProfile = request.effect_profile;
-    state.expectedSkillSha256 = request.expected_skill_sha256;
-  }
+  if ("effect_profile" in request) state.requestedEffectProfile = request.effect_profile;
+  if ("expected_skill_sha256" in request) state.expectedSkillSha256 = request.expected_skill_sha256;
   if ("skill_snapshot_binding" in request) state.skillSnapshotBinding = request.skill_snapshot_binding;
   if ("recursive_delegation" in request) state.requestedRecursiveDelegation = request.recursive_delegation;
 }
@@ -2923,11 +2906,12 @@ async function finalizeRegisteredRunTask(
     terminalDurable ||= await hasDurableTerminalSnapshot(state.runId);
     if (terminalDurable) {
       const capacityReleased = await releaseChildLease(childLease);
-      await withRunOwner(state.runId, async () => {
-        if (tasks.get(state.runId) === state) {
-          state.capacityReleased = capacityReleased;
-        }
+      const capacityPublication = await withRunOwner(state.runId, async () => {
+        if (tasks.get(state.runId) !== state) return false;
+        state.capacityReleased = capacityReleased;
+        return true;
       });
+      if (capacityPublication) notifyResidentRunTaskPublication(state.runId);
       maybeEvictTerminalTask(state);
       if (state.parentRunId) {
         const parent = tasks.get(state.parentRunId);
@@ -3091,13 +3075,6 @@ async function logTerminalRunTaskFailure(state: RunTaskState): Promise<void> {
     usage_limit_secondary_used_percent: result.usage_limit_secondary_used_percent,
     usage_limit_primary_reset_after_seconds: result.usage_limit_primary_reset_after_seconds,
     usage_limit_secondary_reset_after_seconds: result.usage_limit_secondary_reset_after_seconds,
-    ...(state.promotion
-      ? {
-          auto_promoted_from: state.promotion.auto_promoted_from,
-          promotion_reason_code: state.promotion.promotion_reason_code,
-          promotion_reason: state.promotion.promotion_reason,
-        }
-      : {}),
     model_class: result.resolved_model_class,
     skill: result.requested_skill,
     resolved_skill_path: result.resolved_skill_path,
@@ -4066,13 +4043,82 @@ async function getPersistedRunTask(runId: string): Promise<RunTaskView> {
   );
 }
 
-export async function getRunTask(runId: string, allowUnreleasedTerminal = false): Promise<RunTaskView> {
+function getRunWaitMs(value: unknown): number {
+  if (value === undefined || value === null) return 0;
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    !Number.isInteger(value) ||
+    value < 0
+  ) {
+    throw new ValidationError("wait_ms must be a nonnegative integer when provided", "invalid_wait_ms");
+  }
+  return Math.min(value, maxScheduleWaitMs());
+}
+
+function waitForResidentReturnableRun(
+  state: RunTaskState,
+  waitMs: number,
+  allowUnreleasedTerminal = false,
+): Promise<RunTaskView> {
+  const current = runTaskViewFromState(state, state.inputRequests, allowUnreleasedTerminal);
+  if (isReturnableRunView(current) || waitMs === 0) return Promise.resolve(current);
+
+  return new Promise<RunTaskView>((resolve, reject) => {
+    let settled = false;
+    let timeout: NodeJS.Timeout | undefined;
+    const waiters = residentPublicationWaiters.get(state.runId) ?? new Set<() => void>();
+    residentPublicationWaiters.set(state.runId, waiters);
+
+    const releaseWaiter = (): boolean => {
+      if (settled) return false;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      waiters.delete(observePublication);
+      if (waiters.size === 0 && residentPublicationWaiters.get(state.runId) === waiters) {
+        residentPublicationWaiters.delete(state.runId);
+      }
+      return true;
+    };
+    const finish = (view: RunTaskView): void => {
+      if (releaseWaiter()) resolve(view);
+    };
+    const fail = (error: unknown): void => {
+      if (releaseWaiter()) reject(error);
+    };
+    const observePublication = (): void => {
+      if (tasks.get(state.runId) !== state) return;
+      const view = runTaskViewFromState(state, state.inputRequests, allowUnreleasedTerminal);
+      if (isReturnableRunView(view)) finish(view);
+    };
+
+    waiters.add(observePublication);
+    timeout = setTimeout(() => {
+      if (tasks.get(state.runId) === state) {
+        finish(runTaskViewFromState(state, state.inputRequests, allowUnreleasedTerminal));
+        return;
+      }
+      void getPersistedRunTask(state.runId).then(finish, fail);
+    }, waitMs);
+    observePublication();
+  });
+}
+
+export async function getRunTask(
+  runId: string,
+  allowUnreleasedTerminal = false,
+  waitMs: unknown = 0,
+): Promise<RunTaskView> {
+  const effectiveWaitMs = getRunWaitMs(waitMs);
   const state = tasks.get(runId);
+  // This process has no authoritative owner-record event stream for a
+  // nonresident run. Read its current persisted truth once and return it;
+  // filesystem polling would invent an observation guarantee we do not own.
   if (!state) return getPersistedRunTask(runId);
   // Draft mutations are private and publication is synchronous after the
   // owner record commits, so a lock-free active read can only observe the
   // previous or current committed live state, never a partial transition.
-  return runTaskViewFromState(state, state.inputRequests, allowUnreleasedTerminal);
+  return waitForResidentReturnableRun(state, effectiveWaitMs, allowUnreleasedTerminal);
 }
 
 async function reconcileTerminalOutputCleanupOwners(): Promise<number> {
@@ -4340,7 +4386,6 @@ export async function startRunTask(
   }
   const config = await loadConfig();
   const resolved = await validateAndResolveRequest(request, config);
-  assertDeadlineRiskTimeoutBudget(request, resolved, failureLogTool);
   const snapshotPreflight = await assertSkillSnapshotBinding(resolved);
   const skillFilePath = snapshotPreflight?.receipt.resolved_skill_path ?? resolveSkillFilePathForRequest(resolved);
   await assertExpectedSkillBinding(resolved, skillFilePath);
@@ -4576,19 +4621,12 @@ function isReturnableRunView(view: RunTaskView): boolean {
 }
 
 async function waitForReturnableRun(started: RunTaskView, waitMs: number): Promise<RunTaskView> {
-  if (isReturnableRunView(started) || waitMs === 0) {
-    return started;
-  }
-  const deadline = Date.now() + waitMs;
-  let latest = started;
-  while (Date.now() < deadline) {
-    latest = await getRunTask(started.run_id);
-    if (isReturnableRunView(latest)) {
-      return latest;
-    }
-    await new Promise((resolve) => setTimeout(resolve, Math.min(25, Math.max(1, deadline - Date.now()))));
-  }
-  return getRunTask(started.run_id);
+  if (isReturnableRunView(started) || waitMs === 0) return started;
+  const state = tasks.get(started.run_id);
+  // A nonresident view has no owner-record publication stream in this
+  // process, so it retains immediate snapshot semantics.
+  if (!state) return started;
+  return waitForResidentReturnableRun(state, waitMs);
 }
 
 export async function scheduleRunTask(
@@ -4622,7 +4660,7 @@ export async function startSessionRunTask(
   } = {},
 ): Promise<RunTaskView> {
   const failureLogTool = options.failureLogTool ?? "start_session_run";
-  await validateRunSubagentSessionRequestPreflight(request, failureLogTool, {
+  await validateRunSubagentSessionRequestPreflight(request, {
     sessionsDir: options.sessionsDir,
   });
 
@@ -4709,83 +4747,6 @@ function runSubagentResultWithConcreteTimeoutRecoveryHint(
   };
 }
 
-async function runSubagentPromotedTask(
-  request: RunSubagentRequest,
-  incompatibility: RunSubagentOneShotIncompatibility,
-  skillFilePath: string | undefined,
-  options: {
-    runsDir?: string;
-    heartbeat?: HeartbeatNotify;
-    heartbeatIntervalMs?: number;
-  },
-): Promise<RunTaskView> {
-  await assertDiskReserveAvailable(options.runsDir);
-  const promotion: RunSubagentPromotion = {
-    auto_promoted_from: "run_subagent",
-    promotion_reason_code: incompatibility.reason_code,
-    promotion_reason: incompatibility.message,
-    poll_with: "get_run",
-    cancel_with: "cancel_run",
-  };
-  const state = createRunTaskState("run");
-  state.promotion = promotion;
-  const childLease = await registerRunTaskStateWithChildLease(state, request);
-  try {
-    await commitActiveRunTransition(state, (draft, stagedEvents) => {
-      projectStatusEvent(draft, {
-        kind: "task",
-        event: "auto_promoted",
-        text: "[auto_promoted] run_subagent -> durable_run",
-        occurred_at: new Date().toISOString(),
-        metadata: { ...promotion },
-      }, stagedEvents, "run_subagent auto-promoted to durable run");
-      return true;
-    });
-  } catch (error) {
-    const terminalError = error instanceof Error ? error : new Error(String(error));
-    await finalizeRegisteredRunTask(
-      state,
-      childLease,
-      durableTaskCloseReason(state),
-      { error: terminalError },
-    );
-    throw error;
-  }
-
-  state.promise = containBackgroundRunFailure(state, (async () => {
-    const terminal: RunTaskTerminalIntent = {};
-    try {
-      await prepareChildRun(state);
-      const result = await runSubagentCore(request, {
-        runId: state.runId,
-        mailboxRoot: state.mailboxRoot,
-        runsDir: options.runsDir,
-        allowTimeout: true,
-        skillFilePath,
-        ...taskRecursiveRuntimeOptions(state),
-        ...taskChildRuntimeOptions(state, options),
-        ...taskInputControlOptions(state),
-      });
-      terminal.result = {
-        ...runSubagentResultWithConcreteTimeoutRecoveryHint(result, state.runId),
-        ...promotion,
-      };
-    } catch (error) {
-      terminal.error = error instanceof Error ? error : new Error(String(error));
-      await logBackgroundHandlerError("run_subagent", request, error);
-    } finally {
-      await finalizeRegisteredRunTask(
-        state,
-        childLease,
-        durableTaskCloseReason(state),
-        terminal,
-      );
-    }
-  })());
-
-  return waitForReturnableRun(await getRunTask(state.runId), PROMOTED_RUN_WAIT_MS);
-}
-
 export async function runSubagentOneShotTask(
   request: RunSubagentRequest,
   options: {
@@ -4805,10 +4766,6 @@ export async function runSubagentOneShotTask(
   const snapshotPreflight = await assertSkillSnapshotBinding(resolved);
   const skillFilePath = snapshotPreflight?.receipt.resolved_skill_path ?? resolveSkillFilePathForRequest(resolved);
   await assertExpectedSkillBinding(resolved, skillFilePath);
-  const incompatibility = runSubagentOneShotIncompatibility(request, resolved);
-  if (incompatibility) {
-    return runSubagentPromotedTask(request, incompatibility, skillFilePath, options);
-  }
   await assertModelClassUsableForOneShot(resolved.modelClass);
   const childEntrypoint = await assertPiChildEntrypointAvailable();
   await expectedBoundedActivationToolBindings({

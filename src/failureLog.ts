@@ -95,9 +95,6 @@ export interface FailureLogRecord {
   resume_possible?: boolean;
   stop_reason?: string;
   stop_signal?: string | null;
-  auto_promoted_from?: "run_subagent";
-  promotion_reason_code?: string;
-  promotion_reason?: string;
   model_class?: string;
   skill?: string | null;
   expected_skill_sha256?: string;

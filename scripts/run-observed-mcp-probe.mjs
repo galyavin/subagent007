@@ -358,6 +358,13 @@ function responseMatchesResultShape(response, resultClass) {
   if (resultClass === "async_polling") {
     return completedAfterPolling;
   }
+  if (resultClass === "bounded_get_run_wait") {
+    return response.bounded_wait_actionable === true &&
+      response.resident_initial_working === true &&
+      response.status === "completed" &&
+      response.bounded_wait_elapsed_ms >= 100 &&
+      response.bounded_wait_elapsed_ms < response.bounded_wait_window_ms;
+  }
   if (resultClass === "scheduled_durable") {
     return completedAfterPolling && response.scheduled === true;
   }
@@ -385,9 +392,6 @@ function responseMatchesResultShape(response, resultClass) {
     return response.success === false &&
       response.packet_parse_status === "invalid" &&
       response.packet_closure_invalid === true;
-  }
-  if (resultClass === "auto_promoted") {
-    return response.auto_promoted_from === "run_subagent" && completedAfterPolling;
   }
   if (resultClass === "session_async_polling") {
     return completedAfterPolling &&
@@ -773,6 +777,8 @@ async function createDeterministicFakeChild() {
       "  setInterval(() => {}, 1000);",
       "} else if (request.prompt.includes('CLIENT_START_REPLAY_SLEEP')) {",
       "  setTimeout(() => writeFinal('CLIENT START REPLAY DONE'), 500);",
+      "} else if (request.prompt.includes('OBSERVED_GET_RUN_WAIT')) {",
+      "  setTimeout(() => writeFinal('OBSERVED GET RUN WAIT DONE'), 400);",
       "} else if (request.prompt.includes('HEARTBEAT_SLEEP')) {",
       "  setTimeout(() => writeFinal('HEARTBEAT DONE'), 160);",
       "} else if (request.prompt.includes('CLEAN_EXIT_NO_FINAL')) {",
@@ -1070,11 +1076,14 @@ function toolListingSummary(response) {
     )
     .map((entry) => entry.tool);
   const answerRunInput = tools.find((tool) => tool?.name === "answer_run_input");
+  const getRun = tools.find((tool) => tool?.name === "get_run");
   const startSessionRun = tools.find((tool) => tool?.name === "start_session_run");
   const runSubagentSession = tools.find((tool) => tool?.name === "run_subagent_session");
   const includesAll = (text, patterns) => patterns.every((pattern) => pattern.test(text));
   const operationalGuidance = {
     input_receipt: includesAll(answerRunInput?.description ?? "", [/stable response_id/i, /receipt/i, /exact live retry/i, /without redelivery/i]),
+    get_run_wait: Object.hasOwn(getRun?.inputSchema?.properties ?? {}, "wait_ms") &&
+      includesAll(getRun?.description ?? "", [/wait_ms/i, /input_required/i, /terminal/i, /nonresident.*immediately/i]),
     session_default_and_scope: includesAll(startSessionRun?.description ?? "", [/resume_or_new/i, /scoped to cwd/i, /skill binding/i]),
     session_wrapper: includesAll(runSubagentSession?.description ?? "", [/synchronous compatibility wrapper/i, /prefer start_session_run/i]),
   };
@@ -1213,12 +1222,6 @@ function responseSummary(response) {
       : undefined,
     attempt_session_established: typeof structured.attempt_session_established === "boolean"
       ? structured.attempt_session_established
-      : undefined,
-    auto_promoted_from: structured.auto_promoted_from === "run_subagent"
-      ? structured.auto_promoted_from
-      : undefined,
-    promotion_reason_code: typeof structured.promotion_reason_code === "string"
-      ? structured.promotion_reason_code
       : undefined,
   };
 }
@@ -1365,9 +1368,6 @@ function scenarioCall(scenario, cwd) {
   }
   if (scenario === "success") {
     return runSubagentScenarioCall(cwd, "FAST");
-  }
-  if (scenario === "auto-promotion") {
-    return runSubagentScenarioCall(cwd, "Investigate coverage gaps");
   }
   if (scenario === "schema-error") {
     return {
@@ -2009,26 +2009,6 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
     };
   }
 
-  if (scenario === "auto-promotion") {
-    const started = await runCall(client, ledgerPath, evidenceClass, scenario, scenarioCall(scenario, cwd));
-    const terminal = started.response?.run_id
-      ? await waitForRun(client, ledgerPath, evidenceClass, scenario, started.response.run_id, (response) =>
-          response?.status === "completed",
-        )
-      : started;
-    return {
-      ...terminal,
-      tool: "run_subagent",
-      response: {
-        ...(terminal.response ?? {}),
-        auto_promoted_from: started.response?.auto_promoted_from,
-        promotion_reason_code: started.response?.promotion_reason_code,
-        polled: true,
-      },
-      failure_log_delta_count: started.failure_log_delta_count + (terminal.failure_log_delta_count ?? 0),
-    };
-  }
-
   if (scenario === "start-run-async-polling") {
     const started = await runCall(client, ledgerPath, evidenceClass, scenario, {
       tool: "start_run",
@@ -2045,6 +2025,33 @@ async function runScenario(client, ledgerPath, evidenceClass, scenario, cwd) {
       response: {
         ...(terminal.response ?? {}),
         polled: true,
+      },
+      failure_log_delta_count: started.failure_log_delta_count + (terminal.failure_log_delta_count ?? 0),
+    };
+  }
+
+  if (scenario === "get-run-bounded-wait") {
+    const started = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "start_run",
+      args: { cwd, prompt: "OBSERVED_GET_RUN_WAIT" },
+    });
+    if (!started.response?.run_id) return started;
+    const waitWindowMs = 1_000;
+    const waitStartedAt = Date.now();
+    const terminal = await runCall(client, ledgerPath, evidenceClass, scenario, {
+      tool: "get_run",
+      args: { run_id: started.response.run_id, wait_ms: waitWindowMs },
+    });
+    const elapsedMs = Date.now() - waitStartedAt;
+    return {
+      ...terminal,
+      tool: "get_run",
+      response: {
+        ...(terminal.response ?? {}),
+        bounded_wait_actionable: terminal.response?.status === "completed",
+        resident_initial_working: started.response?.status === "working",
+        bounded_wait_elapsed_ms: elapsedMs,
+        bounded_wait_window_ms: waitWindowMs,
       },
       failure_log_delta_count: started.failure_log_delta_count + (terminal.failure_log_delta_count ?? 0),
     };

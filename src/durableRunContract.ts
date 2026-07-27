@@ -78,6 +78,7 @@ export const DURABLE_RUN_CAPABILITIES = [
   "explicit_skill_snapshot_deletion",
   "explicit_recursive_delegation",
   "terminal_recursive_subtree_closure",
+  "event_driven_get_run_wait",
 ] as const;
 
 export function durableRunContractView(): {
@@ -96,6 +97,18 @@ export function durableRunContractView(): {
     poll: "get_run";
     answer_input: "answer_run_input";
     cancel: "cancel_run";
+  };
+  observation: {
+    tool: "get_run";
+    wait_field: "wait_ms";
+    omission: "immediate_snapshot";
+    zero: "immediate_snapshot";
+    resident_wait: "owner_publication_event_driven";
+    return_statuses: ["input_required", "completed", "failed", "cancelled", "timed_out"];
+    expiry: "current_truthful_snapshot";
+    nonresident_wait: "immediate_persisted_snapshot";
+    max_wait_policy: "schedule_run_max_wait";
+    public_revision_field: "none";
   };
   output_reference: {
     field: "output_references";
@@ -444,6 +457,18 @@ export function durableRunContractView(): {
       poll: "get_run",
       answer_input: "answer_run_input",
       cancel: "cancel_run",
+    },
+    observation: {
+      tool: "get_run",
+      wait_field: "wait_ms",
+      omission: "immediate_snapshot",
+      zero: "immediate_snapshot",
+      resident_wait: "owner_publication_event_driven",
+      return_statuses: ["input_required", "completed", "failed", "cancelled", "timed_out"],
+      expiry: "current_truthful_snapshot",
+      nonresident_wait: "immediate_persisted_snapshot",
+      max_wait_policy: "schedule_run_max_wait",
+      public_revision_field: "none",
     },
     output_reference: {
       field: "output_references",

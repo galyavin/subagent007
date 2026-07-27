@@ -228,6 +228,9 @@ test("runtime readiness returns a ready snapshot for a clean current build", asy
   assert.equal(snapshot.capabilities.durable_run.includes("assumption_audit_bounded_v1_effect_profile"), true);
   assert.equal(snapshot.capabilities.durable_run.includes("explicit_recursive_delegation"), true);
   assert.equal(snapshot.capabilities.durable_run.includes("terminal_recursive_subtree_closure"), true);
+  assert.equal(snapshot.capabilities.durable_run.includes("event_driven_get_run_wait"), true);
+  assert.equal(snapshot.contract.observation.resident_wait, "owner_publication_event_driven");
+  assert.equal(snapshot.contract.observation.nonresident_wait, "immediate_persisted_snapshot");
   assert.equal(snapshot.build.child_entrypoint.exists, true);
   assert.deepEqual(
     snapshot.contract.effect_profiles.workspace_read_only.supported_tools,

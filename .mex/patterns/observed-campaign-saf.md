@@ -11,7 +11,7 @@ edges:
     condition: before interpreting tool lifecycle or failure projection findings
   - target: context/conventions.md
     condition: before changing public result fields, reason codes, tests, or README
-last_updated: 2026-07-25
+last_updated: 2026-07-27
 ---
 
 # Observed Campaign SAF
@@ -47,6 +47,7 @@ Load architecture, conventions, setup, decisions, and this pattern. Use isolated
 - `client_start_id` coverage must replay while active and after terminal settlement, prove one child admission, and retain changed-body conflict. Output identity must hash and size one captured byte buffer and reject direct public path fields.
 - Snapshot lifecycle coverage should prove exact publication replay, changed-request conflict, and a genuine stale deletion-impact transition; an arbitrary wrong confirmation alone is not a stale-impact race.
 - A recursive answer-delivery repair is not accepted from terminal status alone: the live parent must receive and use answer evidence from the child. `working` beyond a bounded wait remains an explicit survivor when no child-facing poll exists.
+- Public bounded `get_run` coverage must prove one initially working resident run becomes actionable before the requested window, and tool listing must expose `wait_ms` plus the resident/nonresident ceiling. Keep expiry, input-required, omission/zero, and no-polling mechanics in focused lifecycle tests rather than synthesizing them from campaign prose.
 
 ## Verify
 - [ ] Deterministic `full-current` campaign has no missing required surfaces.
@@ -61,6 +62,7 @@ Load architecture, conventions, setup, decisions, and this pattern. Use isolated
 - [ ] Named-session `require_existing` missing-session preflight is covered for both session tools with `child_started:false` and no `run_id`.
 - [ ] `start_session_run` packet-failure coverage proves failure-log correlation by public tool, durable `run_id`, and `task_kind:"session"`.
 - [ ] Local active-child capacity coverage proves `local_capacity_exhausted`, cancellation cleanup, and a successful launch after release.
+- [ ] `get_run-bounded-wait` proves an initially working resident run returns actionable before its full window, and exact tool listing exposes the bounded wait contract.
 - [ ] `npm test`, `npm run docs:check`, and relevant focused tests pass.
 
 ## Debug

@@ -44,7 +44,7 @@ import {
   type SessionRunRecord,
 } from "./types.js";
 import { ValidationError } from "./types.js";
-import { assertDeadlineRiskTimeoutBudget, validateAndResolveRequest } from "./validate.js";
+import { validateAndResolveRequest } from "./validate.js";
 
 const SESSION_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 type RunSubagentCoreOptions = NonNullable<Parameters<typeof runSubagentCore>[1]>;
@@ -222,7 +222,6 @@ function assertNoRawSessionId(request: RunSubagentSessionRequest): void {
 
 export async function validateRunSubagentSessionRequestPreflight(
   request: RunSubagentSessionRequest,
-  toolName: "start_session_run" | "run_subagent_session" = "run_subagent_session",
   options: { sessionsDir?: string } = {},
 ): Promise<void> {
   assertNoRawSessionId(request);
@@ -231,7 +230,6 @@ export async function validateRunSubagentSessionRequestPreflight(
   validateSessionPacketPolicy(request.packet_policy);
   const config = await loadConfig();
   const resolved = await validateAndResolveRequest(request, config);
-  assertDeadlineRiskTimeoutBudget(request, resolved, toolName);
   const cwd = await fs.realpath(resolved.cwd);
   const sessionsDir = options.sessionsDir ?? defaultSessionsDir();
   await assertDiskReserveAvailable(sessionsDir);
@@ -753,7 +751,6 @@ export async function runSubagentSession(
   const resumeMode = validateResumeMode(request.resume_mode);
   const packetPolicy = validateSessionPacketPolicy(request.packet_policy);
   const resolvedBase = await validateAndResolveRequest(request, config);
-  assertDeadlineRiskTimeoutBudget(request, resolvedBase, failureLogTool);
   const cwd = await fs.realpath(resolvedBase.cwd);
   const resolved = { ...resolvedBase, cwd };
   const skillFilePath = resolveSkillFilePathForRequest(resolved);

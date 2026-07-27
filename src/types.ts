@@ -77,7 +77,6 @@ export type FailureReasonCode =
   | "invalid_wait_ms"
   | "local_capacity_exhausted"
   | "local_queue_exhausted"
-  | "timeout_underbudget_for_deadline_risk"
   | "missing_session_id"
   | "missing_final_output"
   | "nonzero_exit"
@@ -91,7 +90,6 @@ export type FailureReasonCode =
   | "run_not_accepting_input"
   | "run_liveness_unknown"
   | "run_not_found"
-  | "run_subagent_incompatible_workload"
   | "run_subagent_timeout_unsupported"
   | "input_request_already_answered"
   | "input_request_already_closed"
@@ -148,6 +146,11 @@ export interface RunSubagentRequest extends SubagentRequestBase {
 
 export interface StartRunTaskRequest extends RunSubagentRequest {
   client_start_id?: string;
+}
+
+export interface GetRunTaskRequest {
+  run_id: string;
+  wait_ms?: number;
 }
 
 export const RECURSIVE_DELEGATIONS = ["disabled", "enabled"] as const;
@@ -525,20 +528,6 @@ export interface RunOutputReference {
   output_mode: OutputMode;
 }
 
-export type RunSubagentPromotionReasonCode =
-  | "skill_bound"
-  | "prompt_too_long"
-  | "broad_work"
-  | "workspace_write";
-
-export interface RunSubagentPromotion {
-  auto_promoted_from: "run_subagent";
-  promotion_reason_code: RunSubagentPromotionReasonCode;
-  promotion_reason: string;
-  poll_with: "get_run";
-  cancel_with: "cancel_run";
-}
-
 export interface RunSubagentResult extends SubagentRunResultBase {
   run_id: string;
   task_id: string;
@@ -547,11 +536,6 @@ export interface RunSubagentResult extends SubagentRunResultBase {
   session_id: string | null;
   session_established: boolean;
   input_requests_dir: string;
-  auto_promoted_from?: RunSubagentPromotion["auto_promoted_from"];
-  promotion_reason_code?: RunSubagentPromotion["promotion_reason_code"];
-  promotion_reason?: RunSubagentPromotion["promotion_reason"];
-  poll_with?: RunSubagentPromotion["poll_with"];
-  cancel_with?: RunSubagentPromotion["cancel_with"];
 }
 
 export interface RunSubagentSessionRequest extends SubagentRequestBase {
@@ -669,7 +653,6 @@ export type RunPublicEventKind =
 
 export type RunPublicEventName =
   | "run_started"
-  | "auto_promoted"
   | "child_spawned"
   | "child_bridge_started"
   | "child_session_established"

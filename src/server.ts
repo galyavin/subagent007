@@ -98,9 +98,6 @@ const server = new McpServer({
   version: SERVER_VERSION,
 });
 
-const TIMEOUT_UNDERBUDGET_GUIDANCE =
-  "Use wait_ms for the initial scheduler wait. For long durable work, omit timeout_ms or set timeout_ms to at least the reported minimum.";
-
 function withFailureLogging<TRequest, TResult>(
   tool: FailureLogTool,
   handler: (request: TRequest, extra: ServerExtra) => Promise<TResult>,
@@ -168,24 +165,20 @@ async function preflightRejectedResult(
   error: ValidationError,
 ): Promise<PreflightRejectedResult> {
   const reasonCode = failureReasonCodeForError(error);
-  const retryGuidance = reasonCode === "timeout_underbudget_for_deadline_risk"
-    ? TIMEOUT_UNDERBUDGET_GUIDANCE
-    : reasonCode === "local_capacity_exhausted"
-      ? "Retry after an active child run completes or raise SUBAGENT007_MAX_ACTIVE_CHILDREN."
+  const retryGuidance = reasonCode === "local_capacity_exhausted"
+    ? "Retry after an active child run completes or raise SUBAGENT007_MAX_ACTIVE_CHILDREN."
     : reasonCode === "local_queue_exhausted"
       ? "Retry after queued work advances or raise SUBAGENT007_MAX_QUEUED_RUNS."
     : reasonCode === "disk_reserve_exhausted"
       ? "Free local disk space or lower SUBAGENT007_MIN_FREE_DISK_BYTES only if the host reserve is intentionally smaller."
     : undefined;
-  if (reasonCode !== "timeout_underbudget_for_deadline_risk") {
-    await logFailure({
-      tool,
-      failure_class: "validation_error",
-      reason_code: reasonCode,
-      cwd: cwdFromRequest(request),
-      success: false,
-    });
-  }
+  await logFailure({
+    tool,
+    failure_class: "validation_error",
+    reason_code: reasonCode,
+    cwd: cwdFromRequest(request),
+    success: false,
+  });
   return {
     status: "rejected",
     kind: "preflight_rejected",
@@ -811,13 +804,19 @@ server.registerTool(
   {
     title: "Get Run",
     description:
-      "Read the current status, pending input requests, and terminal result for a durable run. A working run is authoritative non-terminal work: running_silent can normally last many minutes. Elapsed time, no public output, live heartbeats, or recursive child activity do not make a run stale and do not authorize cancellation; keep polling unless explicit user intent or a real caller-owned stop condition requires cancellation.",
+      "Read the current status, pending input requests, and terminal result for a durable run. Omitted or zero wait_ms returns the current snapshot immediately. A positive wait_ms waits boundedly for a resident run to become input_required or terminal; nonresident persisted runs return their current truthful snapshot immediately because this process has no authoritative owner-event stream for them. A working run is authoritative non-terminal work: running_silent can normally last many minutes. Elapsed time, no public output, live heartbeats, or recursive child activity do not make a run stale and do not authorize cancellation; wait again unless explicit user intent or a real caller-owned stop condition requires cancellation.",
     inputSchema: {
       run_id: z.string().min(1),
+      wait_ms: z
+        .number()
+        .int()
+        .nonnegative()
+        .optional()
+        .describe("Optional bounded wait for a resident run to become input_required or terminal; omission or zero returns immediately."),
     },
   },
   withRunFailureLogging("get_run", async (request) => {
-    const result = await getRunTask(request.run_id);
+    const result = await getRunTask(request.run_id, false, request.wait_ms);
     return jsonObjectToolResult(result);
   }),
 );

@@ -453,7 +453,7 @@ test("current durable client-start snapshots obey one lifecycle/result invariant
     last_child_lifecycle_event: "child_prompt_submitted",
     last_child_lifecycle_at: terminalEvidence.finished_at,
   };
-  const promotedOwnerFailure = {
+  const retiredRoutingOwnerFailure = {
     ...observedOwnerFailure,
     client_start_binding: undefined,
     auto_promoted_from: "run_subagent",
@@ -592,9 +592,11 @@ test("current durable client-start snapshots obey one lifecycle/result invariant
       },
     },
     {
-      name: "complete owner promotion and activation", valid: true,
-      view: promotedOwnerFailure,
+      name: "retired run_subagent routing evidence rejects without migration", valid: false,
+      view: retiredRoutingOwnerFailure,
     },
+    { name: "current v3 rejects retired skill request residue", valid: false, view: { ...active, skill: "retired-skill" } },
+    { name: "current v3 rejects retired tool_profile request residue", valid: false, view: { ...active, tool_profile: "all" } },
     { name: "owner requires session id", valid: false, view: { ...ownerCancellation, session_id: undefined } },
     { name: "owner requires matching session established", valid: false, view: { ...ownerCancellation, session_established: true } },
     { name: "owner requires exact duration", valid: false, view: { ...ownerCancellation, duration_ms: 1 } },
@@ -614,7 +616,6 @@ test("current durable client-start snapshots obey one lifecycle/result invariant
     { name: "restart drift rejects missing reference digest", valid: false, view: { ...restartDrift(true), output_references: [{ ...restartDrift(true).output_references[0], content_sha256: undefined }] } },
     { name: "restart drift rejects multiple primary references", valid: false, view: { ...restartDrift(true), output_references: [restartDrift(true).output_references[0], restartDrift(true).output_references[0]] } },
     { name: "restart drift rejects packet substitution", valid: false, view: { ...restartDrift(true), output_references: [{ ...restartDrift(true).output_references[0], name: "packet" }] } },
-    { name: "promotion is all or none", valid: false, view: { ...ownerTerminal("failed", "validation_error", "invalid_skill", "partial promotion"), auto_promoted_from: "run_subagent" } },
     { name: "extra completed settlement rejects owner terminal", valid: false, view: { ...ownerCancellation, recent_events: [...ownerCancellation.recent_events, { kind: "terminal", event: "completed", text: "[completed] run completed", occurred_at: terminalEvidence.finished_at, metadata: {} }] } },
     { name: "extra timeout settlement rejects owner terminal", valid: false, view: { ...ownerCancellation, recent_events: [...ownerCancellation.recent_events, { kind: "terminal", event: "timeout", text: "[timeout] run timed out", occurred_at: terminalEvidence.finished_at, metadata: {} }] } },
     { name: "truncated activation receipt rejects", valid: false, view: { ...observedOwnerFailure, activation_receipt: { ...expectedDigestActivationReceipt, toolset_sha256: undefined } } },
@@ -627,8 +628,6 @@ test("current durable client-start snapshots obey one lifecycle/result invariant
     { name: "pre-child declaration forbids child lifecycle residue", valid: false, view: { ...ownerCancellation, requested_effect_profile: "workspace_read_only", last_child_lifecycle_event: "child_bridge_started" } },
     { name: "pre-child declaration forbids session residue", valid: false, view: { ...ownerCancellation, requested_effect_profile: "workspace_read_only", session_id: "/tmp/forged-session.json", session_established: true } },
     { name: "pre-child declaration forbids child timing residue", valid: false, view: { ...ownerCancellation, requested_effect_profile: "workspace_read_only", child_started_at: admission.admitted_at } },
-    { name: "promotion rejects session owner", valid: false, view: { ...promotedOwnerFailure, task_kind: "session", session_key: "promoted-session" } },
-    { name: "promotion rejects client-start owner", valid: false, view: { ...promotedOwnerFailure, client_start_binding: binding } },
     { name: "restart drift rejects slash locator", valid: false, view: { ...restartDrift(true), output_references: [{ ...restartDrift(true).output_references[0], relative_path: "nested/output.md" }] } },
     { name: "restart drift rejects extra reference keys", valid: false, view: { ...restartDrift(true), output_references: [{ ...restartDrift(true).output_references[0], forged: true }] } },
     { name: "pre-child restart drift forbids session identity", valid: false, view: { ...restartDrift(false), child_started: false, session_id: "/tmp/forged-session.json", session_established: true } },
@@ -759,6 +758,12 @@ test("client start identity is strict, schema-normalized, and deterministically 
     clientStartAdmissionApi.canonicalClientStartRequestSha256(left as never),
     clientStartAdmissionApi.canonicalClientStartRequestSha256({ ...left, prompt: "FAST changed" } as never),
   );
+  for (const retired of [
+    { ...left, skill: "retired-skill" },
+    { ...left, tool_profile: "all" },
+  ]) {
+    assert.throws(() => normalize(retired), /unrecognized|skill|tool_profile/i);
+  }
   assert.throws(() => normalize({ ...left, ambient_private_field: true }), /unrecognized|unknown|strict/i);
 });
 

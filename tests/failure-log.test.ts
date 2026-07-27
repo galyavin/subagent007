@@ -43,9 +43,6 @@ type FailureRecord = {
   effective_timeout_ms?: number | null;
   stop_reason?: string;
   stop_signal?: string | null;
-  auto_promoted_from?: "run_subagent";
-  promotion_reason_code?: string;
-  promotion_reason?: string;
   model_class?: string;
   calibration_era?: string;
   output_mode?: string;
@@ -119,15 +116,6 @@ test("failure reason mapping uses explicit validation reason codes", () => {
   assert.equal(
     failureReasonCodeForError(new ValidationError("timeout_ms must be a positive integer when provided", "invalid_timeout_ms")),
     "invalid_timeout_ms",
-  );
-  assert.equal(
-    failureReasonCodeForError(
-      new ValidationError(
-        "timeout_ms under budget for deadline-risk workload; minimum_timeout_ms=600000",
-        "timeout_underbudget_for_deadline_risk",
-      ),
-    ),
-    "timeout_underbudget_for_deadline_risk",
   );
   assert.equal(
     failureReasonCodeForError(new ValidationError("input request not found: run-123", "input_request_not_found")),
@@ -417,7 +405,7 @@ test("run_subagent timeout failure records include canonical run identity and st
   );
 });
 
-test("auto-promoted run_subagent failures log promotion context without one-shot timeout", async () => {
+test("run_subagent prompt wording does not add retired routing context to failure telemetry", async () => {
   await withFakeClient(async (client, { projectDir, failureLogPath }) => {
     const response = await client.callTool({
       name: "run_subagent",
@@ -429,21 +417,18 @@ test("auto-promoted run_subagent failures log promotion context without one-shot
     });
 
     assert.notEqual(response.isError, true);
-    const metadata = response.structuredContent as { run_id: string; success: boolean; promotion_reason_code?: string };
+    const metadata = response.structuredContent as { run_id: string; success: boolean };
     assert.equal(metadata.success, false);
-    assert.equal(metadata.promotion_reason_code, "broad_work");
     const failures = await waitForFailureRecords(failureLogPath);
     assert.equal(failures.length, 1);
     assert.equal(failures[0].tool, "run_subagent");
     assert.equal(failures[0].run_id, metadata.run_id);
     assert.equal(failures[0].task_kind, "run");
     assert.equal(failures[0].failure_class, "nonzero_exit");
-    assert.equal(failures[0].auto_promoted_from, "run_subagent");
-    assert.equal(failures[0].promotion_reason_code, "broad_work");
-    assert.match(failures[0].promotion_reason ?? "", /broad/);
-    assert.equal(failures[0].requested_timeout_ms, null);
-    assert.equal(failures[0].resolved_timeout_ms, null);
-    assert.equal(failures[0].effective_timeout_ms, null);
+    for (const retiredField of ["auto_promoted_from", "promotion_reason_code", "promotion_reason"]) {
+      assert.equal(Object.hasOwn(metadata, retiredField), false, retiredField);
+      assert.equal(Object.hasOwn(failures[0], retiredField), false, retiredField);
+    }
     assert.equal(failures[0].stop_reason, "failed");
     assert.equal(failures[0].stop_signal, null);
   });
@@ -676,30 +661,6 @@ test("handler-level validation failures are logged without prompt text", async (
   });
 });
 
-test("deadline-risk underbudget preflight rejections are not logged as failures", async () => {
-  await withFakeClient(async (client, { projectDir, failureLogPath }) => {
-    const response = await client.callTool({
-      name: "schedule_run",
-      arguments: {
-        cwd: projectDir,
-        prompt: "Fresh-eye delta scan for a repaired implementation. Review only material correctness issues.",
-        wait_ms: 0,
-        timeout_ms: 90_000,
-      },
-    });
-
-    assert.notEqual(response.isError, true);
-    assert.equal((response.structuredContent as { kind?: string }).kind, "preflight_rejected");
-    assert.equal(
-      (response.structuredContent as { reason_code?: string }).reason_code,
-      "timeout_underbudget_for_deadline_risk",
-    );
-    assert.equal((response.structuredContent as { child_started?: boolean }).child_started, false);
-
-    await assert.rejects(fs.stat(failureLogPath), /ENOENT/);
-  });
-});
-
 test("missing child entrypoint preflight failures are logged without spawning a child", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-missing-child-"));
   const missingChildPath = path.join(tmp, "missing-piChild.js");
@@ -731,30 +692,6 @@ test("missing child entrypoint preflight failures are logged without spawning a 
     },
     { SUBAGENT007_PI_CHILD_PATH: missingChildPath },
   );
-});
-
-test("deadline-risk underbudget session preflight rejections are not logged as failures", async () => {
-  await withFakeClient(async (client, { projectDir, failureLogPath }) => {
-    const response = await client.callTool({
-      name: "run_subagent_session",
-      arguments: {
-        cwd: projectDir,
-        prompt: "Requirements\nverification before merging.",
-        session_key: "coherent-execution:underbudget-session",
-        timeout_ms: 90_000,
-      },
-    });
-
-    assert.notEqual(response.isError, true);
-    assert.equal((response.structuredContent as { kind?: string }).kind, "preflight_rejected");
-    assert.equal(
-      (response.structuredContent as { reason_code?: string }).reason_code,
-      "timeout_underbudget_for_deadline_risk",
-    );
-    assert.equal((response.structuredContent as { child_started?: boolean }).child_started, false);
-
-    await assert.rejects(fs.stat(failureLogPath), /ENOENT/);
-  });
 });
 
 test("SDK input-schema rejections happen before failure logging", async () => {

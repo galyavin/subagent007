@@ -12,7 +12,7 @@ edges:
     condition: when a decision relates to system structure
   - target: context/stack.md
     condition: when a decision relates to technology choice
-last_updated: 2026-07-26
+last_updated: 2026-07-27
 ---
 
 # Decisions
@@ -32,6 +32,20 @@ last_updated: 2026-07-26
 **Consequences:** Bendum must stop forwarding `input_manifest`, derive sorted canonical exact `allowed_output_paths` for neutral builder runs, require capability `authoring_effect_scope_binding`, and validate receipt schema 2 and its exact scope binding. Same-key changes to output closure conflict through the existing idempotent request hash. Legacy/v2 no-key behavior and creator-named schema-1 activation stay unchanged.
 
 ## Decision Log
+
+### Execution routing and timeout policy are explicit caller inputs
+**Date:** 2026-07-27
+**Status:** Active
+**Decision:** Remove prompt-text classification from one-shot routing and durable timeout admission. Every valid `run_subagent` request remains a bounded synchronous one-shot. Durable execution requires the caller to choose `start_run` or `schedule_run`, and timed tools apply only mechanical numeric timeout validation.
+**Reasoning:** Prompt wording cannot reliably determine breadth, duration, write intent, cancellation needs, or deadline policy. Letting lexical heuristics choose the execution surface or reject an otherwise valid timeout made lifecycle authority implicit and produced false positives.
+**Consequences:** Retired one-shot routing result fields and prompt-derived reason codes are rejected in current durable snapshots rather than migrated. Callers must select the durable surface directly when they need polling, cancellation, input, or a caller-specified hard deadline.
+
+### Bounded get_run waits only on resident owner publication
+**Date:** 2026-07-27
+**Status:** Active
+**Decision:** Add optional nonnegative `wait_ms` to public `get_run`. Omission/zero remains an immediate snapshot. A positive request is capped by the existing scheduler wait ceiling and, only while the run is resident in this process, waits on post-owner-release committed-state publication until `input_required`, terminal state, or one expiry timer. Heartbeats/progress may trigger condition checks. Nonresident/persisted reads return current truth immediately.
+**Reasoning:** Subagent007 may wait only on attempt state its serving owner can authoritatively observe. Resident publication already marks the committed observable boundary; filesystem polling or a public revision would manufacture cross-process observation semantics without an owner-record event stream. Reusing the existing cap and condition source keeps waits bounded without adding a queue, database, tool, schema migration, or mission/retry policy.
+**Consequences:** Public callers can block boundedly for actionable resident state without timer polling. `schedule_run` uses the same publication-driven mechanic while retaining its distinct default and wait metadata. A foreign/nonresident observer may need a later `get_run` call to see newer persisted truth. Owner loss continues to reconcile honestly to terminal `restart_drift`, and operation failures remain structured.
 
 ### Recursive delegate omission waits at the caller-without-poll boundary
 **Date:** 2026-07-25

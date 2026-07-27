@@ -86,11 +86,6 @@ type RunSubagentMetadata = {
   requested_output_mode?: "final" | "transcript";
   resolved_skill_path?: string | null;
   resolved_skill_sha256?: string | null;
-  auto_promoted_from?: "run_subagent";
-  promotion_reason_code?: "skill_bound" | "prompt_too_long" | "broad_work" | "workspace_write";
-  promotion_reason?: string;
-  poll_with?: "get_run";
-  cancel_with?: "cancel_run";
   contract_name?: string;
   contract_version?: number;
   error_class?: string;
@@ -2009,6 +2004,33 @@ test("expected_skill_sha256 mismatch fails before child launch and a match is re
   );
 });
 
+test("schedule_run preserves a pinned canonical skill without an effect profile", async () => {
+  const skillsRoot = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-mcp-skill-pin-live-"));
+  const skillName = "fixture-mcp-pinned-skill-live";
+  const skillPath = await writeSkillFixture(skillsRoot, skillName);
+  const expectedDigest = await sha256File(skillPath);
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    const response = await client.callTool({
+      name: "schedule_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "FAST",
+        skill_name: skillName,
+        expected_skill_sha256: expectedDigest,
+        recursive_delegation: "disabled",
+        wait_ms: 1000,
+      },
+    });
+    assert.notEqual(response.isError, true, JSON.stringify(response));
+    const result = response.structuredContent as RunSubagentMetadata;
+    assert.equal(result.status, "completed", JSON.stringify(result));
+    assert.equal(result.success, true, JSON.stringify(result));
+    assert.equal(result.child_started, true, JSON.stringify(result));
+    assert.equal(result.activation_receipt?.skill_binding?.expected_content_sha256, expectedDigest);
+    assert.equal((await readJsonl(fakeLogPath)).length, 1);
+  }, { env: { SUBAGENT007_PI_SKILL_PATHS: skillsRoot } });
+});
+
 test("all constrained start surfaces preflight-reject a mismatched skill digest", async () => {
   const skillsRoot = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-mcp-skill-pin-"));
   const skillName = "fixture-mcp-pinned-skill";
@@ -2616,12 +2638,56 @@ test("partial output availability requires terminal interruption plus public chi
 
 });
 
+test("nonresident positive get_run wait returns the current persisted snapshot immediately", async () => {
+  const fixture = await createDirectRunTestFixture("subagent007-get-run-nonresident-");
+  let runId: string | undefined;
+  try {
+    await withEnv(fixture.env, async () => {
+      try {
+        const started = await startRunTask({ cwd: fixture.projectDir, prompt: "CANCEL_WAIT" });
+        runId = started.run_id;
+        await waitForDirectRunView(started.run_id, (view) => view.child_started === true, "nonresident child start");
+        const source = `
+          const { getRunTask } = await import(${JSON.stringify(pathToFileURL(path.resolve("src/runTask.ts")).href)});
+          const startedAt = Date.now();
+          const view = await getRunTask(${JSON.stringify(started.run_id)}, false, 1000);
+          console.log(JSON.stringify({ elapsed_ms: Date.now() - startedAt, status: view.status, run_id: view.run_id }));
+        `;
+        const observed = await runTestWorker(source, fixture.env);
+        assert.equal(observed.code, 0, observed.stderr);
+        const result = JSON.parse(observed.stdout.trim()) as { elapsed_ms: number; status: string; run_id: string };
+        assert.equal(result.run_id, started.run_id);
+        assert.equal(result.status, "working");
+        assert.ok(result.elapsed_ms < 300, `nonresident wait took ${result.elapsed_ms}ms`);
+      } finally {
+        if (runId) await cancelAndWaitForDirectRun(runId);
+      }
+    });
+  } finally {
+    await removeDirectRunTestFixture(fixture);
+  }
+});
+
 describe("MCP public tool integration", { concurrency: 4 }, () => {
+test("resident bounded waits are publication-driven rather than timer-polled", async () => {
+  const source = await fs.readFile(path.resolve("src/runTask.ts"), "utf8");
+  const residentWait = /function waitForResidentReturnableRun\([\s\S]*?\n}\n\nexport async function getRunTask/.exec(source)?.[0];
+  assert.ok(residentWait, "resident wait implementation must be present");
+  assert.doesNotMatch(residentWait, /\bwhile\b|\bsetInterval\b|getRunTask\(/);
+  assert.equal(residentWait.match(/\bsetTimeout\(/g)?.length, 1);
+  assert.match(residentWait, /residentPublicationWaiters/);
+
+  const sharedWait = /async function waitForReturnableRun\([\s\S]*?\n}\n\nexport async function scheduleRunTask/.exec(source)?.[0];
+  assert.ok(sharedWait, "shared scheduler wait implementation must be present");
+  assert.doesNotMatch(sharedWait, /\bwhile\b|\bsetInterval\b|getRunTask\(/);
+  assert.match(sharedWait, /waitForResidentReturnableRun/);
+});
+
 test("MCP server exposes run_subagent names and not old run_codex names", async () => {
   await connectFakeClient(async (client) => {
     const response = await client.listTools();
     const names = response.tools.map((tool) => tool.name);
-    assert.equal(names.length, 21);
+    assert.equal(names.length, 20);
     assert.deepEqual(
       [
         "start_run",
@@ -2636,7 +2702,7 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       true,
     );
     assert.equal(names.includes("list_model_classes"), true);
-    assert.equal(names.includes("list_allowed_models"), true);
+    assert.equal(names.includes("list_allowed_models"), false);
     assert.equal(names.includes("get_run_contract"), true);
     assert.equal(names.includes("get_runtime_readiness"), true);
     assert.equal(names.includes("verify_skill_bindings"), true);
@@ -2702,10 +2768,6 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.ok(listModelClassesTool);
     assert.equal(listModelClassesTool.title, "List Model Classes");
     assert.equal(listModelClassesTool.description, "List the Subagent007 capability classes accepted by this MCP server.");
-    const listAllowedModelsTool = response.tools.find((tool) => tool.name === "list_allowed_models");
-    assert.ok(listAllowedModelsTool);
-    assert.equal(listAllowedModelsTool.title, "List Model Classes");
-    assert.equal(listAllowedModelsTool.description, "Compatibility alias for list_model_classes.");
     const runSubagentTool = response.tools.find((tool) => tool.name === "run_subagent");
     assert.ok(runSubagentTool);
     assert.equal(
@@ -2721,6 +2783,8 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       const tool = response.tools.find((entry) => entry.name === toolName);
       assert.ok(tool, toolName);
       const properties = tool.inputSchema.properties as Record<string, unknown>;
+      assert.equal(Object.hasOwn(properties, "skill"), false);
+      assert.equal(Object.hasOwn(properties, "tool_profile"), false);
       assert.equal(Object.hasOwn(properties, "effect_profile"), true);
       assert.deepEqual((properties.effect_profile as { enum?: string[] }).enum, [
         "workspace_read_only", "task_root_authoring_v1", "skill_creator_authoring_v1", "researcher_bounded_v1", "assumption_audit_bounded_v1",
@@ -2733,6 +2797,9 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.ok(getRunTool);
     assert.match(getRunTool.description ?? "", /running_silent.*many minutes/i);
     assert.match(getRunTool.description ?? "", /not.*stale.*cancel/i);
+    assert.match(getRunTool.description ?? "", /wait_ms.*input_required.*terminal/i);
+    assert.equal(Object.hasOwn(getRunTool.inputSchema.properties ?? {}, "wait_ms"), true);
+    assert.deepEqual(getRunTool.inputSchema.required, ["run_id"]);
     const cancelRunTool = response.tools.find((tool) => tool.name === "cancel_run");
     assert.ok(cancelRunTool);
     assert.match(cancelRunTool.description ?? "", /explicit user intent.*caller-owned stop condition/i);
@@ -2747,6 +2814,8 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       const tool = response.tools.find((entry) => entry.name === toolName);
       assert.ok(tool, toolName);
       const properties = tool.inputSchema.properties as Record<string, unknown>;
+      assert.equal(Object.hasOwn(properties, "skill"), false);
+      assert.equal(Object.hasOwn(properties, "tool_profile"), false);
       assert.equal(Object.hasOwn(properties, "effect_profile"), false);
       assert.equal(Object.hasOwn(properties, "expected_skill_sha256"), false);
       assert.equal(Object.hasOwn(properties, "skill_snapshot_binding"), false);
@@ -2763,10 +2832,9 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       assert.ok(tool, toolName);
       const properties = tool.inputSchema.properties as Record<string, { description?: string }>;
       const skillNameDescription = properties.skill_name?.description ?? "";
-      const legacySkillDescription = properties.skill?.description ?? "";
       assert.match(skillNameDescription, /Preferred bare skill name/);
-      assert.match(legacySkillDescription, /Legacy alias for skill_name/);
-      assert.notEqual(skillNameDescription, legacySkillDescription);
+      assert.equal(Object.hasOwn(properties, "skill"), false);
+      assert.equal(Object.hasOwn(properties, "tool_profile"), false);
     }
     const contractResponse = await client.callTool({
       name: "get_run_contract",
@@ -2790,6 +2858,18 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
         launch_recheck_required?: boolean;
       };
       output_reference?: { transcript_size_policy?: string };
+      observation?: {
+        tool?: string;
+        wait_field?: string;
+        omission?: string;
+        zero?: string;
+        resident_wait?: string;
+        return_statuses?: string[];
+        expiry?: string;
+        nonresident_wait?: string;
+        max_wait_policy?: string;
+        public_revision_field?: string;
+      };
       tools?: {
         start?: string[];
         session_start?: string[];
@@ -2873,8 +2953,21 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.equal(contract.capabilities?.includes("batch_skill_binding_resolution"), true);
     assert.equal(contract.capabilities?.includes("explicit_recursive_delegation"), true);
     assert.equal(contract.capabilities?.includes("terminal_recursive_subtree_closure"), true);
+    assert.equal(contract.capabilities?.includes("event_driven_get_run_wait"), true);
     assert.equal(contract.capabilities?.includes("exact_root_runtime_bundle_validation"), true);
     assert.equal(contract.capabilities?.includes("snapshot_bound_launch"), true);
+    assert.deepEqual(contract.observation, {
+      tool: "get_run",
+      wait_field: "wait_ms",
+      omission: "immediate_snapshot",
+      zero: "immediate_snapshot",
+      resident_wait: "owner_publication_event_driven",
+      return_statuses: ["input_required", "completed", "failed", "cancelled", "timed_out"],
+      expiry: "current_truthful_snapshot",
+      nonresident_wait: "immediate_persisted_snapshot",
+      max_wait_policy: "schedule_run_max_wait",
+      public_revision_field: "none",
+    });
     assert.deepEqual(contract.skill_binding_verification, {
       tool: "verify_skill_bindings",
       contract_name: "subagent007.skill_binding_verification",
@@ -3302,19 +3395,44 @@ test("MCP list_model_classes exposes config migration guidance for whitespace-pa
   );
 });
 
-test("MCP list_allowed_models remains a compatibility alias for model classes", async () => {
+test("MCP list_allowed_models is absent and unrecognized while list_model_classes remains canonical", async () => {
   await connectFakeClient(async (client) => {
+    const listed = await client.listTools();
+    assert.equal(listed.tools.some((tool) => tool.name === "list_allowed_models"), false);
     const canonical = await client.callTool({
       name: "list_model_classes",
       arguments: {},
     });
-    const alias = await client.callTool({
+    const retired = await client.callTool({
       name: "list_allowed_models",
       arguments: {},
     });
     assert.notEqual(canonical.isError, true);
-    assert.notEqual(alias.isError, true);
-    assert.deepEqual(alias.structuredContent, canonical.structuredContent);
+    assert.equal(retired.isError, true);
+    assert.match(JSON.stringify(retired.content), /not found|unknown/i);
+  });
+});
+
+test("MCP child-entry schemas reject retired skill and tool_profile fields before child launch", async () => {
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    const tools = [
+      { name: "run_subagent", arguments: { cwd: projectDir, prompt: "FAST", run_kind: "quick_noninteractive" } },
+      { name: "schedule_run", arguments: { cwd: projectDir, prompt: "FAST", wait_ms: 0 } },
+      { name: "start_run", arguments: { cwd: projectDir, prompt: "FAST", client_start_id: "retired-input-proof" } },
+      { name: "start_session_run", arguments: { cwd: projectDir, prompt: "FAST", session_key: "retired-input-proof" } },
+      { name: "run_subagent_session", arguments: { cwd: projectDir, prompt: "FAST", session_key: "retired-input-proof" } },
+    ] as const;
+    for (const field of ["skill", "tool_profile"] as const) {
+      for (const tool of tools) {
+        const response = await client.callTool({
+          name: tool.name,
+          arguments: { ...tool.arguments, [field]: field === "skill" ? "retired-skill" : "all" },
+        });
+        assert.equal(response.isError, true, `${tool.name} accepted retired ${field}`);
+        assert.match(JSON.stringify(response.content), new RegExp(field), `${tool.name} did not identify retired ${field}`);
+      }
+    }
+    assert.deepEqual(await readJsonl(fakeLogPath).catch(() => []), []);
   });
 });
 
@@ -3395,11 +3513,10 @@ test("MCP run_subagent uses the configured fake Pi child", async () => {
   });
 });
 
-test("MCP run_subagent auto-promotes skill-bound work without one-shot health gating", async () => {
-  const runTasksDir = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-promoted-skill-"));
-  const skillsRoot = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-promoted-skills-"));
-  const skillName = "fixture-promoted-skill";
-  const skillPath = await writeSkillFixture(skillsRoot, skillName);
+test("skill-bound run_subagent remains strict one-shot and uses the one-shot health gate", async () => {
+  const skillsRoot = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-one-shot-skill-"));
+  const skillName = "fixture-one-shot-skill";
+  await writeSkillFixture(skillsRoot, skillName);
   await connectFakeClient(
     async (client, { projectDir, fakeLogPath, modelHealthPath }) => {
       await fs.writeFile(
@@ -3429,51 +3546,17 @@ test("MCP run_subagent auto-promotes skill-bound work without one-shot health ga
         },
       });
       assert.notEqual(response.isError, true);
-      const metadata = response.structuredContent as RunSubagentMetadata;
-      assertNoPublicCalibrationFields(metadata);
-      assert.equal(metadata.status, "completed");
-      assert.equal(metadata.success, true);
-      assert.equal(metadata.auto_promoted_from, "run_subagent");
-      assert.equal(metadata.promotion_reason_code, "skill_bound");
-      assert.match(metadata.promotion_reason ?? "", /skill-bound work/);
-      assert.equal(metadata.poll_with, "get_run");
-      assert.equal(metadata.cancel_with, "cancel_run");
-      assert.equal(metadata.requested_timeout_ms, null);
-      assert.equal(metadata.resolved_timeout_ms, null);
-      assert.equal(metadata.effective_timeout_ms, null);
-      assert.equal(metadata.requested_skill, skillName);
-      assert.equal(metadata.resolved_skill_path, skillPath);
-      assert.equal(metadata.resolved_skill_sha256, await sha256File(skillPath));
-      assert.equal(await fs.readFile(outputPathFor(metadata), "utf8"), "FAST FINAL");
-
-      const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
-      assert.equal(logs.length, 1);
-      assert.equal(logs[0].request.skill, skillName);
-      assert.equal(logs[0].request.skillFilePath, skillPath);
-      assert.equal(logs[0].request.model, "openai-codex/gpt-5.6-luna");
-
-      const persisted = persistedDurableRunView(JSON.parse(
-        await fs.readFile(path.join(runTasksDir, `${metadata.run_id}.json`), "utf8"),
-      ) as unknown);
-      assert.match(JSON.stringify(persisted.recent_events), /\[auto_promoted\] run_subagent -> durable_run/);
-
-      const runView = await client.callTool({
-        name: "get_run",
-        arguments: { run_id: metadata.run_id },
-      });
-      assert.notEqual(runView.isError, true);
-      assertNoPublicCalibrationFields(runView.structuredContent);
-      assert.equal(
-        (runView.structuredContent as RunSubagentMetadata).promotion_reason_code,
-        "skill_bound",
+      assert.deepEqual(
+        {
+          kind: (response.structuredContent as { kind?: string }).kind,
+          child_started: (response.structuredContent as { child_started?: boolean }).child_started,
+          reason_code: (response.structuredContent as { reason_code?: string }).reason_code,
+        },
+        { kind: "preflight_rejected", child_started: false, reason_code: "model_class_unhealthy" },
       );
+      await assert.rejects(fs.stat(fakeLogPath), /ENOENT/);
     },
-    {
-      env: {
-        SUBAGENT007_RUN_TASKS_DIR: runTasksDir,
-        SUBAGENT007_PI_SKILL_PATHS: skillsRoot,
-      },
-    },
+    { env: { SUBAGENT007_PI_SKILL_PATHS: skillsRoot } },
   );
 });
 
@@ -3649,73 +3732,35 @@ test("MCP run_subagent fails fast for known unhealthy one-shot model class", asy
   });
 });
 
-test("MCP run_subagent auto-promotes broad analysis prompts to a cancellable durable run", async () => {
+test("MCP run_subagent does not infer durable routing from broad, write-like, or long prompt text", async () => {
   await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
-    const response = await client.callTool({
-      name: "run_subagent",
-      arguments: {
-        cwd: projectDir,
-        prompt: "CANCEL_WAIT Investigate the HORCs and SAFs across this repo and produce an implementation plan.",
-        run_kind: "quick_noninteractive",
-      },
-    });
-    assert.notEqual(response.isError, true);
-    const metadata = response.structuredContent as RunSubagentMetadata;
-    assert.equal(metadata.status, "working");
-    assert.equal(metadata.auto_promoted_from, "run_subagent");
-    assert.equal(metadata.promotion_reason_code, "broad_work");
-    assert.equal(metadata.poll_with, "get_run");
-    assert.equal(metadata.cancel_with, "cancel_run");
-    await waitForFileText(fakeLogPath, /Investigate the HORCs and SAFs/);
-
-    const cancelled = await client.callTool({
-      name: "cancel_run",
-      arguments: { run_id: metadata.run_id },
-    });
-    assert.notEqual(cancelled.isError, true);
-    assertCancellationInProgressOrSettled(cancelled.structuredContent as RunSubagentMetadata);
-  });
-});
-
-test("MCP run_subagent auto-promotes artifact verification scans before one-shot timeout", async () => {
-  await connectFakeClient(async (client, { projectDir }) => {
-    const response = await client.callTool({
-      name: "run_subagent",
-      arguments: {
-        cwd: projectDir,
-        prompt: "Artifact verification scan A: review docs/DOCTRINE_FULL.md against docs/ARCHITECTURE_FULL.md.",
-        run_kind: "quick_noninteractive",
-      },
-    });
-    assert.notEqual(response.isError, true);
-    const metadata = response.structuredContent as RunSubagentMetadata;
-    assert.equal(metadata.auto_promoted_from, "run_subagent");
-    assert.equal(metadata.promotion_reason_code, "broad_work");
-    assert.equal(metadata.requested_timeout_ms, null);
-    assert.equal(metadata.resolved_timeout_ms, null);
-    assert.equal(metadata.effective_timeout_ms, null);
-  });
-});
-
-test("MCP run_subagent auto-promotes lexical broad-work false positives instead of rejecting them", async () => {
-  await connectFakeClient(async (client, { projectDir }) => {
-    const response = await client.callTool({
-      name: "run_subagent",
-      arguments: {
-        cwd: projectDir,
-        prompt: "FAST Check the saf-ninja fixture.",
-        run_kind: "quick_noninteractive",
-      },
-    });
-    assert.notEqual(response.isError, true);
-    const metadata = response.structuredContent as RunSubagentMetadata;
-    assert.equal(metadata.status, "completed");
-    assert.equal(metadata.success, true);
-    assert.equal(metadata.promotion_reason_code, "broad_work");
-    assert.equal(metadata.requested_timeout_ms, null);
-    assert.equal(metadata.resolved_timeout_ms, null);
-    assert.equal(metadata.effective_timeout_ms, null);
-    assert.equal(await fs.readFile(outputPathFor(metadata), "utf8"), "FAST FINAL");
+    const prompts = [
+      "Investigate the HORCs and SAFs across this repo and produce an implementation plan.",
+      "FAST implement a tiny fixture change.",
+      `FAST ${"x".repeat(6_100)}`,
+    ];
+    for (const prompt of prompts) {
+      const response = await client.callTool({
+        name: "run_subagent",
+        arguments: { cwd: projectDir, prompt, run_kind: "quick_noninteractive" },
+      });
+      assert.notEqual(response.isError, true);
+      const metadata = response.structuredContent as RunSubagentMetadata;
+      assert.equal(metadata.status, "completed");
+      assert.equal(metadata.success, true);
+      for (const retiredField of [
+        "auto_promoted_from",
+        "promotion_reason_code",
+        "promotion_reason",
+        "poll_with",
+        "cancel_with",
+      ]) {
+        assert.equal(Object.hasOwn(metadata, retiredField), false, retiredField);
+      }
+      assert.doesNotMatch(JSON.stringify(metadata.recent_events), /auto_promoted|broad_work/);
+    }
+    const logs = await readJsonl<{ request: { prompt: string } }>(fakeLogPath);
+    assert.deepEqual(logs.map((entry) => entry.request.prompt), prompts);
   });
 });
 
@@ -3741,28 +3786,6 @@ test("MCP schedule_run does not hard-reject lexical broad-work false positives w
     const logs = await readJsonl<{ request: { prompt: string } }>(fakeLogPath);
     assert.equal(logs.length, 1);
     assert.equal(logs[0].request.prompt, "FAST Check the saf-ninja fixture.");
-  });
-});
-
-test("MCP run_subagent auto-promotes edit prompts because write tools are available", async () => {
-  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
-    const response = await client.callTool({
-      name: "run_subagent",
-      arguments: {
-        cwd: projectDir,
-        prompt: "FAST implement a tiny fixture change.",
-        run_kind: "quick_noninteractive",
-      },
-    });
-    assert.notEqual(response.isError, true);
-    const metadata = response.structuredContent as RunSubagentMetadata;
-    assert.equal(metadata.status, "completed");
-    assert.equal(metadata.success, true);
-    assert.equal(metadata.promotion_reason_code, "workspace_write");
-
-    const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
-    assert.equal(logs.length, 1);
-    assert.equal(Object.hasOwn(logs[0].request, "toolProfile"), false);
   });
 });
 
@@ -3796,7 +3819,15 @@ test("MCP schedule_run lets a child delegate a root-visible recursive run", asyn
       },
     });
     assert.notEqual(response.isError, true);
-    const root = response.structuredContent as RunSubagentMetadata;
+    let root = response.structuredContent as RunSubagentMetadata;
+    if (root.status !== "completed") {
+      const terminalResponse = await client.callTool({
+        name: "get_run",
+        arguments: { run_id: root.run_id, wait_ms: 5_000 },
+      });
+      assert.notEqual(terminalResponse.isError, true);
+      root = terminalResponse.structuredContent as RunSubagentMetadata;
+    }
     assert.equal(root.status, "completed");
     assert.equal(root.success, true);
     assert.equal(root.root_run_id, root.run_id);
@@ -3988,64 +4019,62 @@ test("MCP recursive delegate rejects forged caller lineage before launching a de
   });
 });
 
-test("MCP schedule_run rejects deadline-risk work with underbudget hard timeout before child spawn", async () => {
+test("MCP schedule_run does not derive timeout rejection from prompt semantics", async () => {
   await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
     const response = await client.callTool({
       name: "schedule_run",
       arguments: {
         cwd: projectDir,
         prompt: "Verify the implementation against the requirements before merging.",
-        wait_ms: 0,
+        wait_ms: 2_000,
         timeout_ms: 90_000,
       },
     });
     assert.notEqual(response.isError, true);
-    const metadata = response.structuredContent as {
+    const metadata = response.structuredContent as RunSubagentMetadata & {
       kind?: string;
-      child_started?: boolean;
-      reason_code?: string;
       retry_guidance?: string;
-      message?: string;
     };
-    assert.equal(metadata.kind, "preflight_rejected");
-    assert.equal(metadata.child_started, false);
-    assert.equal(metadata.reason_code, "timeout_underbudget_for_deadline_risk");
-    assert.match(metadata.retry_guidance ?? "", /Use wait_ms/);
-    assert.match(metadata.message ?? "", /minimum_timeout_ms=600000/);
-    const logs = await readJsonl(fakeLogPath).catch(() => []);
-    assert.equal(logs.length, 0);
+    assert.equal(metadata.status, "completed", JSON.stringify(metadata));
+    assert.equal(metadata.success, true, JSON.stringify(metadata));
+    assert.equal(metadata.child_started, true, JSON.stringify(metadata));
+    assert.equal(metadata.kind, undefined);
+    assert.equal(metadata.reason_code, undefined);
+    assert.equal(metadata.retry_guidance, undefined);
+    assert.equal(metadata.requested_timeout_ms, 90_000);
+    assert.equal(metadata.resolved_timeout_ms, 90_000);
+    const logs = await readJsonl(fakeLogPath);
+    assert.equal(logs.length, 1);
   });
 });
 
-test("MCP session tools reject deadline-risk work with underbudget hard timeout before child spawn", async () => {
+test("MCP session tools do not derive timeout rejection from prompt semantics", async () => {
   await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
     for (const tool of ["start_session_run", "run_subagent_session"] as const) {
       const response = await client.callTool({
         name: tool,
         arguments: {
           cwd: projectDir,
-          prompt: "Review the implementation for correctness against the requirements.",
-          session_key: `mcp-session:underbudget-${tool}`,
+          prompt: "FAST Review the implementation for correctness against the requirements.",
+          session_key: `mcp-session:prompt-neutral-timeout-${tool}`,
           resume_mode: "new",
           timeout_ms: 90_000,
         },
       });
-      assert.notEqual(response.isError, true);
-      const metadata = response.structuredContent as {
-        kind?: string;
-        child_started?: boolean;
-        reason_code?: string;
-        retry_guidance?: string;
-        message?: string;
-      };
-      assert.equal(metadata.kind, "preflight_rejected");
-      assert.equal(metadata.child_started, false);
-      assert.equal(metadata.reason_code, "timeout_underbudget_for_deadline_risk");
-      assert.match(metadata.retry_guidance ?? "", /Use wait_ms/);
-      assert.match(metadata.message ?? "", new RegExp(`tool=${tool}`));
+      assert.notEqual(response.isError, true, JSON.stringify(response));
+      const initial = response.structuredContent as RunSubagentMetadata & { kind?: string };
+      const metadata = initial.status === "working"
+        ? await waitForTerminalRun(client, initial.run_id)
+        : initial;
+      assert.equal(metadata.status, "completed", JSON.stringify(metadata));
+      assert.equal(metadata.success, true, JSON.stringify(metadata));
+      assert.equal(metadata.kind, undefined);
+      assert.equal(metadata.reason_code, undefined);
+      assert.equal(metadata.requested_timeout_ms, 90_000);
+      assert.equal(metadata.resolved_timeout_ms, 90_000);
     }
-    const logs = await readJsonl(fakeLogPath).catch(() => []);
-    assert.equal(logs.length, 0);
+    const logs = await readJsonl(fakeLogPath);
+    assert.equal(logs.length, 2);
   });
 });
 
@@ -4222,6 +4251,78 @@ test("MCP start_run/get_run completes asynchronously with the same child contrac
     assert.equal(Object.hasOwn(terminal.output_references?.[0] ?? {}, "path"), false);
     assert.equal(await hasActiveLeaseForRun(activeChildrenDir!, started.run_id), false);
   });
+});
+
+test("MCP get_run bounded wait wakes on actionable resident state and preserves immediate snapshots", async () => {
+  await connectFakeClient(
+    async (client, { projectDir }) => {
+      const start = async (prompt: string): Promise<RunSubagentMetadata> => {
+        const response = await client.callTool({
+          name: "start_run",
+          arguments: { cwd: projectDir, prompt },
+        });
+        assert.notEqual(response.isError, true, JSON.stringify(response));
+        return response.structuredContent as RunSubagentMetadata;
+      };
+      const get = async (runId: string, waitMs?: number): Promise<{ view: RunSubagentMetadata; elapsedMs: number }> => {
+        const startedAt = Date.now();
+        const response = await client.callTool({
+          name: "get_run",
+          arguments: {
+            run_id: runId,
+            ...(waitMs === undefined ? {} : { wait_ms: waitMs }),
+          },
+        });
+        assert.notEqual(response.isError, true, JSON.stringify(response));
+        return {
+          view: response.structuredContent as RunSubagentMetadata,
+          elapsedMs: Date.now() - startedAt,
+        };
+      };
+
+      const terminalStarted = await start("HEARTBEAT_LONG_WAIT");
+      const terminal = await get(terminalStarted.run_id, 1_500);
+      assert.equal(terminal.view.status, "completed", JSON.stringify(terminal.view));
+      assert.ok(terminal.elapsedMs < 1_200, `terminal wait took ${terminal.elapsedMs}ms`);
+
+      const inputStarted = await start("HEARTBEAT_INPUT_WAIT");
+      const input = await get(inputStarted.run_id, 1_500);
+      assert.equal(input.view.status, "input_required", JSON.stringify(input.view));
+      assert.ok(input.view.input_requests.some((request) => request.status === "pending"));
+      assert.ok(input.elapsedMs < 1_300, `input wait took ${input.elapsedMs}ms`);
+      await client.callTool({ name: "cancel_run", arguments: { run_id: inputStarted.run_id } });
+
+      const expiryStarted = await start("CANCEL_WAIT");
+      const expiry = await get(expiryStarted.run_id, 140);
+      assert.equal(expiry.view.status, "working", JSON.stringify(expiry.view));
+      assert.ok(expiry.elapsedMs >= 90, `bounded wait expired too early after ${expiry.elapsedMs}ms`);
+      assert.ok(expiry.elapsedMs < 600, `bounded wait expired too late after ${expiry.elapsedMs}ms`);
+
+      const omitted = await get(expiryStarted.run_id);
+      assert.equal(omitted.view.status, "working", JSON.stringify(omitted.view));
+      assert.ok(omitted.elapsedMs < 200, `omitted wait took ${omitted.elapsedMs}ms`);
+      const zero = await get(expiryStarted.run_id, 0);
+      assert.equal(zero.view.status, "working", JSON.stringify(zero.view));
+      assert.ok(zero.elapsedMs < 200, `zero wait took ${zero.elapsedMs}ms`);
+      await client.callTool({ name: "cancel_run", arguments: { run_id: expiryStarted.run_id } });
+
+      const missingStartedAt = Date.now();
+      const missing = await client.callTool({
+        name: "get_run",
+        arguments: { run_id: "missing-bounded-wait-run", wait_ms: 1_000 },
+      });
+      assert.notEqual(missing.isError, true, JSON.stringify(missing));
+      assert.deepEqual(
+        {
+          kind: (missing.structuredContent as { kind?: string }).kind,
+          reason_code: (missing.structuredContent as { reason_code?: string }).reason_code,
+        },
+        { kind: "operation_rejected", reason_code: "run_not_found" },
+      );
+      assert.ok(Date.now() - missingStartedAt < 300, "nonresident missing-run observation must return immediately");
+    },
+    { env: { SUBAGENT007_HEARTBEAT_INTERVAL_MS: "50" } },
+  );
 });
 
 test("MCP start_run final mode completes after generic side-effect progress", async () => {

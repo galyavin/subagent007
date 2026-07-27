@@ -1,7 +1,7 @@
 ---
 name: run-owner-transitions
 description: Change durable-run lifecycle producers without creating stale writers, staging authority, or nested run ownership.
-last_updated: 2026-07-22
+last_updated: 2026-07-27
 ---
 
 # Run Owner Transitions
@@ -21,7 +21,8 @@ One per-run owner is the only observable state writer. Resident `RunTaskState` i
 5. Register input delivery before send; commit acceptance or closure under the owner; release the owner before mailbox I/O or waits.
 6. Never hold two run owners. For descendant reconciliation, read/release the parent, inspect descendants, reacquire/reread the parent, and reassess semantic authorization rather than rejecting unrelated revision progress.
 7. Put failure logging, process waits, child/ancestor mutation, and staging-failure settlement outside the owner.
-8. If a child can perform consequential work after owner loss but before durable authorization, use only the existing control-pipe release frame; EOF before release must exit.
+8. For a bounded resident observation wait, register against committed resident-state publication outside the owner, notify only after owner release, and use one expiry timer. Progress may wake a condition check. Never timer-poll `getRunTask`, filesystem-poll a nonresident owner record, or add a public revision merely to wait.
+9. If a child can perform consequential work after owner loss but before durable authorization, use only the existing control-pipe release frame; EOF before release must exit.
 
 ## Verification
 
@@ -29,6 +30,7 @@ One per-run owner is the only observable state writer. Resident `RunTaskState` i
 - Positive and negative SIGKILL controls with the same nonce/effect fixture
 - Parent/child/grandchild restart convergence with compatible heartbeat progress
 - Input registration/acceptance/cancellation ordering and restart replay
+- Resident actionable wake, truthful expiry, omission/zero immediacy, and nonresident immediate-snapshot ceiling
 - `npm run typecheck`
 - `npm run build`
 - `npm test`

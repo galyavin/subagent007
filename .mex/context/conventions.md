@@ -11,7 +11,7 @@ triggers:
 edges:
   - target: context/architecture.md
     condition: when a convention depends on understanding the system structure
-last_updated: 2026-07-26
+last_updated: 2026-07-27
 ---
 
 # Conventions
@@ -35,7 +35,9 @@ last_updated: 2026-07-26
 
 ## Patterns
 - Semantic preflight rejection must happen before child launch and return structured content with `kind:"preflight_rejected"` and `child_started:false`.
+- Admission and routing use explicit structured fields only. Never classify prompt text, prompt length, broad/write-like wording, or inferred duration to redirect `run_subagent` or reject a numeric timeout. `run_subagent` remains synchronous `quick_noninteractive`; callers explicitly choose `start_run`/`schedule_run` for durable work.
 - Run-operation semantic rejections from `get_run`, `answer_run_input`, and `cancel_run` return structured content with `kind:"operation_rejected"` and a typed `reason_code`; do not include `child_started` because the target run may already have launched.
+- Bounded `get_run` waits subscribe only to authoritative resident-state publication, use one expiry timer, and remain outside the run-owner lock. Do not add repeated `getRunTask` calls, interval polling, filesystem polling for nonresident runs, or a public revision field; nonresident positive waits return the current persisted snapshot immediately.
 - Tool descriptions are part of the agent-facing lifecycle contract. Keep `get_run` and `cancel_run` explicit that `working`/`running_silent`, elapsed silence, live heartbeats, and recursive child activity do not authorize cancellation.
 - Named-session manifest eligibility failures that are knowable before child launch must reject before durable task registration with `kind:"preflight_rejected"` and `child_started:false`; keep the locked session execution checks as race protection.
 - Public event views and transcripts must stay sanitized; never expose raw thinking, private tool payloads, caller prompt text, full composed prompts, or answer values. Use the shared public prompt projection marker instead of writing `request.prompt` into public events or transcript provenance.
