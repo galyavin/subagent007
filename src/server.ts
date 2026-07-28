@@ -41,7 +41,6 @@ import {
 } from "./runTask.js";
 import { startRecursiveControlServer } from "./recursiveControl.js";
 import {
-  LEGACY_SKILL_INPUT_DESCRIPTION,
   SKILL_NAME_PATTERN,
   SKILL_NAME_INPUT_DESCRIPTION,
 } from "./skillBinding.js";
@@ -77,7 +76,6 @@ import {
   RECURSIVE_DELEGATIONS,
   RUN_KINDS,
   SESSION_PACKET_POLICIES,
-  TOOL_PROFILES,
   ValidationError,
 } from "./types.js";
 
@@ -312,12 +310,6 @@ const skillNameInputSchema = z
   .optional()
   .describe(SKILL_NAME_INPUT_DESCRIPTION);
 
-const legacySkillInputSchema = z
-  .string()
-  .nullable()
-  .optional()
-  .describe(LEGACY_SKILL_INPUT_DESCRIPTION);
-
 const runKindSchema = z
   .enum(RUN_KINDS, {
     error: "run_kind must be quick_noninteractive; use schedule_run or start_run for longer, cancellable, polling, or caller-input work",
@@ -329,12 +321,7 @@ const baseRunInputSchema = {
   cwd: z.string().min(1),
   model_class: modelClassSchema,
   skill_name: skillNameInputSchema,
-  skill: legacySkillInputSchema,
   output_mode: z.enum(OUTPUT_MODES).optional(),
-  tool_profile: z
-    .enum(TOOL_PROFILES)
-    .optional()
-    .describe("Legacy compatibility field; accepted values are validated and ignored; it does not authorize recursive delegation."),
 };
 
 const constrainedRunInputSchema = {
@@ -612,26 +599,15 @@ async function listModelClassesResult(): Promise<ReturnType<typeof jsonToolResul
   return jsonObjectToolResult(result);
 }
 
-function registerModelClassListTool(
-  name: Extract<FailureLogTool, "list_model_classes" | "list_allowed_models">,
-  description: string,
-): void {
-  server.registerTool(
-    name,
-    {
-      title: "List Model Classes",
-      description,
-      inputSchema: {},
-    },
-    withFailureLogging(name, async () => listModelClassesResult()),
-  );
-}
-
-registerModelClassListTool(
+server.registerTool(
   "list_model_classes",
-  "List the Subagent007 capability classes accepted by this MCP server.",
+  {
+    title: "List Model Classes",
+    description: "List the Subagent007 capability classes accepted by this MCP server.",
+    inputSchema: {},
+  },
+  withFailureLogging("list_model_classes", async () => listModelClassesResult()),
 );
-registerModelClassListTool("list_allowed_models", "Compatibility alias for list_model_classes.");
 
 server.registerTool(
   "get_run_contract",

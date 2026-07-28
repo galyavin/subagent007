@@ -85,6 +85,21 @@ export interface ResearchControllerStatePaths {
   input_root: string;
 }
 
+interface ResearchControllerInitDirectories {
+  stateRoot: {
+    path: string;
+    realpath: string;
+    device: string;
+    inode: string;
+  };
+  inputRoot: {
+    path: string;
+    realpath: string;
+    device: string;
+    inode: string;
+  };
+}
+
 export class BoundedControllerExecutionQueue {
   private tail: Promise<void> = Promise.resolve();
 
@@ -445,6 +460,130 @@ function researchControllerStatePaths(
   };
 }
 
+function exactResearchControllerStateRoot(
+  taskRoot: string,
+  binding: AuthoringEffectScopeBinding,
+  statePaths: ResearchControllerStatePaths,
+): string {
+  const stateRoot = path.dirname(statePaths.job_path);
+  const expected = path.join(taskRoot, ".subagent007", "researcher_bounded_v1");
+  if (
+    !path.isAbsolute(stateRoot) ||
+    path.resolve(stateRoot) !== stateRoot ||
+    stateRoot !== expected ||
+    stateRoot !== binding.writable_scope.paths[0]
+  ) {
+    throw new Error("researchctl init state root is not the exact canonical binding-derived path");
+  }
+  return stateRoot;
+}
+
+async function inspectExactDirectory(
+  directoryPath: string,
+  label: string,
+): Promise<ResearchControllerInitDirectories["stateRoot"]> {
+  const stat = await fs.lstat(directoryPath);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new Error(`${label} must be an exact real directory`);
+  }
+  const resolved = await fs.realpath(directoryPath);
+  if (resolved !== directoryPath) {
+    throw new Error(`${label} realpath changed or is noncanonical`);
+  }
+  return {
+    path: directoryPath,
+    realpath: resolved,
+    device: String(stat.dev),
+    inode: String(stat.ino),
+  };
+}
+
+async function establishExactDirectory(directoryPath: string, label: string): Promise<void> {
+  try {
+    await fs.mkdir(directoryPath, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  await inspectExactDirectory(directoryPath, label);
+}
+
+async function assertExactDirectoryIdentity(
+  identity: ResearchControllerInitDirectories["stateRoot"],
+  label: string,
+): Promise<void> {
+  const current = await inspectExactDirectory(identity.path, label);
+  if (
+    current.realpath !== identity.realpath ||
+    current.device !== identity.device ||
+    current.inode !== identity.inode
+  ) {
+    throw new Error(`${label} identity changed during researchctl init`);
+  }
+}
+
+async function establishResearchControllerInitDirectories(input: {
+  taskRoot: string;
+  binding: AuthoringEffectScopeBinding;
+  statePaths: ResearchControllerStatePaths;
+}): Promise<ResearchControllerInitDirectories> {
+  const stateRoot = exactResearchControllerStateRoot(input.taskRoot, input.binding, input.statePaths);
+  const expectedJobPath = input.statePaths.job_path;
+  const expectedInputRoot = input.statePaths.input_root;
+  if (
+    path.basename(expectedJobPath) !== "job.json" ||
+    path.dirname(expectedInputRoot) !== stateRoot ||
+    path.basename(expectedInputRoot) !== "inputs" ||
+    !path.isAbsolute(expectedJobPath) ||
+    !path.isAbsolute(expectedInputRoot) ||
+    path.resolve(expectedJobPath) !== expectedJobPath ||
+    path.resolve(expectedInputRoot) !== expectedInputRoot
+  ) {
+    throw new Error("researchctl init state paths are not exact canonical binding-derived paths");
+  }
+
+  const profileParent = path.dirname(stateRoot);
+  if (profileParent !== path.join(input.taskRoot, ".subagent007")) {
+    throw new Error("researchctl init state directory chain is not canonical");
+  }
+  await establishExactDirectory(profileParent, "researchctl profile parent");
+  await establishExactDirectory(stateRoot, "researchctl state root");
+  await establishExactDirectory(expectedInputRoot, "researchctl input root");
+
+  const directories = {
+    stateRoot: await inspectExactDirectory(stateRoot, "researchctl state root"),
+    inputRoot: await inspectExactDirectory(expectedInputRoot, "researchctl input root"),
+  };
+  await assertExactDirectoryIdentity(directories.stateRoot, "researchctl state root");
+  await assertExactDirectoryIdentity(directories.inputRoot, "researchctl input root");
+  return directories;
+}
+
+async function assertResearchControllerInitDirectoryIdentities(
+  directories: ResearchControllerInitDirectories,
+): Promise<void> {
+  await assertExactDirectoryIdentity(directories.stateRoot, "researchctl state root");
+  await assertExactDirectoryIdentity(directories.inputRoot, "researchctl input root");
+}
+
+async function assertResearchControllerInitSuccess(input: {
+  directories: ResearchControllerInitDirectories;
+  statePaths: ResearchControllerStatePaths;
+  effectScopeBinding: AuthoringEffectScopeBinding;
+}): Promise<void> {
+  await assertResearchControllerInitDirectoryIdentities(input.directories);
+  const jobStat = await fs.lstat(input.statePaths.job_path);
+  if (jobStat.isSymbolicLink() || !jobStat.isFile() || jobStat.nlink !== 1) {
+    throw new Error("researchctl init must produce the exact regular single-link job.json");
+  }
+  if (await fs.realpath(input.statePaths.job_path) !== input.statePaths.job_path) {
+    throw new Error("researchctl init job.json is noncanonical");
+  }
+  if (await fs.realpath(input.statePaths.input_root) !== input.directories.inputRoot.realpath) {
+    throw new Error("researchctl init input root changed before successful closure");
+  }
+  await assertAuthoringWritableClosure(input.effectScopeBinding);
+}
+
 function toolDescription(
   tool: BoundedControllerToolName,
   binding: AuthoringEffectScopeBinding | undefined,
@@ -522,6 +661,36 @@ async function executeController(
   // The caller supplies only the command and its data arguments. The script path
   // is fixed by the immutable snapshot activation and is never an argv value.
   const verified = await verifiedControllerCommand({ tool, scriptPath, controllerPython });
+  let researchInit:
+    | {
+      directories: ResearchControllerInitDirectories;
+      statePaths: ResearchControllerStatePaths;
+      effectScopeBinding: AuthoringEffectScopeBinding;
+    }
+    | undefined;
+  if (
+    tool === "researchctl" &&
+    subcommand === "init" &&
+    effectScopeBinding?.effect_profile === "researcher_bounded_v1"
+  ) {
+    if (effectScopeBinding.writable_scope.kind !== "fixed_state_subtree") {
+      throw new Error("researchctl init requires its exact researcher_bounded_v1 effect binding");
+    }
+    const statePaths = researchControllerStatePaths(effectScopeBinding);
+    if (args.length === 0 || args[0] !== statePaths.job_path) {
+      throw new Error("researchctl init argv[0] must equal the exact binding-derived canonical job_path");
+    }
+    researchInit = {
+      directories: await establishResearchControllerInitDirectories({
+        taskRoot: taskRootReal,
+        binding: effectScopeBinding,
+        statePaths,
+      }),
+      statePaths,
+      effectScopeBinding,
+    };
+    await assertResearchControllerInitDirectoryIdentities(researchInit.directories);
+  }
   const commandArgs = [verified.scriptPath, subcommand, ...args];
   try {
     const result = await execFileAsync(verified.pythonPath, commandArgs, {
@@ -532,7 +701,11 @@ async function executeController(
       maxBuffer: MAX_STDOUT_BYTES + MAX_STDERR_BYTES,
       windowsHide: true,
     });
-    if (effectScopeBinding) await assertAuthoringWritableClosure(effectScopeBinding);
+    if (researchInit) {
+      await assertResearchControllerInitSuccess(researchInit);
+    } else if (effectScopeBinding) {
+      await assertAuthoringWritableClosure(effectScopeBinding);
+    }
     return {
       content: [{
         type: "text",
@@ -545,7 +718,12 @@ async function executeController(
       }],
     } as Awaited<ReturnType<ToolDefinition<any>["execute"]>>;
   } catch (error) {
-    if (effectScopeBinding) await assertAuthoringWritableClosure(effectScopeBinding);
+    if (researchInit) {
+      await assertResearchControllerInitDirectoryIdentities(researchInit.directories);
+      await assertAuthoringWritableClosure(researchInit.effectScopeBinding);
+    } else if (effectScopeBinding) {
+      await assertAuthoringWritableClosure(effectScopeBinding);
+    }
     const failure = error as NodeJS.ErrnoException & { stdout?: string; stderr?: string; killed?: boolean };
     if (failure.stdout !== undefined || failure.stderr !== undefined) {
       return {
@@ -778,6 +956,14 @@ export function createBoundedControllerTool(
         throw new Error(`${tool} subcommand is required`);
       }
       const subcommand = record.subcommand;
+      if (
+        tool === "researchctl" &&
+        subcommand === "init" &&
+        effectScopeBinding?.effect_profile === "researcher_bounded_v1" &&
+        !executionQueue
+      ) {
+        throw new Error("researchctl init requires the shared bounded controller execution queue");
+      }
       const operation = () =>
         executeController(
           taskRoot,

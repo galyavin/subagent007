@@ -306,6 +306,294 @@ test("researchctl exposes exact bound state paths without creating state", async
   }
 });
 
+test("researchctl init establishes the exact runtime-owned input root before the unchanged controller runs", async () => {
+  const fixture = await boundedFixture();
+  try {
+    const captured = await captureAuthoringEffectScope({
+      taskRoot: await fs.realpath(fixture.taskRoot),
+      effectProfile: "researcher_bounded_v1",
+      recursiveDelegation: "disabled",
+    });
+    const stateRoot = captured.binding.writable_scope.paths[0];
+    const jobPath = path.join(stateRoot, "job.json");
+    const inputRoot = path.join(stateRoot, "inputs");
+    await fs.writeFile(fixture.scriptPath, [
+      "import json, os, sys",
+      "assert sys.argv[1] == 'init'",
+      "job_path = sys.argv[2]",
+      "input_root = os.path.join(os.path.dirname(job_path), 'inputs')",
+      "assert os.path.isdir(input_root)",
+      "with open(job_path, 'x', encoding='utf-8') as output:",
+      "    json.dump({'state': 'initialized'}, output)",
+      "print('initialized')",
+    ].join("\n"), "utf8");
+    const tool = createBoundedControllerTool(
+      fixture.taskRoot,
+      "researchctl",
+      fixture.scriptPath,
+      await resolveBoundedControllerPython("researcher_bounded_v1"),
+      captured.binding,
+      new BoundedControllerExecutionQueue(),
+    );
+    const result = await tool.execute(
+      "fresh-init",
+      { subcommand: "init", argv: [jobPath] },
+      undefined,
+      undefined,
+      {} as never,
+    ) as { content: Array<{ text: string }> };
+    assert.equal(JSON.parse(result.content[0]!.text).success, true);
+    assert.equal(await fs.realpath(inputRoot), inputRoot);
+    const inputStat = await fs.lstat(inputRoot);
+    assert.equal(inputStat.isDirectory(), true);
+    assert.equal(inputStat.isSymbolicLink(), false);
+    assert.equal(await fs.realpath(jobPath), jobPath);
+    const jobStat = await fs.lstat(jobPath);
+    assert.equal(jobStat.isFile(), true);
+    assert.equal(jobStat.isSymbolicLink(), false);
+    assert.equal(jobStat.nlink, 1);
+
+    const write = createTaskRootAuthoringTools(
+      fixture.taskRoot,
+      fixture.skillFile,
+      ["write"],
+      captured.binding,
+    )[0]!;
+    await write.execute(
+      "plan-write",
+      { path: path.join(inputRoot, "plan.json"), content: "{}\n" },
+      undefined,
+      undefined,
+      {} as never,
+    );
+    await assert.rejects(
+      () => write.execute(
+        "job-write",
+        { path: jobPath, content: "{\"forged\":true}\n" },
+        undefined,
+        undefined,
+        {} as never,
+      ),
+      /direct writable subtree/,
+    );
+    await assert.rejects(
+      () => write.execute(
+        "state-sibling-write",
+        { path: path.join(stateRoot, "forged.json"), content: "{}\n" },
+        undefined,
+        undefined,
+        {} as never,
+      ),
+      /direct writable subtree/,
+    );
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("researchctl init rejects a noncanonical job argument before creating provider state", async () => {
+  const fixture = await boundedFixture();
+  try {
+    const captured = await captureAuthoringEffectScope({
+      taskRoot: await fs.realpath(fixture.taskRoot),
+      effectProfile: "researcher_bounded_v1",
+      recursiveDelegation: "disabled",
+    });
+    const stateRoot = captured.binding.writable_scope.paths[0];
+    const tool = createBoundedControllerTool(
+      fixture.taskRoot,
+      "researchctl",
+      fixture.scriptPath,
+      await resolveBoundedControllerPython("researcher_bounded_v1"),
+      captured.binding,
+      new BoundedControllerExecutionQueue(),
+    );
+    await assert.rejects(
+      () => tool.execute(
+        "wrong-job",
+        { subcommand: "init", argv: [path.join(stateRoot, "other.json")] },
+        undefined,
+        undefined,
+        {} as never,
+      ),
+      /binding-derived canonical job[_ ]path/,
+    );
+    await assert.rejects(() => fs.lstat(stateRoot), { code: "ENOENT" });
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("researchctl init fails closed on symlinked setup and detectable directory replacement", async () => {
+  for (const mode of ["state-symlink", "input-swap", "state-swap"] as const) {
+    const fixture = await boundedFixture();
+    try {
+      const captured = await captureAuthoringEffectScope({
+        taskRoot: await fs.realpath(fixture.taskRoot),
+        effectProfile: "researcher_bounded_v1",
+        recursiveDelegation: "disabled",
+      });
+      const stateRoot = captured.binding.writable_scope.paths[0];
+      const jobPath = path.join(stateRoot, "job.json");
+      const inputRoot = path.join(stateRoot, "inputs");
+      if (mode === "state-symlink") {
+        const redirect = path.join(fixture.taskRoot, "state-redirect");
+        await fs.mkdir(path.dirname(stateRoot), { recursive: true });
+        await fs.mkdir(redirect);
+        await fs.symlink(redirect, stateRoot);
+      } else {
+        await fs.writeFile(fixture.scriptPath, [
+          "import json, os, sys",
+          "job_path = sys.argv[2]",
+          "state_root = os.path.dirname(job_path)",
+          "input_root = os.path.join(state_root, 'inputs')",
+          "os.makedirs(input_root, exist_ok=True)",
+          ...(mode === "input-swap"
+            ? [
+              "os.rename(input_root, input_root + '.replaced')",
+              "os.mkdir(input_root)",
+            ]
+            : [
+              "os.rename(state_root, state_root + '.replaced')",
+              "os.makedirs(input_root)",
+            ]),
+          "with open(job_path, 'x', encoding='utf-8') as output:",
+          "    json.dump({'state': 'initialized'}, output)",
+        ].join("\n"), "utf8");
+      }
+      const tool = createBoundedControllerTool(
+        fixture.taskRoot,
+        "researchctl",
+        fixture.scriptPath,
+        await resolveBoundedControllerPython("researcher_bounded_v1"),
+        captured.binding,
+        new BoundedControllerExecutionQueue(),
+      );
+      await assert.rejects(
+        () => tool.execute(
+          `hostile-${mode}`,
+          { subcommand: "init", argv: [jobPath] },
+          undefined,
+          undefined,
+          {} as never,
+        ),
+        /symlink|identity changed|exact real directory/,
+      );
+      if (mode !== "state-symlink") {
+        assert.equal((await fs.lstat(inputRoot)).isDirectory(), true);
+        assert.equal((await fs.lstat(jobPath)).isFile(), true);
+      }
+    } finally {
+      await fs.rm(fixture.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("researchctl init requires exact input and job postconditions after exit zero", async () => {
+  for (const mode of ["missing-job", "input-file", "job-symlink"] as const) {
+    const fixture = await boundedFixture();
+    try {
+      const captured = await captureAuthoringEffectScope({
+        taskRoot: await fs.realpath(fixture.taskRoot),
+        effectProfile: "researcher_bounded_v1",
+        recursiveDelegation: "disabled",
+      });
+      const stateRoot = captured.binding.writable_scope.paths[0];
+      const jobPath = path.join(stateRoot, "job.json");
+      await fs.writeFile(fixture.scriptPath, [
+        "import json, os, sys",
+        "job_path = sys.argv[2]",
+        "input_root = os.path.join(os.path.dirname(job_path), 'inputs')",
+        "os.makedirs(input_root, exist_ok=True)",
+        ...(mode === "missing-job"
+          ? []
+          : mode === "input-file"
+            ? [
+              "os.rmdir(input_root)",
+              "with open(input_root, 'x', encoding='utf-8') as output:",
+              "    output.write('not a directory')",
+              "with open(job_path, 'x', encoding='utf-8') as output:",
+              "    json.dump({'state': 'initialized'}, output)",
+            ]
+            : [
+              "target = os.path.join(os.path.dirname(job_path), 'job-target.json')",
+              "with open(target, 'x', encoding='utf-8') as output:",
+              "    json.dump({'state': 'initialized'}, output)",
+              "os.symlink(target, job_path)",
+            ]),
+      ].join("\n"), "utf8");
+      const tool = createBoundedControllerTool(
+        fixture.taskRoot,
+        "researchctl",
+        fixture.scriptPath,
+        await resolveBoundedControllerPython("researcher_bounded_v1"),
+        captured.binding,
+        new BoundedControllerExecutionQueue(),
+      );
+      await assert.rejects(
+        () => tool.execute(
+          `invalid-postcondition-${mode}`,
+          { subcommand: "init", argv: [jobPath] },
+          undefined,
+          undefined,
+          {} as never,
+        ),
+        /job\.json|input root|identity changed|writable closure/,
+      );
+    } finally {
+      await fs.rm(fixture.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("researchctl init preserves truthful partial state on controller failure and timeout", async () => {
+  for (const mode of ["nonzero", "timeout"] as const) {
+    const fixture = await boundedFixture();
+    try {
+      const captured = await captureAuthoringEffectScope({
+        taskRoot: await fs.realpath(fixture.taskRoot),
+        effectProfile: "researcher_bounded_v1",
+        recursiveDelegation: "disabled",
+      });
+      const stateRoot = captured.binding.writable_scope.paths[0];
+      const jobPath = path.join(stateRoot, "job.json");
+      const inputRoot = path.join(stateRoot, "inputs");
+      await fs.writeFile(fixture.scriptPath, [
+        "import json, os, sys, time",
+        "job_path = sys.argv[2]",
+        "input_root = os.path.join(os.path.dirname(job_path), 'inputs')",
+        "os.makedirs(input_root, exist_ok=True)",
+        "with open(job_path, 'x', encoding='utf-8') as output:",
+        "    json.dump({'state': 'partial'}, output)",
+        ...(mode === "nonzero" ? ["raise SystemExit(9)"] : ["time.sleep(10)"]),
+      ].join("\n"), "utf8");
+      const tool = createBoundedControllerTool(
+        fixture.taskRoot,
+        "researchctl",
+        fixture.scriptPath,
+        await resolveBoundedControllerPython("researcher_bounded_v1"),
+        captured.binding,
+        new BoundedControllerExecutionQueue(),
+      );
+      const result = await tool.execute(
+        `partial-${mode}`,
+        { subcommand: "init", argv: [jobPath] },
+        undefined,
+        undefined,
+        {} as never,
+      ) as { content: Array<{ text: string }> };
+      const payload = JSON.parse(result.content[0]!.text);
+      assert.equal(payload.success, false);
+      assert.equal(payload.timed_out, mode === "timeout");
+      assert.equal(await fs.realpath(inputRoot), inputRoot);
+      assert.equal(await fs.realpath(jobPath), jobPath);
+      assert.deepEqual(JSON.parse(await fs.readFile(jobPath, "utf8")), { state: "partial" });
+    } finally {
+      await fs.rm(fixture.root, { recursive: true, force: true });
+    }
+  }
+});
+
 test("Researcher model authority excludes provider accounting and direct job writes", async () => {
   const fixture = await boundedFixture();
   try {
@@ -550,7 +838,7 @@ test("bounded controller returns bounded timeout failure without shell fallback"
   }
 });
 
-test("bounded effect profiles reject legacy skill aliases, missing snapshots, resume, and recursion before launch", async () => {
+test("bounded effect profiles reject retired skill input, missing snapshots, resume, and recursion before launch", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-bounded-validation-"));
   const session = path.join(root, "session.jsonl");
   try {
@@ -566,7 +854,7 @@ test("bounded effect profiles reject legacy skill aliases, missing snapshots, re
     const resolved = await validateAndResolveRequest(base, {});
     assert.equal(resolved.cwd, await fs.realpath(root));
     await assert.rejects(
-      () => validateAndResolveRequest({ ...base, skill_name: undefined, skill: "researcher" }, {}),
+      () => validateAndResolveRequest({ ...base, skill_name: undefined, skill: "researcher" } as never, {}),
       (error: unknown) => (error as { reasonCode?: string }).reasonCode === "invalid_skill",
     );
     await assert.rejects(
@@ -594,7 +882,12 @@ test("bounded public descriptors state the exact controller/interpreter enforcem
     assert.equal(profile.enforcement_boundary, "pi_create_agent_session_tools_allowlist_and_task_root_path_guards_and_execfile_controller");
     assert.equal(profile.snapshot_runtime_read_scope, "active_validated_snapshot_runtime_root");
     assert.match(profile.state_scope, /^\.subagent007\/(researcher_bounded_v1|assumption_audit_bounded_v1)$/u);
-    assert.equal(profile.state_initialization, "state_root_absent_at_parent_and_child_pre_prompt_capture");
+    assert.equal(
+      profile.state_initialization,
+      profile === profiles.researcher_bounded_v1
+        ? "state_root_absent_at_parent_and_child_pre_prompt_capture_then_serialized_researchctl_init_creates_exact_input_root"
+        : "state_root_absent_at_parent_and_child_pre_prompt_capture",
+    );
     assert.equal(
       profile.task_root_write_scope,
       profile === profiles.researcher_bounded_v1

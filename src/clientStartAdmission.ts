@@ -12,7 +12,6 @@ import {
   MODEL_CLASSES,
   OUTPUT_MODES,
   RECURSIVE_DELEGATIONS,
-  TOOL_PROFILES,
   ValidationError,
   type StartRunTaskRequest,
 } from "./types.js";
@@ -43,9 +42,7 @@ const clientStartIdentitySchema = z.strictObject({
   cwd: z.string().min(1),
   model_class: z.enum(MODEL_CLASSES).optional(),
   skill_name: z.string().nullable().optional(),
-  skill: z.string().nullable().optional(),
   output_mode: z.enum(OUTPUT_MODES).optional(),
-  tool_profile: z.enum(TOOL_PROFILES).optional(),
   effect_profile: z.enum(EFFECT_PROFILES).optional(),
   expected_skill_sha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
   skill_snapshot_binding: snapshotBindingIdentitySchema.optional(),

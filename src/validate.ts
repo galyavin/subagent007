@@ -6,7 +6,6 @@ import {
   EFFECT_PROFILES,
   OUTPUT_MODES,
   RUN_CONTINUITY_MODES,
-  TOOL_PROFILES,
   type ModelClass,
   type OutputMode,
   type FailureReasonCode,
@@ -33,15 +32,12 @@ function validationReasonCodeForKey(key: string): FailureReasonCode {
       return "invalid_model_class";
     case "output_mode":
       return "invalid_output_mode";
-    case "tool_profile":
-      return "invalid_tool_profile";
     case "effect_profile":
       return "invalid_effect_profile";
     case "allowed_output_paths":
       return "authoring_effect_scope_invalid";
     case "expected_skill_sha256":
       return "invalid_expected_skill_sha256";
-    case "skill":
     case "skill_name":
       return "invalid_skill";
     case "continuity.mode":
@@ -193,6 +189,13 @@ export async function validateAndResolveRequest(
   request: RunSubagentRequest,
   config: RunnerConfig,
 ): Promise<ResolvedRunSubagentRequest> {
+  const rawRequest = request as unknown as Record<string, unknown>;
+  if (Object.hasOwn(rawRequest, "skill")) {
+    throw new ValidationError("skill is not a supported input; use skill_name", "invalid_skill");
+  }
+  if (Object.hasOwn(rawRequest, "tool_profile")) {
+    throw new ValidationError("tool_profile is not a supported input", "unknown_validation_error");
+  }
   const prompt = trimOptional(request.prompt, "prompt");
   if (!prompt) {
     throw new ValidationError("prompt must be a nonempty string", "prompt_missing");
@@ -235,15 +238,11 @@ export async function validateAndResolveRequest(
   const continuity = validateContinuity(request.continuity, request);
   await validateResumeSessionFile(continuity);
 
-  validateChoice(request.tool_profile, "tool_profile", TOOL_PROFILES);
   const effectProfile = validateChoice(request.effect_profile, "effect_profile", EFFECT_PROFILES);
   const recursiveDelegation = request.recursive_delegation ?? "disabled";
   if (isBoundedEffectProfile(effectProfile)) {
     const requiredSkill = boundedEffectProfileSkill(effectProfile);
-    if (
-      request.skill_name !== requiredSkill ||
-      request.skill !== undefined && request.skill !== null && request.skill !== requiredSkill
-    ) {
+    if (request.skill_name !== requiredSkill) {
       throw new ValidationError(
         `${effectProfile} requires exact canonical skill_name ${JSON.stringify(requiredSkill)}`,
         "invalid_skill",

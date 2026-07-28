@@ -52,7 +52,7 @@ Load architecture, conventions, setup, decisions, and this pattern. Use isolated
 ## Verify
 - [ ] Deterministic `full-current` campaign has no missing required surfaces.
 - [ ] Live smoke covers `installed-pi-integration` when available.
-- [ ] `tool-listing` evidence reports no missing or unexpected public tools and clear `skill_name`/legacy `skill` guidance.
+- [ ] `tool-listing` evidence reports no missing or unexpected public tools, canonical `skill_name` guidance, and absence of retired input properties.
 - [ ] Coverage summaries do not depend on non-contract descriptive metadata such as retired lifecycle phases.
 - [ ] Ledger, run-view, event-file, and output-artifact scans show no prompt/input/thinking secret leakage.
 - [ ] Public results, failure-log deltas, session artifacts, and README checks show no concrete model/thinking calibration leakage, with observed-probe absence flags explicitly true rather than missing.

@@ -24,7 +24,6 @@ const EXPECTED_PUBLIC_TOOLS = [
   "get_run",
   "get_run_contract",
   "get_runtime_readiness",
-  "list_allowed_models",
   "list_model_classes",
   "close_skill_snapshot_references",
   "resolve_retained_skill_snapshot_source",
@@ -298,7 +297,8 @@ function responseMatchesResultShape(response, resultClass) {
     return response.is_error === false &&
       response.tool_surface_complete === true &&
       response.tool_surface_exact === true &&
-      response.skill_alias_guidance_clear === true &&
+      response.canonical_skill_guidance_clear === true &&
+      response.retired_input_schema_absent === true &&
       response.effect_profile_schema_exact === true &&
       response.operational_guidance_clear === true;
   }
@@ -1055,24 +1055,21 @@ function toolListingSummary(response) {
   const toolNames = unique(tools.map((tool) => tool?.name).filter((name) => typeof name === "string"));
   const missingTools = EXPECTED_PUBLIC_TOOLS.filter((name) => !toolNames.includes(name));
   const unexpectedTools = toolNames.filter((name) => !EXPECTED_PUBLIC_TOOLS.includes(name));
-  const skillGuidance = SKILL_BINDING_TOOLS.map((toolName) => {
+  const inputSchemaChecks = SKILL_BINDING_TOOLS.map((toolName) => {
     const tool = tools.find((entry) => entry?.name === toolName);
-    const skillNameDescription = toolInputDescription(tool, "skill_name");
-    const skillDescription = toolInputDescription(tool, "skill");
+    const properties = tool?.inputSchema?.properties ?? {};
     return {
       tool: toolName,
-      skill_name_preferred: /prefer/i.test(skillNameDescription),
-      skill_legacy_alias: /legacy alias/i.test(skillDescription),
-      descriptions_distinct: skillNameDescription !== "" &&
-        skillDescription !== "" &&
-        skillNameDescription !== skillDescription,
+      canonical_skill: /preferred bare skill name/i.test(toolInputDescription(tool, "skill_name")),
+      retired_skill_absent: !Object.hasOwn(properties, "skill"),
+      retired_tool_profile_absent: !Object.hasOwn(properties, "tool_profile"),
     };
   });
-  const unclearSkillTools = skillGuidance
+  const noncanonicalInputTools = inputSchemaChecks
     .filter((entry) =>
-      !entry.skill_name_preferred ||
-      !entry.skill_legacy_alias ||
-      !entry.descriptions_distinct
+      !entry.canonical_skill ||
+      !entry.retired_skill_absent ||
+      !entry.retired_tool_profile_absent
     )
     .map((entry) => entry.tool);
   const answerRunInput = tools.find((tool) => tool?.name === "answer_run_input");
@@ -1104,9 +1101,12 @@ function toolListingSummary(response) {
     unexpected_tools: unexpectedTools,
     tool_surface_complete: missingTools.length === 0,
     tool_surface_exact: missingTools.length === 0 && unexpectedTools.length === 0,
-    skill_alias_guidance_clear: unclearSkillTools.length === 0,
+    canonical_skill_guidance_clear: inputSchemaChecks.every((entry) => entry.canonical_skill),
+    retired_input_schema_absent: inputSchemaChecks.every((entry) =>
+      entry.retired_skill_absent && entry.retired_tool_profile_absent
+    ),
     effect_profile_schema_exact: effectProfileSchemaExact,
-    unclear_skill_alias_tools: unclearSkillTools,
+    noncanonical_input_tools: noncanonicalInputTools,
     operational_guidance_clear: Object.values(operationalGuidance).every(Boolean),
     unclear_operational_guidance: Object.entries(operationalGuidance)
       .filter(([, clear]) => !clear)
@@ -1341,12 +1341,6 @@ function scenarioCall(scenario, cwd) {
   if (scenario === "model-listing") {
     return {
       tool: "list_model_classes",
-      args: {},
-    };
-  }
-  if (scenario === "model-listing-alias") {
-    return {
-      tool: "list_allowed_models",
       args: {},
     };
   }

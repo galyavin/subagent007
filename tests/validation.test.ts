@@ -195,7 +195,6 @@ test("resolves caller fields over config defaults", async () => {
       recursive_delegation: "disabled",
       model_class: "D",
       skill_name: "pda-lite",
-      tool_profile: "workspace_write",
     },
     { default_model_class: "A" },
   );
@@ -207,10 +206,9 @@ test("resolves caller fields over config defaults", async () => {
   assert.equal(resolved.thinkingLevel, "high");
   assert.equal(resolved.skill, "pda-lite");
   assert.equal(resolved.outputMode, "final");
-  assert.equal(Object.hasOwn(resolved, "toolProfile"), false);
 });
 
-test("resolves canonical skill_name and legacy skill alias", async () => {
+test("resolves canonical skill_name and rejects retired skill input", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-skill-name-"));
 
   const canonical = await validateAndResolveRequest(
@@ -224,36 +222,12 @@ test("resolves canonical skill_name and legacy skill alias", async () => {
   );
   assert.equal(canonical.skill, "pda-lite");
 
-  const legacy = await validateAndResolveRequest(
-    {
-      prompt: "x",
-      cwd,
-      model_class: "C",
-      skill: "pda-lite",
-    },
-    {},
-  );
-  assert.equal(legacy.skill, "pda-lite");
-
-  const bothSame = await validateAndResolveRequest(
-    {
-      prompt: "x",
-      cwd,
-      model_class: "C",
-      skill_name: "pda-lite",
-      skill: "pda-lite",
-    },
-    {},
-  );
-  assert.equal(bothSame.skill, "pda-lite");
-
   const nullSkill = await validateAndResolveRequest(
     {
       prompt: "x",
       cwd,
       model_class: "C",
       skill_name: null,
-      skill: null,
     },
     {},
   );
@@ -261,16 +235,10 @@ test("resolves canonical skill_name and legacy skill alias", async () => {
 
   await assert.rejects(
     validateAndResolveRequest(
-      {
-        prompt: "x",
-        cwd,
-        model_class: "C",
-        skill_name: "pda-lite",
-        skill: "tension-hunter",
-      },
+      { prompt: "x", cwd, model_class: "C", skill: "pda-lite" } as never,
       {},
     ),
-    /skill and skill_name must match/,
+    /skill is not a supported input; use skill_name/,
   );
 });
 
@@ -389,42 +357,20 @@ test("validates resume session files before spawning Pi work", async () => {
   );
 });
 
-test("accepts legacy tool profile input without adding resolved runtime state", async () => {
+test("rejects retired tool_profile input instead of ignoring it", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-tool-profile-"));
-  const defaulted = await validateAndResolveRequest(
-    { prompt: "x", cwd, model_class: "C" },
-    {},
-  );
-  assert.equal(Object.hasOwn(defaulted, "toolProfile"), false);
-
   for (const toolProfile of ["all", "inspect", "web_search", "shell", "workspace_write"] as const) {
-    const resolved = await validateAndResolveRequest(
-      {
-        prompt: "x",
-        cwd,
-        model_class: "C",
-        tool_profile: toolProfile,
-      },
-      {},
+    await assert.rejects(
+      validateAndResolveRequest(
+        { prompt: "x", cwd, model_class: "C", tool_profile: toolProfile } as never,
+        {},
+      ),
+      /tool_profile is not a supported input/,
     );
-    assert.equal(Object.hasOwn(resolved, "toolProfile"), false);
   }
-
-  await assert.rejects(
-    validateAndResolveRequest(
-      {
-        prompt: "x",
-        cwd,
-        model_class: "C",
-        tool_profile: "write_only" as never,
-      },
-      {},
-    ),
-    /tool_profile must be one of: all, inspect, web_search, shell, workspace_write/,
-  );
 });
 
-test("validates the opt-in effect profile without reinterpreting legacy tool_profile", async () => {
+test("validates the opt-in effect profile independently", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-effect-profile-"));
   const resolved = await validateAndResolveRequest(
     {
@@ -432,13 +378,11 @@ test("validates the opt-in effect profile without reinterpreting legacy tool_pro
       cwd,
       model_class: "C",
       effect_profile: "workspace_read_only",
-      tool_profile: "workspace_write",
     },
     {},
   );
 
   assert.equal(resolved.effectProfile, "workspace_read_only");
-  assert.equal(Object.hasOwn(resolved, "toolProfile"), false);
   await assert.rejects(
     validateAndResolveRequest(
       { prompt: "x", cwd, effect_profile: "inspect" as never },
@@ -460,7 +404,6 @@ test("expected_skill_sha256 is lowercase SHA-256 paired with canonical skill_nam
   for (const request of [
     { prompt: "x", cwd, skill_name: "pda-lite", expected_skill_sha256: "A".repeat(64) },
     { prompt: "x", cwd, skill_name: "pda-lite", expected_skill_sha256: "abc" },
-    { prompt: "x", cwd, skill: "pda-lite", expected_skill_sha256: digest },
     { prompt: "x", cwd, expected_skill_sha256: digest },
   ]) {
     await assert.rejects(

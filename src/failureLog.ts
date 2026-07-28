@@ -14,7 +14,6 @@ export type FailureLogTool =
   | "schedule_run"
   | "start_run"
   | "list_model_classes"
-  | "list_allowed_models"
   | "get_run"
   | "cancel_run"
   | "answer_run_input";

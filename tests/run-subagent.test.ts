@@ -1706,7 +1706,7 @@ test("start_run returns typed disk-reserve preflight rejection before child laun
 });
 });
 
-test("runSubagent accepts legacy explicit tool profile without runtime profile state", async () => {
+test("runSubagent rejects retired tool_profile before child launch", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-tool-profile-"));
   const projectDir = path.join(tmp, "project");
   const runsDir = path.join(tmp, "runs");
@@ -1720,22 +1720,19 @@ test("runSubagent accepts legacy explicit tool profile without runtime profile s
       SUBAGENT007_FAILURE_LOG: "off",
     },
     async () => {
-      const result = await runSubagent(
-        {
-          cwd: projectDir,
-          prompt: "FAST",
-          model_class: "C",
-          tool_profile: "workspace_write",
-        },
-        { runsDir },
+      await assert.rejects(
+        runSubagent(
+          {
+            cwd: projectDir,
+            prompt: "FAST",
+            model_class: "C",
+            tool_profile: "workspace_write",
+          } as never,
+          { runsDir },
+        ),
+        /tool_profile is not a supported input/,
       );
-
-      assert.equal(result.success, true);
-      assert.equal(Object.hasOwn(result, "resolved_tool_profile"), false);
-
-      const logs = await readJsonl<{ request: Record<string, unknown> }>(fake.logPath);
-      assert.equal(logs.length, 1);
-      assert.equal(Object.hasOwn(logs[0].request, "toolProfile"), false);
+      assert.deepEqual(await readJsonl(fake.logPath).catch(() => []), []);
     },
   );
 });
@@ -3413,16 +3410,16 @@ test("MCP list_allowed_models is absent and unrecognized while list_model_classe
   });
 });
 
-test("MCP child-entry schemas reject retired skill and tool_profile fields before child launch", async () => {
-  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
-    const tools = [
-      { name: "run_subagent", arguments: { cwd: projectDir, prompt: "FAST", run_kind: "quick_noninteractive" } },
-      { name: "schedule_run", arguments: { cwd: projectDir, prompt: "FAST", wait_ms: 0 } },
-      { name: "start_run", arguments: { cwd: projectDir, prompt: "FAST", client_start_id: "retired-input-proof" } },
-      { name: "start_session_run", arguments: { cwd: projectDir, prompt: "FAST", session_key: "retired-input-proof" } },
-      { name: "run_subagent_session", arguments: { cwd: projectDir, prompt: "FAST", session_key: "retired-input-proof" } },
-    ] as const;
-    for (const field of ["skill", "tool_profile"] as const) {
+for (const field of ["skill", "tool_profile"] as const) {
+  test(`MCP child-entry schemas reject retired ${field} before child launch`, async () => {
+    await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+      const tools = [
+        { name: "run_subagent", arguments: { cwd: projectDir, prompt: "FAST", run_kind: "quick_noninteractive" } },
+        { name: "schedule_run", arguments: { cwd: projectDir, prompt: "FAST", wait_ms: 0 } },
+        { name: "start_run", arguments: { cwd: projectDir, prompt: "FAST", client_start_id: `retired-${field}-proof` } },
+        { name: "start_session_run", arguments: { cwd: projectDir, prompt: "FAST", session_key: `retired-${field}-proof` } },
+        { name: "run_subagent_session", arguments: { cwd: projectDir, prompt: "FAST", session_key: `retired-${field}-proof` } },
+      ] as const;
       for (const tool of tools) {
         const response = await client.callTool({
           name: tool.name,
@@ -3431,10 +3428,10 @@ test("MCP child-entry schemas reject retired skill and tool_profile fields befor
         assert.equal(response.isError, true, `${tool.name} accepted retired ${field}`);
         assert.match(JSON.stringify(response.content), new RegExp(field), `${tool.name} did not identify retired ${field}`);
       }
-    }
-    assert.deepEqual(await readJsonl(fakeLogPath).catch(() => []), []);
+      assert.deepEqual(await readJsonl(fakeLogPath).catch(() => []), []);
+    });
   });
-});
+}
 
 test("MCP list_model_classes exposes cached healthy one-shot health basis", async () => {
   await connectFakeClient(async (client, { modelHealthPath }) => {

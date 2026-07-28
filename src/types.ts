@@ -4,8 +4,6 @@ export const MODEL_CLASSES = ["A", "B", "C", "D", "E", "Z1", "Z2", "Z3", "Z4", "
 export type ModelClass = (typeof MODEL_CLASSES)[number];
 export const OUTPUT_MODES = ["final", "transcript"] as const;
 export type OutputMode = (typeof OUTPUT_MODES)[number];
-export const TOOL_PROFILES = ["all", "inspect", "web_search", "shell", "workspace_write"] as const;
-export type ToolProfile = (typeof TOOL_PROFILES)[number];
 export const EFFECT_PROFILES = [
   "workspace_read_only",
   "task_root_authoring_v1",
@@ -58,7 +56,6 @@ export type FailureReasonCode =
   | "invalid_session_key"
   | "invalid_skill"
   | "invalid_thinking_level"
-  | "invalid_tool_profile"
   | "invalid_effect_profile"
   | "authoring_effect_scope_invalid"
   | "authoring_effect_scope_drift"
@@ -122,10 +119,8 @@ interface SubagentRequestBase {
   cwd: string;
   model_class?: ModelClass;
   timeout_ms?: number;
-  skill?: string | null;
   skill_name?: string | null;
   output_mode?: OutputMode;
-  tool_profile?: ToolProfile;
 }
 
 export type RunContinuity =

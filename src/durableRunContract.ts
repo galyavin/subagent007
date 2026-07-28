@@ -348,7 +348,7 @@ export function durableRunContractView(): {
       task_root_write_scope: "exact_controller_input_root";
       snapshot_runtime_read_scope: "active_validated_snapshot_runtime_root";
       state_scope: ".subagent007/researcher_bounded_v1";
-      state_initialization: "state_root_absent_at_parent_and_child_pre_prompt_capture";
+      state_initialization: "state_root_absent_at_parent_and_child_pre_prompt_capture_then_serialized_researchctl_init_creates_exact_input_root";
       controller_mutation_scope: "exact_fixed_profile_state_subtree";
       controller_read_scope: "validated_task_root_inputs";
       immutable_input_scope: "bounded_initial_task_root_tree_outside_fixed_state_subtree";
@@ -708,7 +708,7 @@ export function durableRunContractView(): {
         task_root_write_scope: "exact_controller_input_root",
         snapshot_runtime_read_scope: "active_validated_snapshot_runtime_root",
         state_scope: ".subagent007/researcher_bounded_v1",
-        state_initialization: "state_root_absent_at_parent_and_child_pre_prompt_capture",
+        state_initialization: "state_root_absent_at_parent_and_child_pre_prompt_capture_then_serialized_researchctl_init_creates_exact_input_root",
         controller_mutation_scope: "exact_fixed_profile_state_subtree",
         controller_read_scope: "validated_task_root_inputs",
         immutable_input_scope: "bounded_initial_task_root_tree_outside_fixed_state_subtree",

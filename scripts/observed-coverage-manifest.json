@@ -4,7 +4,6 @@
     "runtime-readiness",
     "durable-run-contract",
     "model-class-listing",
-    "model-class-listing-alias",
     "run_subagent-success",
     "run_subagent-schema-error",
     "run_subagent-preflight-rejection",
@@ -53,7 +52,6 @@
     "runtime-readiness": { "evidence_classes": ["protocol-deterministic"] },
     "durable-run-contract": { "evidence_classes": ["protocol-deterministic"] },
     "model-class-listing": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
-    "model-class-listing-alias": { "evidence_classes": ["protocol-deterministic"] },
     "run_subagent-success": { "evidence_classes": ["protocol-deterministic", "live-model-smoke"] },
     "run_subagent-schema-error": { "evidence_classes": ["protocol-deterministic"] },
     "run_subagent-preflight-rejection": { "evidence_classes": ["protocol-deterministic"] },
@@ -107,11 +105,6 @@
       "tool": "list_model_classes",
       "result_classes": ["success"],
       "surfaces": ["model-class-listing"]
-    },
-    "model-listing-alias": {
-      "tool": "list_allowed_models",
-      "result_classes": ["success"],
-      "surfaces": ["model-class-listing-alias"]
     },
     "run-contract": {
       "tool": "get_run_contract",
@@ -356,7 +349,6 @@
         "runtime-readiness",
         "run-contract",
         "model-listing",
-        "model-listing-alias",
         "skill-binding-roundtrip",
         "skill-runtime-bundle-roundtrip",
         "skill-snapshot-lifecycle",
@@ -404,7 +396,6 @@
         "runtime-readiness",
         "durable-run-contract",
         "model-class-listing",
-        "model-class-listing-alias",
         "skill-binding-roundtrip",
         "skill-runtime-bundle-roundtrip",
         "skill-snapshot-lifecycle",

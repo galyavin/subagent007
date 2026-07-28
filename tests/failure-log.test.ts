@@ -105,15 +105,6 @@ test("constrained activation failures remain typed ahead of exit fallbacks", () 
 
 test("failure reason mapping uses explicit validation reason codes", () => {
   assert.equal(
-    failureReasonCodeForError(
-      new ValidationError(
-        "tool_profile must be one of: all, inspect, web_search, shell, workspace_write",
-        "invalid_tool_profile",
-      ),
-    ),
-    "invalid_tool_profile",
-  );
-  assert.equal(
     failureReasonCodeForError(new ValidationError("timeout_ms must be a positive integer when provided", "invalid_timeout_ms")),
     "invalid_timeout_ms",
   );
@@ -138,10 +129,6 @@ test("failure reason mapping does not infer reason codes from validation message
     "unknown_validation_error",
   );
   assert.equal(
-    failureReasonCodeForError(new ValidationError("tool_profile must be one of: all, inspect, web_search, shell, workspace_write")),
-    "unknown_validation_error",
-  );
-  assert.equal(
     failureReasonCodeForError(new ValidationError("input request not found: run-123")),
     "unknown_validation_error",
   );
@@ -149,7 +136,7 @@ test("failure reason mapping does not infer reason codes from validation message
 
 test("failure reason mapping prefers structured validation reason code over message text", () => {
   assert.equal(
-    failureReasonCodeForError(new ValidationError("tool_profile must be one of: all, inspect", "invalid_output_mode")),
+    failureReasonCodeForError(new ValidationError("arbitrary validation prose", "invalid_output_mode")),
     "invalid_output_mode",
   );
 });

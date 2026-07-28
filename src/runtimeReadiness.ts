@@ -38,7 +38,6 @@ const PUBLIC_TOOL_SURFACE = [
   "get_runtime_readiness",
   "get_run_contract",
   "list_model_classes",
-  "list_allowed_models",
   "schedule_run",
   "start_run",
   "get_run",

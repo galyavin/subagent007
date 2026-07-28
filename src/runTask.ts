@@ -1139,12 +1139,14 @@ const OWNER_ONLY_FORBIDDEN_FIELDS = [
   "controller_terminal_receipt",
 ] as const;
 
-const RETIRED_RUN_SUBAGENT_ROUTING_FIELDS = [
+const RETIRED_CURRENT_RUN_FIELDS = [
   "auto_promoted_from",
   "promotion_reason_code",
   "promotion_reason",
   "poll_with",
   "cancel_with",
+  "skill",
+  "tool_profile",
 ] as const;
 
 const OWNER_VALIDATION_REASON_CODES = new Set<FailureReasonCode>([
@@ -1153,7 +1155,7 @@ const OWNER_VALIDATION_REASON_CODES = new Set<FailureReasonCode>([
   "disk_reserve_exhausted", "client_start_id_conflict", "invalid_output_mode", "invalid_packet_policy",
   "invalid_model", "invalid_model_class", "model_class_unhealthy", "invalid_resume_mode",
   "invalid_session_id", "invalid_session_key", "invalid_skill", "invalid_thinking_level",
-  "invalid_tool_profile", "invalid_effect_profile", "authoring_effect_scope_invalid",
+  "invalid_effect_profile", "authoring_effect_scope_invalid",
   "authoring_effect_scope_drift", "invalid_expected_skill_sha256", "effect_profile_unsupported",
   "skill_binding_unsupported", "effect_profile_activation_failed", "skill_content_mismatch",
   "invalid_skill_snapshot_binding", "skill_snapshot_not_found", "skill_snapshot_altered",
@@ -1606,8 +1608,8 @@ export function assertCurrentRunTaskSnapshot(view: RunTaskView, admission?: Clie
   if (admission) {
     assertCurrentRunTaskSnapshotAdmission(view, admission);
   }
-  if (hasAnyOwnField(view, RETIRED_RUN_SUBAGENT_ROUTING_FIELDS)) {
-    invalidCurrentRunTaskSnapshot(view, "current durable run snapshot contains retired run_subagent routing fields");
+  if (hasAnyOwnField(view, RETIRED_CURRENT_RUN_FIELDS)) {
+    invalidCurrentRunTaskSnapshot(view, "current durable run snapshot contains retired public fields");
   }
   if (!isTerminalRunStatus(view.status)) {
     const hasTerminalEvidence = view.finished_at !== undefined ||

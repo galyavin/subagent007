@@ -715,11 +715,12 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
         observed_result?: {
           tool_surface_complete?: boolean;
           tool_surface_exact?: boolean;
-          skill_alias_guidance_clear?: boolean;
+          canonical_skill_guidance_clear?: boolean;
+          retired_input_schema_absent?: boolean;
           effect_profile_schema_exact?: boolean;
           missing_tools?: string[];
           unexpected_tools?: string[];
-          unclear_skill_alias_tools?: string[];
+          noncanonical_input_tools?: string[];
           public_calibration_fields_absent?: boolean;
           forbidden_public_calibration_fields?: string[];
           failure_log_calibration_fields_absent?: boolean;
@@ -744,7 +745,6 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
   for (const surface of [
     "runtime-readiness",
     "durable-run-contract",
-    "model-class-listing-alias",
     "run_subagent-timeout-recovery",
     "schedule_run-durable-first",
     "start_run-async-polling",
@@ -777,9 +777,10 @@ test("observed MCP probe full-current covers all deterministic current surfaces"
   assert.equal(toolListingScenario?.observed_result?.tool_surface_exact, true);
   assert.deepEqual(toolListingScenario?.observed_result?.missing_tools, []);
   assert.deepEqual(toolListingScenario?.observed_result?.unexpected_tools, []);
-  assert.equal(toolListingScenario?.observed_result?.skill_alias_guidance_clear, true);
+  assert.equal(toolListingScenario?.observed_result?.canonical_skill_guidance_clear, true);
+  assert.equal(toolListingScenario?.observed_result?.retired_input_schema_absent, true);
   assert.equal(toolListingScenario?.observed_result?.effect_profile_schema_exact, true);
-  assert.deepEqual(toolListingScenario?.observed_result?.unclear_skill_alias_tools, []);
+  assert.deepEqual(toolListingScenario?.observed_result?.noncanonical_input_tools, []);
   for (const scenarioName of [
     "start-session-packet-failure",
     "start-session-packet-missing",
@@ -1167,12 +1168,11 @@ test("observed MCP probe fails tool-listing coverage when unexpected public tool
       `import { StdioServerTransport } from ${JSON.stringify(pathToFileURL(path.resolve("node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js")).href)};`,
       `import { z } from ${JSON.stringify(pathToFileURL(path.resolve("node_modules/zod/index.js")).href)};`,
       "const server = new McpServer({ name: 'noisy-mcp-server', version: '0.0.0' });",
-      "const expectedTools = ['answer_run_input','cancel_run','close_skill_snapshot_references','delete_skill_snapshot','get_run','get_run_contract','get_runtime_readiness','list_allowed_models','list_model_classes','plan_skill_snapshot_deletion','publish_skill_snapshots','resolve_retained_skill_snapshot_source','resolve_skill_bindings','resolve_skill_runtime_bundles','run_subagent','run_subagent_session','schedule_run','start_run','start_session_run','validate_skill_runtime_bundle','verify_skill_bindings'];",
+      "const expectedTools = ['answer_run_input','cancel_run','close_skill_snapshot_references','delete_skill_snapshot','get_run','get_run_contract','get_runtime_readiness','list_model_classes','plan_skill_snapshot_deletion','publish_skill_snapshots','resolve_retained_skill_snapshot_source','resolve_skill_bindings','resolve_skill_runtime_bundles','run_subagent','run_subagent_session','schedule_run','start_run','start_session_run','validate_skill_runtime_bundle','verify_skill_bindings'];",
       "const skillBindingTools = new Set(['run_subagent','run_subagent_session','schedule_run','start_run','start_session_run']);",
       "const skillName = z.string().nullable().optional().describe('Preferred bare skill name only, such as pda-lite or plugin:skill-name; null means no skill.');",
-      "const skill = z.string().nullable().optional().describe('Legacy alias for skill_name; prefer skill_name for new callers. Bare skill name only, such as pda-lite or plugin:skill-name; null means no skill.');",
       "for (const name of expectedTools) {",
-      "  server.registerTool(name, { inputSchema: skillBindingTools.has(name) ? { skill_name: skillName, skill } : {} }, async () => ({ content: [{ type: 'text', text: 'ok' }] }));",
+      "  server.registerTool(name, { inputSchema: skillBindingTools.has(name) ? { skill_name: skillName } : {} }, async () => ({ content: [{ type: 'text', text: 'ok' }] }));",
       "}",
       "server.registerTool('surprise_debug_tool', { inputSchema: {} }, async () => ({ content: [{ type: 'text', text: 'ok' }] }));",
       "await server.connect(new StdioServerTransport());",

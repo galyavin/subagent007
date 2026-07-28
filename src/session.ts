@@ -499,7 +499,7 @@ function sessionRunRequest(
     cwd: resolved.cwd,
     model_class: resolved.modelClass,
     timeout_ms: resolved.timeoutMs,
-    skill: resolved.skill,
+    skill_name: resolved.skill,
     output_mode: resolved.outputMode,
     continuity: manifest
       ? { mode: "resume", session_id: manifest.subagent_session_id }
