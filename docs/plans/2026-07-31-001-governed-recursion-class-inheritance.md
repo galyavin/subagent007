@@ -1,7 +1,7 @@
 ---
 name: governed-recursion-class-inheritance
 description: Smallest host-only M05 repair for homogeneous governed recursive execution.
-status: host_repair_complete_live_qualification_partial
+status: complete
 last_updated: 2026-07-31
 ---
 
@@ -47,23 +47,39 @@ existing generic recursive model selection and all existing attempt mechanics.
 - **Deterministic proof: complete.** Focused tests cover schema omission,
   D→D→D inheritance/reporting, no-child rejection of a forged governed
   selector, and generic A selection.
-- **Live contact: partial.** Isolated real-Pi class-D root
-  `2026-07-31T215445060Z-1e471e7b3e0d`, child
-  `2026-07-31T215452657Z-baf8cec01c93`, and grandchild
-  `2026-07-31T215457568Z-d096a12018f3` all completed and each reports D.
-  Frozen inputs and host-observed artifacts are retained in
-  `/tmp/subagent007-m05-live-contact-vb0dXE/{freeze.json,contact-result.json,run-tasks/}`.
-  The receipt proves exact AB1 source/body digest and final host-observed Pi
-  prompt placement; the root also read an admitted candidate's leading `AB1
-  repairs:` declaration and heading. Its fourth-delegate attempt was rejected
-  for invalid timeout input rather than capacity, so saturation was not
-  contacted. No live wait-expiry/rejoin contact was attempted after that
-  separate transport failure, and the RSS sampling includes unrelated serving
-  processes; it cannot qualify the requested resource envelope.
+- **Live qualification: complete inside the observed envelope.** A fresh
+  isolated server loaded release
+  `2026-07-31T215601443Z-6656f31b` from host commit `574e03e`. With class D,
+  recursion depth 4, active-child ceiling 3, and recursive queueing disabled,
+  root `2026-07-31T215950136Z-eee8ae27f8bb`, child
+  `2026-07-31T215957196Z-667a678c55e8`, and grandchild
+  `2026-07-31T220002609Z-507d45152372` completed, each reported D, carried the
+  exact AB1 body digest, and returned the grandchild payload to the root. A
+  fourth recursive launch rejected before spawn with
+  `local_capacity_exhausted`; closure left no active-child or queue record.
+- **Wait and capability contacts: complete.** Root
+  `2026-07-31T220021741Z-98f7e5489523` first observed its live child as
+  `working`, then rejoined the same child as `completed` with its payload.
+  Separate run `2026-07-31T220328672Z-9931cc57decc` received AB1 as the
+  governing system skill and read the actual `cococo-cleaner` instructions,
+  returning their leading repair declaration and heading. These prove host
+  transport and addressability, not semantic fit or model obedience.
+- **Resource observation: bounded.** Across 241 process-tree-filtered samples,
+  the isolated server plus three resident class-D Pi processes peaked at
+  1,023,728 KiB RSS. This qualifies admission at three only for this frozen
+  representative environment; it is not a universal memory-safety claim.
+  Frozen inputs and host-observed results are retained at
+  `/tmp/subagent007-m05-followup.Rbjv9N/{freeze.json,result.json,capability-result.json}`
+  with SHA-256 digests
+  `b08d747d9e6bfa45069d44f3744227f65c6e62aa7769fa70e95c785385c034dc`,
+  `7dd39c7901ef6061d1a71203dd7b026d4af3667018e580c949973bd8d96fd960`,
+  and `7f3a3aee37970d91101d3439ab742cf86e2f7d7b6f785d42254e57de301a8f34`
+  respectively.
 
 ## Acceptance boundary
 
-The code repair passes. Subagent007 does **not** qualify M05 yet: repeat from a
-fresh frozen root with an isolated fourth-delegate command that omits timeout,
-then separately contact live wait expiry and rejoin while collecting a
-PID-filtered server/root/waiting-parent/descendant RSS snapshot.
+Subagent007 qualifies the M05 host contract only at the exact source/release,
+class-D profile, and three-resident envelope above. The contact does not qualify
+the desktop's already-running MCP process, other environments, semantic routing,
+provider-payload preservation, model obedience, or physical scale beyond three
+simultaneous resident instances.
