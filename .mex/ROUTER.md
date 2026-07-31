@@ -14,7 +14,7 @@ edges:
     condition: when setting up the dev environment or running the project for the first time
   - target: patterns/INDEX.md
     condition: when starting a task — check the pattern index for a matching pattern file
-last_updated: 2026-07-27
+last_updated: 2026-07-30
 ---
 
 # Session Bootstrap
@@ -25,6 +25,7 @@ Then read this file fully before doing anything else in this session.
 
 ## Current Project State
 **Working:**
+- Opt-in `system_skill_name` promotes one canonical current catalogue skill into the final Pi system prompt for ephemeral/fresh/raw-resume and recursively inherited launches. The normal Subagent007 catalogue remains discoverable minus only that governor; a different `skill_name` remains an ordinary specialist invocation. One last inline `before_agent_start` handler de-duplicates and appends the current source after ambient transforms, then emits a strict pre-prompt receipt over name/path/body digest/final-prompt digest/exactly-once suffix placement with an explicit Pi-prompt-only observation ceiling. Descendants inherit the name through private recursive caller context with no model-facing widening field. Source is reread per launch with no governing prompt snapshot, generated copy, version ledger, or new workflow persistence; omission is unchanged and effect profiles/named sessions reject the mode.
 - Fresh Regent observed-use campaign (2026-07-28): a new isolated `full-current` deterministic campaign covered all 45 current scenarios and 276 caller attempts, including all public tools, recursive parent-child communication/lineage, edge rejections, durable input, sessions, queueing, snapshots, redaction, and output failure behavior. A separate installed-Pi smoke completed exact 20-tool discovery and a real child run. The campaign defects ledger contained no material caller-visible deviation; independent `saf-ninja` and `stress-test-mini` reviews selected no product change, while explicitly limiting the live result to an integration canary rather than comprehensive provider assurance. The durable execution spine is `docs/plans/2026-07-28-002-regent-observed-campaign.md`.
 - Test runner repair: `npm test` now uses 46 process-isolated semantic targets, default six-worker scheduling, two dependency chains, and bounded protected-timing overlap capped at four active target processes; the Apple Silicon 2026-07-26 reference is 65.64s median (65.65s max) across three green build-inclusive runs, 5.6x faster than the 364.55s baseline, without claiming or pursuing `<60s` through added scheduler complexity.
 - Product boundary: Subagent007 is a universal execution-attempt substrate, not a workflow or mission owner. One `run_id` is one concrete attempt; `client_start_id` duplicate-safely binds that attempt's exact start request; `session_id` is semantic context only. The live server owner is the execution custodian, definite owner loss closes the attempt as terminal `restart_drift`, and callers own durable objectives, replacement authorization, reconciliation, and external-effect safety. No active-child process-survival or cross-process reattachment guarantee exists.

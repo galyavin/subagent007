@@ -57,6 +57,7 @@ import type {
   PromptProvenance,
   SkillSnapshotActivationReceipt,
   SkillSnapshotLaunchBinding,
+  SystemSkillActivationReceipt,
   ThinkingLevel,
 } from "./types.js";
 import type { RecursiveControlChildConfig } from "./recursiveControl.js";
@@ -66,6 +67,10 @@ import {
   assertAuthoringEffectScopeBinding,
   isEffectScopedAuthoringProfile,
 } from "./authoringEffectScope.js";
+import {
+  createSystemSkillExtension,
+  resolveSystemSkillSource,
+} from "./systemSkill.js";
 
 interface PiChildRequest {
   prompt: string;
@@ -94,6 +99,8 @@ interface PiChildRequest {
   skillSnapshotBinding?: SkillSnapshotLaunchBinding;
   expectedSkillSnapshotActivationReceipt?: SkillSnapshotActivationReceipt;
   expectedEffectScopeBinding?: AuthoringEffectScopeBinding;
+  systemSkill?: string;
+  expectedSystemSkillPath?: string;
 }
 
 class ChildContractError extends Error {
@@ -436,6 +443,24 @@ async function main(): Promise<void> {
   }
   const agentDir = resolvePiAgentDir();
   process.env.PI_CODING_AGENT_DIR = agentDir;
+  let systemSkillSource;
+  if (request.systemSkill) {
+    if (!request.expectedSystemSkillPath) {
+      throw new ChildContractError("system skill is missing its canonical source expectation", "system_skill_activation_failed");
+    }
+    try {
+      systemSkillSource = await resolveSystemSkillSource({
+        systemSkillName: request.systemSkill,
+        cwd: request.cwd,
+        agentDir,
+        expectedPath: request.expectedSystemSkillPath,
+      });
+    } catch (error) {
+      throw asChildContractError(error, "system_skill_activation_failed");
+    }
+  } else if (request.expectedSystemSkillPath) {
+    throw new ChildContractError("unexpected system skill source expectation", "system_skill_activation_failed");
+  }
   const isWorkspaceReadOnly = request.effectProfile === "workspace_read_only";
   const boundedProfile = isBoundedEffectProfile(request.effectProfile) ? request.effectProfile : undefined;
   const isBounded = boundedProfile !== undefined;
@@ -542,12 +567,23 @@ async function main(): Promise<void> {
           jobPath: path.join(effectScopeBinding.writable_scope.paths[0], "job.json"),
         })
       : undefined;
+  const systemSkillExtension = systemSkillSource
+    ? createSystemSkillExtension({
+        source: systemSkillSource,
+        onActivation: (receipt: SystemSkillActivationReceipt) => {
+          writeEvent({ type: "subagent007.system_skill_activation_confirmed", receipt });
+        },
+      })
+    : undefined;
+  const inlineExtensions = [researchDispatchExtension, systemSkillExtension]
+    .filter((extension): extension is NonNullable<typeof extension> => extension !== undefined);
   const resourceLoader = createSkillScopedResourceLoader({
     cwd: request.cwd,
     agentDir,
     skill: request.skill,
     skillFilePath: request.skillFilePath,
-    ...(researchDispatchExtension ? { extensionFactories: [researchDispatchExtension] } : {}),
+    systemSkill: request.systemSkill,
+    ...(inlineExtensions.length > 0 ? { extensionFactories: inlineExtensions } : {}),
     ...(request.effectProfile
       ? {
           noAmbientExtensions: true,

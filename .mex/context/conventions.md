@@ -11,7 +11,7 @@ triggers:
 edges:
   - target: context/architecture.md
     condition: when a convention depends on understanding the system structure
-last_updated: 2026-07-27
+last_updated: 2026-07-30
 ---
 
 # Conventions
@@ -27,7 +27,8 @@ last_updated: 2026-07-27
 - `src/server.ts` owns MCP registration and handler-level result shaping.
 - `src/runTask.ts` owns durable task lifecycle; do not duplicate task state transitions in handlers.
 - `src/runSubagent.ts` owns the Pi child request-file contract and result orchestration. `src/output.ts` owns terminal artifact preparation/publication, and `src/terminalProjection.ts` owns structural receipt/reference admission.
-- `src/skillBinding.ts` owns canonical `skill_name` validation, prompt-invocation rejection, and MCP schema description text.
+- `src/skillBinding.ts` owns canonical specialist/system skill-name validation, prompt-invocation rejection, and MCP schema description text.
+- `src/systemSkill.ts` owns governing-skill current-source reads, final `before_agent_start` composition, and strict activation-receipt validation; do not copy its body into prompts, snapshots, manifests, or ledgers.
 - `src/skillVerification.ts` owns public batch-verification request binding and the shared resolved-skill read/hash/compare primitive; launch code must call that primitive rather than reproduce hashing or compare logic.
 - `src/types.ts` is the public type/reason-code source; update tests and README when public fields change.
 - `tests/*.test.ts` are integration-heavy Node tests; helpers live in `tests/helpers/`.
@@ -51,7 +52,7 @@ last_updated: 2026-07-27
 - When changing child execution, verify timeout/cancel/disk-reserve/parent-exit cleanup because fake child descendants can otherwise outlive the test run or exhaust host storage.
 - Public tool and input schemas are exact. Do not add aliases, alternate parsing, ignored compatibility fields, or replay/persisted-state migration for retired surfaces.
 - New effect ceilings use a separate `effect_profile`, must filter Pi tools at construction before prompt, must disable ambient extension loading separately, and must project only child receipts that the parent structurally validates. Filesystem-authoring ceilings bind the exact task-root identity and a bounded initial immutable-tree digest in receipt v2, reject sparse/multi-link inputs, guard every mutation-bearing direct/controller path, separately bound writable files, and reinspect after every settled child outcome. Neutral builders write only exact canonical new required outputs and admit no extras; bounded Researcher/AJ profiles require a fresh absent profile state root and mutate only that fixed subtree while preserving everything initially outside it. Snapshot reads remain separately bound. Never substitute an ambient shell profile for a controller-owned capability. Bounded controllers must still bind the parent-selected exact Python/script/import identity through `execFile`. State only the Pi dispatch/path/controller/terminal-reinspection ceiling; do not imply an OS sandbox. URLs are data only where the argument is not an owned path.
-- Skill content pins must attest the bytes Pi actually expands. Use a run-owned snapshot; do not certify a source-path hash while Pi can reread different bytes later.
+- Skill content pins must attest the bytes Pi actually expands. Use a run-owned snapshot; do not certify a source-path hash while Pi can reread different bytes later. Governing `system_skill_name` is deliberately not a pin: reread current canonical source per launch and report only the child-observed body/final-Pi-prompt digest with its explicit provider-payload/model-obedience ceiling.
 - Read-only verification operations that promise no operational state must return expected semantic failures directly and must not use child-entrypoint preflight, run/session registration, admission, temporary artifacts, or failure-logging wrappers.
 - `ValidationError.reasonCode` is the semantic authority for failure reason mapping. Do not infer public reason codes from English message text.
 - Observed campaign result classes must prove the caller-visible contract they name. For `tool-listing`, assert the exact public tool surface and schema guidance; do not count a generic non-error `listTools()` response as full discovery coverage.

@@ -3,6 +3,8 @@ import { ValidationError } from "./types.js";
 
 export const SKILL_NAME_INPUT_DESCRIPTION =
   "Preferred bare skill name only, such as pda-lite or plugin:skill-name; null means no skill.";
+export const SYSTEM_SKILL_NAME_INPUT_DESCRIPTION =
+  "Optional canonical bare catalogue skill promoted to the final Pi system-prompt body; inherited by recursive descendants and distinct from skill_name.";
 
 const SKILL_NAME_ERROR =
   "skill_name must be a bare skill name such as pda-lite or plugin:skill-name; pass pda-lite, not $pda-lite, /skill:pda-lite, a path, markdown link, or prose";

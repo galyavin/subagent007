@@ -83,6 +83,19 @@ type RunSubagentMetadata = {
   effective_wait_ms?: number;
   wait_truncated?: boolean;
   requested_skill?: string | null;
+  requested_system_skill?: string;
+  system_skill_activation_receipt?: {
+    schema_version: 1;
+    confirmed_before_prompt: true;
+    system_skill_name: string;
+    resolved_skill_path: string;
+    content_sha256: string;
+    final_system_prompt_sha256: string;
+    system_skill_content_occurrences: 1;
+    final_system_prompt_ends_with_system_skill: true;
+    placement: string;
+    observation_scope: string;
+  };
   requested_output_mode?: "final" | "transcript";
   resolved_skill_path?: string | null;
   resolved_skill_sha256?: string | null;
@@ -2788,6 +2801,7 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       ]);
       assert.equal(Object.hasOwn(properties, "expected_skill_sha256"), true);
       assert.equal(Object.hasOwn(properties, "skill_snapshot_binding"), true);
+      assert.equal(Object.hasOwn(properties, "system_skill_name"), true);
       assert.equal(Object.hasOwn(properties, "allowed_output_paths"), true);
     }
     const getRunTool = response.tools.find((tool) => tool.name === "get_run");
@@ -2816,6 +2830,7 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       assert.equal(Object.hasOwn(properties, "effect_profile"), false);
       assert.equal(Object.hasOwn(properties, "expected_skill_sha256"), false);
       assert.equal(Object.hasOwn(properties, "skill_snapshot_binding"), false);
+      assert.equal(Object.hasOwn(properties, "system_skill_name"), false);
       assert.equal(Object.hasOwn(properties, "allowed_output_paths"), false);
     }
     for (const toolName of [
@@ -2886,6 +2901,16 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
         raw_answer_persistence?: string;
         process_loss?: string;
       };
+      system_skill?: {
+        request_field?: string;
+        named_sessions?: string;
+        source?: string;
+        catalogue?: string;
+        selected_specialist_field?: string;
+        recursive_inheritance?: string;
+        persistence?: string;
+        receipt?: { result_field?: string; event_type?: string; required_before_prompt?: boolean; observation_scope?: string };
+      };
       effect_profiles?: {
         workspace_read_only?: {
           supported_tools?: string[];
@@ -2950,9 +2975,21 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.equal(contract.capabilities?.includes("batch_skill_binding_resolution"), true);
     assert.equal(contract.capabilities?.includes("explicit_recursive_delegation"), true);
     assert.equal(contract.capabilities?.includes("terminal_recursive_subtree_closure"), true);
+    assert.equal(contract.capabilities?.includes("system_skill_governing_prompt"), true);
     assert.equal(contract.capabilities?.includes("event_driven_get_run_wait"), true);
     assert.equal(contract.capabilities?.includes("exact_root_runtime_bundle_validation"), true);
     assert.equal(contract.capabilities?.includes("snapshot_bound_launch"), true);
+    assert.equal(contract.system_skill?.request_field, "system_skill_name");
+    assert.equal(contract.system_skill?.named_sessions, "unsupported");
+    assert.equal(contract.system_skill?.source, "canonical_current_catalogue_skill");
+    assert.equal(contract.system_skill?.catalogue, "normal_minus_governing_skill");
+    assert.equal(contract.system_skill?.selected_specialist_field, "skill_name");
+    assert.equal(contract.system_skill?.recursive_inheritance, "trusted_caller_context_non_widenable");
+    assert.equal(contract.system_skill?.persistence, "no_prompt_snapshot_copy_or_version_ledger");
+    assert.equal(contract.system_skill?.receipt?.result_field, "system_skill_activation_receipt");
+    assert.equal(contract.system_skill?.receipt?.event_type, "subagent007.system_skill_activation_confirmed");
+    assert.equal(contract.system_skill?.receipt?.required_before_prompt, true);
+    assert.match(contract.system_skill?.receipt?.observation_scope ?? "", /not_provider_payload_or_model_obedience/);
     assert.deepEqual(contract.observation, {
       tool: "get_run",
       wait_field: "wait_ms",
@@ -3802,6 +3839,77 @@ test("MCP schedule_run returns completed output when the durable task finishes w
     assert.equal(metadata.success, true);
     assert.equal(await fs.readFile(outputPathFor(metadata), "utf8"), "FAST FINAL");
   });
+});
+
+test("system skill is inherited through trusted recursion while the selected specialist remains ordinary", async () => {
+  const skillsRoot = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-system-skill-recursive-"));
+  const systemSkillPath = await writeSkillFixture(skillsRoot, "governor-skill");
+  const specialistPath = await writeSkillFixture(skillsRoot, "specialist-skill");
+  const expectedSystemSha256 = await sha256File(systemSkillPath);
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    const duplicate = await client.callTool({
+      name: "schedule_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "MUST NOT START",
+        system_skill_name: "governor-skill",
+        skill_name: "governor-skill",
+      },
+    });
+    assert.equal((duplicate.structuredContent as RunSubagentMetadata).kind, "preflight_rejected");
+    assert.equal((duplicate.structuredContent as RunSubagentMetadata).child_started, false);
+    assert.equal(await fs.stat(fakeLogPath).then(() => true, () => false), false);
+
+    const response = await client.callTool({
+      name: "schedule_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "RECURSIVE_DELEGATE_FAST",
+        system_skill_name: "governor-skill",
+        skill_name: "specialist-skill",
+        recursive_delegation: "enabled",
+        wait_ms: 2_000,
+      },
+    });
+    assert.notEqual(response.isError, true);
+    let root = response.structuredContent as RunSubagentMetadata;
+    if (root.status !== "completed") root = await waitForTerminalRun(client, root.run_id);
+    assert.equal(root.status, "completed", JSON.stringify(root));
+    assert.equal(root.requested_skill, "specialist-skill");
+    assert.equal(root.requested_system_skill, "governor-skill");
+    assert.equal(root.system_skill_activation_receipt?.system_skill_name, "governor-skill");
+    assert.equal(root.system_skill_activation_receipt?.resolved_skill_path, systemSkillPath);
+    assert.equal(root.system_skill_activation_receipt?.content_sha256, expectedSystemSha256);
+    assert.equal(root.system_skill_activation_receipt?.system_skill_content_occurrences, 1);
+    assert.equal(root.system_skill_activation_receipt?.final_system_prompt_ends_with_system_skill, true);
+    assert.match(root.system_skill_activation_receipt?.observation_scope ?? "", /not_provider_payload_or_model_obedience/);
+    const activationEvents = root.recent_events?.filter((event) => event.event === "system_skill_activation_confirmed") ?? [];
+    assert.equal(activationEvents.length, 1, JSON.stringify(root.recent_events));
+    assert.deepEqual(activationEvents[0]?.metadata?.receipt, root.system_skill_activation_receipt);
+
+    const rootOutput = JSON.parse(await fs.readFile(outputPathFor(root), "utf8")) as {
+      delegated: RunSubagentMetadata;
+    };
+    assert.equal(rootOutput.delegated.requested_system_skill, "governor-skill");
+    assert.equal(rootOutput.delegated.system_skill_activation_receipt?.content_sha256, expectedSystemSha256);
+    assert.equal(rootOutput.delegated.requested_skill, null);
+
+    const logs = await readJsonl<{ request: {
+      systemSkill?: string;
+      expectedSystemSkillPath?: string;
+      skill?: string;
+      prompt: string;
+      recursiveControl?: { system_skill_name?: string };
+    } }>(fakeLogPath);
+    assert.equal(logs.length, 2);
+    assert.deepEqual(logs.map((entry) => entry.request.systemSkill), ["governor-skill", "governor-skill"]);
+    assert.deepEqual(logs.map((entry) => entry.request.expectedSystemSkillPath), [systemSkillPath, systemSkillPath]);
+    assert.equal(logs[0]?.request.skill, "specialist-skill");
+    assert.equal(logs[0]?.request.prompt.startsWith("/skill:specialist-skill\n"), true);
+    assert.equal(logs[0]?.request.recursiveControl?.system_skill_name, "governor-skill");
+    assert.equal(logs[1]?.request.skill, undefined);
+    assert.match(await fs.readFile(specialistPath, "utf8"), /# specialist-skill/);
+  }, { env: { SUBAGENT007_PI_SKILL_PATHS: skillsRoot } });
 });
 
 test("MCP schedule_run lets a child delegate a root-visible recursive run", async () => {

@@ -142,7 +142,8 @@ function eventControlsTranscriptMode(event: Record<string, unknown>): boolean {
   return event.type !== "subagent007.lifecycle" &&
     event.type !== "subagent007.session" &&
     event.type !== "subagent007.activation_confirmed" &&
-    event.type !== "subagent007.recursive_delegation_confirmed";
+    event.type !== "subagent007.recursive_delegation_confirmed" &&
+    event.type !== "subagent007.system_skill_activation_confirmed";
 }
 
 export function provenancePublicLines(promptProvenance?: PromptProvenance): PublicOutputLine[] {

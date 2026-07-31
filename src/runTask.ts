@@ -33,6 +33,7 @@ import {
   expectedBoundedActivationToolBindings,
   runSubagentCore,
   resolveSkillFilePathForRequest,
+  resolveSystemSkillSourceForRequest,
   RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT,
   validatedRecursiveDelegationReceipt,
 } from "./runSubagent.js";
@@ -79,6 +80,7 @@ import type {
   RunSubagentSessionRequest,
   RunSubagentSessionResult,
   StartRunTaskRequest,
+  SystemSkillActivationReceipt,
 } from "./types.js";
 import {
   MODEL_CLASSES,
@@ -93,6 +95,7 @@ import {
 } from "./types.js";
 import { loadConfig } from "./config.js";
 import { validateAndResolveRequest } from "./validate.js";
+import { validatedSystemSkillActivationReceipt } from "./systemSkill.js";
 import {
   assertPendingTerminalOutputs,
   cleanupPendingTerminalOutputs,
@@ -154,9 +157,9 @@ const OWNER_SETTLEMENT_EVENT_SET = new Set<string>(["failed", "cancellation_sett
 type RunTaskTerminalResult = RunSubagentResult | RunSubagentSessionResult;
 type ChildLifecycleEventName = Extract<
   RunPublicEventName,
-  "child_spawned" | "child_bridge_started" | "child_session_established" | "activation_confirmed" | "skill_snapshot_activation_confirmed" | "recursive_delegation_confirmed" | "child_prompt_submitted"
+  "child_spawned" | "child_bridge_started" | "child_session_established" | "activation_confirmed" | "skill_snapshot_activation_confirmed" | "recursive_delegation_confirmed" | "system_skill_activation_confirmed" | "child_prompt_submitted"
 >;
-type StandardChildLifecycleEventName = Exclude<ChildLifecycleEventName, "activation_confirmed" | "skill_snapshot_activation_confirmed" | "recursive_delegation_confirmed">;
+type StandardChildLifecycleEventName = Exclude<ChildLifecycleEventName, "activation_confirmed" | "skill_snapshot_activation_confirmed" | "recursive_delegation_confirmed" | "system_skill_activation_confirmed">;
 const CHILD_LIFECYCLE_GENERATION = {
   child_spawned: {
     sequence: 0,
@@ -182,8 +185,12 @@ const CHILD_LIFECYCLE_GENERATION = {
     sequence: 5,
     progressMessage: "immutable runtime snapshot confirmed before prompt",
   },
-  child_prompt_submitted: {
+  system_skill_activation_confirmed: {
     sequence: 6,
+    progressMessage: "governing system skill placement confirmed before prompt",
+  },
+  child_prompt_submitted: {
+    sequence: 7,
     progressMessage: "prompt submitted; waiting for first public output",
   },
 } as const satisfies Record<
@@ -300,6 +307,12 @@ interface RunTaskState {
   };
   recursiveDelegationReceipt?: RecursiveDelegationReceipt;
   requestedRecursiveDelegation?: RunSubagentRequest["recursive_delegation"];
+  requestedSystemSkill?: string;
+  systemSkillActivationReceipt?: SystemSkillActivationReceipt;
+  systemSkillActivationObservation: {
+    promise: Promise<SystemSkillActivationReceipt | undefined>;
+    resolve: (receipt: SystemSkillActivationReceipt | undefined) => void;
+  };
   expectedSkillSha256?: string;
   claimDeclarations?: OwnerRequestDeclarations;
   ownerLaunchObservation?: RunOwnerLaunchObservation;
@@ -386,6 +399,8 @@ interface RunOwnerLaunchObservation {
     skill_snapshot_activation_receipt: unknown;
     requested_recursive_delegation: "disabled" | "enabled" | null;
     resolved_recursive_delegation: "disabled" | "enabled";
+    system_skill_name?: string;
+    system_skill_path?: string;
   };
 }
 
@@ -442,6 +457,7 @@ function ownerRequestDeclarationsFromRequest(
   }
   return {
     ...(request.effect_profile ? { effectProfile: request.effect_profile } : {}),
+    ...(request.system_skill_name ? { systemSkillName: request.system_skill_name } : {}),
     ...(request.expected_skill_sha256 ? { expectedSkillSha256: request.expected_skill_sha256 } : {}),
     ...(request.skill_snapshot_binding ? { skillSnapshotBinding: request.skill_snapshot_binding } : {}),
     requestedRecursiveDelegation: request.recursive_delegation ?? null,
@@ -481,6 +497,8 @@ function recordOwnerLaunchObservation(
     skillSnapshotActivationReceipt?: unknown;
     requestedRecursiveDelegation: "disabled" | "enabled" | null;
     resolvedRecursiveDelegation: "disabled" | "enabled";
+    systemSkillName?: string;
+    systemSkillPath?: string;
   },
 ): void {
   const scopeBytes = observation.authoringEffectScope
@@ -500,6 +518,10 @@ function recordOwnerLaunchObservation(
       skill_snapshot_activation_receipt: observation.skillSnapshotActivationReceipt ?? null,
       requested_recursive_delegation: observation.requestedRecursiveDelegation,
       resolved_recursive_delegation: observation.resolvedRecursiveDelegation,
+      ...(observation.systemSkillName && observation.systemSkillPath ? {
+        system_skill_name: observation.systemSkillName,
+        system_skill_path: observation.systemSkillPath,
+      } : {}),
     },
   };
 }
@@ -572,8 +594,11 @@ function assertRunOwnerRecord(record: CurrentRunClaimV1): void {
       "requested_effect_profile", "expected_skill_sha256", "skill_binding", "tool_bindings",
       "skill_snapshot_binding", "skill_snapshot_activation_receipt",
       "requested_recursive_delegation", "resolved_recursive_delegation",
+      ...(declarations.systemSkillName ? ["system_skill_name", "system_skill_path"] : []),
     ]) ||
       expectation.requested_effect_profile !== (declarations.effectProfile ?? null) ||
+      expectation.system_skill_name !== declarations.systemSkillName ||
+      (declarations.systemSkillName !== undefined && !isNonemptyString(expectation.system_skill_path)) ||
       expectation.expected_skill_sha256 !== (declarations.expectedSkillSha256 ?? null) ||
       !sameCanonicalOwnerJson(expectation.skill_snapshot_binding, declarations.skillSnapshotBinding ?? null) ||
       expectation.requested_recursive_delegation !== expectedChildRecursiveDelegation ||
@@ -628,6 +653,13 @@ function assertRunOwnerRecord(record: CurrentRunClaimV1): void {
           resolvedRecursiveDelegation: expectation.resolved_recursive_delegation as "disabled" | "enabled",
         }) === undefined) {
         invalidOwnerRecord("run owner record recursive receipt does not match retained launch expectations");
+      }
+      if (declarations.systemSkillName && validatedSystemSkillActivationReceipt({
+        value: view.system_skill_activation_receipt,
+        expectedName: declarations.systemSkillName,
+        expectedPath: expectation.system_skill_path as string,
+      }) === undefined) {
+        invalidOwnerRecord("run owner record system-skill receipt does not match retained launch expectations");
       }
     }
   } else if (view.child_started === true) {
@@ -1171,7 +1203,8 @@ const OWNER_VALIDATION_REASON_CODES = new Set<FailureReasonCode>([
   "session_does_not_exist", "session_ledger_invalid", "session_commit_invalid", "session_manifest_invalid",
   "session_skill_mismatch", "spawn_error", "timeout", "usage_limit_reached", "process_signal_terminated",
   "recursive_delegation_reauthorization_required", "recursive_delegation_effect_conflict",
-  "recursive_delegation_activation_failed", "recursive_delegation_unsupported", "unknown_error",
+  "recursive_delegation_activation_failed", "recursive_delegation_unsupported",
+  "system_skill_activation_failed", "unknown_error",
   "unknown_validation_error",
 ]);
 
@@ -1198,6 +1231,7 @@ interface DerivedOwnerTerminalLifecycle {
 
 interface OwnerRequestDeclarations {
   effectProfile?: NonNullable<RunSubagentRequest["effect_profile"]>;
+  systemSkillName?: string;
   expectedSkillSha256?: string;
   skillSnapshotBinding?: NonNullable<RunSubagentRequest["skill_snapshot_binding"]>;
   requestedRecursiveDelegation: "disabled" | "enabled" | null;
@@ -1210,6 +1244,9 @@ function ownerRequestDeclarations(view: RunTaskView): OwnerRequestDeclarations |
   const expectedSkillSha256 = hasOwnDefined(view, "expected_skill_sha256")
     ? view.expected_skill_sha256
     : undefined;
+  const systemSkillName = hasOwnDefined(view, "requested_system_skill")
+    ? view.requested_system_skill
+    : undefined;
   const rawSnapshotBinding = hasOwnDefined(view, "skill_snapshot_binding")
     ? view.skill_snapshot_binding
     : undefined;
@@ -1220,6 +1257,7 @@ function ownerRequestDeclarations(view: RunTaskView): OwnerRequestDeclarations |
   const requestedRecursiveDelegation = rawRequestedRecursiveDelegation ?? null;
   if (
     (effectProfile !== undefined && !EFFECT_PROFILE_SET.has(effectProfile)) ||
+    (systemSkillName !== undefined && (typeof systemSkillName !== "string" || systemSkillName.length === 0)) ||
     (expectedSkillSha256 !== undefined && !/^[0-9a-f]{64}$/.test(expectedSkillSha256)) ||
     (rawSnapshotBinding !== undefined && !validatedSkillSnapshotLaunchBinding(rawSnapshotBinding)) ||
     (isBoundedEffectProfile(effectProfile) && rawSnapshotBinding === undefined) ||
@@ -1230,6 +1268,7 @@ function ownerRequestDeclarations(view: RunTaskView): OwnerRequestDeclarations |
   ) return null;
   return {
     ...(effectProfile ? { effectProfile } : {}),
+    ...(systemSkillName ? { systemSkillName } : {}),
     ...(expectedSkillSha256 ? { expectedSkillSha256 } : {}),
     ...(rawSnapshotBinding ? { skillSnapshotBinding: rawSnapshotBinding } : {}),
     requestedRecursiveDelegation,
@@ -1269,7 +1308,7 @@ function hasChildLifecycleEvent(view: RunTaskView): boolean {
   return Array.isArray(view.recent_events) && view.recent_events.some((event) =>
     event.kind === "child" && [
       "child_spawned", "child_bridge_started", "child_session_established", "activation_confirmed",
-      "skill_snapshot_activation_confirmed", "recursive_delegation_confirmed", "child_prompt_submitted",
+      "skill_snapshot_activation_confirmed", "recursive_delegation_confirmed", "system_skill_activation_confirmed", "child_prompt_submitted",
     ].includes(event.event ?? ""));
 }
 
@@ -1336,6 +1375,21 @@ function projectedRecursiveActivationIsExact(
   }) !== undefined;
 }
 
+function projectedSystemSkillActivationIsExact(
+  view: RunTaskView,
+  declarations: OwnerRequestDeclarations,
+  promptSubmitted: boolean,
+): boolean {
+  const hasReceipt = hasOwnDefined(view, "system_skill_activation_receipt");
+  if (!hasReceipt) return !(promptSubmitted && declarations.systemSkillName !== undefined);
+  if (!declarations.systemSkillName || !view.system_skill_activation_receipt) return false;
+  return validatedSystemSkillActivationReceipt({
+    value: view.system_skill_activation_receipt,
+    expectedName: declarations.systemSkillName,
+    expectedPath: view.system_skill_activation_receipt.resolved_skill_path,
+  }) !== undefined;
+}
+
 function activationFamiliesJoinExactly(view: RunTaskView): boolean {
   const activationSkill = view.activation_receipt?.skill_binding;
   const snapshotReceipt = view.skill_snapshot_activation_receipt;
@@ -1356,7 +1410,8 @@ function derivedOwnerTerminalLifecycle(view: RunTaskView): DerivedOwnerTerminalL
       hasOwnDefined(view, "first_public_output_at") ||
       hasChildLifecycleEvent(view) || hasOwnDefined(view, "resolved_effect_profile") ||
       hasOwnDefined(view, "activation_receipt") || hasOwnDefined(view, "skill_snapshot_activation_receipt") ||
-      hasOwnDefined(view, "resolved_recursive_delegation") || hasOwnDefined(view, "recursive_delegation_receipt")
+      hasOwnDefined(view, "resolved_recursive_delegation") || hasOwnDefined(view, "recursive_delegation_receipt") ||
+      hasOwnDefined(view, "system_skill_activation_receipt")
     ) return null;
     return {
       observation: { tag: "declaration_only" },
@@ -1373,6 +1428,7 @@ function derivedOwnerTerminalLifecycle(view: RunTaskView): DerivedOwnerTerminalL
     !projectedActivationIsExact(view, declarations, promptSubmitted) ||
     !projectedSnapshotActivationIsExact(view, declarations, promptSubmitted) ||
     !projectedRecursiveActivationIsExact(view, declarations, promptSubmitted) ||
+    !projectedSystemSkillActivationIsExact(view, declarations, promptSubmitted) ||
     !activationFamiliesJoinExactly(view)
   ) return null;
   return {
@@ -1812,6 +1868,10 @@ function createRunTaskState(
   const skillSnapshotActivationPromise = new Promise<RunSubagentResult["skill_snapshot_activation_receipt"] | undefined>((resolve) => {
     resolveSkillSnapshotActivation = resolve;
   });
+  let resolveSystemSkillActivation!: (receipt: SystemSkillActivationReceipt | undefined) => void;
+  const systemSkillActivationPromise = new Promise<SystemSkillActivationReceipt | undefined>((resolve) => {
+    resolveSystemSkillActivation = resolve;
+  });
   const state: RunTaskState = {
     runId,
     startedAt,
@@ -1830,6 +1890,10 @@ function createRunTaskState(
     skillSnapshotActivationObservation: {
       promise: skillSnapshotActivationPromise,
       resolve: resolveSkillSnapshotActivation,
+    },
+    systemSkillActivationObservation: {
+      promise: systemSkillActivationPromise,
+      resolve: resolveSystemSkillActivation,
     },
     ...(sessionKey ? { sessionKey } : {}),
     ...(lineage.parentRunId ? { parentRunId: lineage.parentRunId } : {}),
@@ -2065,7 +2129,7 @@ function activeProgressView(state: RunTaskState): RunTaskProgressView {
 
 function activationView(state: RunTaskState): Pick<
   RunTaskView,
-  "requested_effect_profile" | "resolved_effect_profile" | "expected_skill_sha256" | "activation_receipt" | "skill_snapshot_binding" | "skill_snapshot_activation_receipt" | "requested_recursive_delegation" | "resolved_recursive_delegation" | "recursive_delegation_receipt"
+  "requested_effect_profile" | "resolved_effect_profile" | "expected_skill_sha256" | "activation_receipt" | "skill_snapshot_binding" | "skill_snapshot_activation_receipt" | "requested_recursive_delegation" | "resolved_recursive_delegation" | "recursive_delegation_receipt" | "requested_system_skill" | "system_skill_activation_receipt"
 > {
   return {
     ...(state.requestedEffectProfile ? { requested_effect_profile: state.requestedEffectProfile } : {}),
@@ -2087,6 +2151,10 @@ function activationView(state: RunTaskState): Pick<
       resolved_recursive_delegation: state.recursiveDelegationReceipt.resolved_recursive_delegation,
       recursive_delegation_receipt: state.recursiveDelegationReceipt,
     } : {}),
+    ...(state.requestedSystemSkill ? { requested_system_skill: state.requestedSystemSkill } : {}),
+    ...(state.systemSkillActivationReceipt
+      ? { system_skill_activation_receipt: state.systemSkillActivationReceipt }
+      : {}),
   };
 }
 
@@ -2174,6 +2242,8 @@ function publishRunTaskTransitionState(state: RunTaskState, draft: RunTaskState)
   state.skillSnapshotActivationReceipt = draft.skillSnapshotActivationReceipt;
   state.recursiveDelegationReceipt = draft.recursiveDelegationReceipt;
   state.requestedRecursiveDelegation = draft.requestedRecursiveDelegation;
+  state.requestedSystemSkill = draft.requestedSystemSkill;
+  state.systemSkillActivationReceipt = draft.systemSkillActivationReceipt;
   state.expectedSkillSha256 = draft.expectedSkillSha256;
   state.claimDeclarations = draft.claimDeclarations;
   state.ownerLaunchObservation = draft.ownerLaunchObservation;
@@ -2624,6 +2694,7 @@ function bindRequestToRunTaskState(
   if ("expected_skill_sha256" in request) state.expectedSkillSha256 = request.expected_skill_sha256;
   if ("skill_snapshot_binding" in request) state.skillSnapshotBinding = request.skill_snapshot_binding;
   if ("recursive_delegation" in request) state.requestedRecursiveDelegation = request.recursive_delegation;
+  if ("system_skill_name" in request) state.requestedSystemSkill = request.system_skill_name;
 }
 
 async function registerRunTaskState(
@@ -2759,6 +2830,14 @@ export async function waitForObservedSkillSnapshotActivation(
   const state = tasks.get(runId);
   if (!state) return undefined;
   return state.skillSnapshotActivationReceipt ?? state.skillSnapshotActivationObservation.promise;
+}
+
+export async function waitForObservedSystemSkillActivation(
+  runId: string,
+): Promise<SystemSkillActivationReceipt | undefined> {
+  const state = tasks.get(runId);
+  if (!state) return undefined;
+  return state.systemSkillActivationReceipt ?? state.systemSkillActivationObservation.promise;
 }
 
 async function registerRunTaskStateWithChildLease(
@@ -3306,6 +3385,12 @@ function childLifecycleFromProcessLine(line: string): {
       text: "[recursive_delegation_confirmed] recursive delegation authority confirmed",
     };
   }
+  if (parsed.type === "subagent007.system_skill_activation_confirmed") {
+    return {
+      event: "system_skill_activation_confirmed",
+      text: "[system_skill_activation_confirmed] governing system skill placement confirmed",
+    };
+  }
   if (parsed.type !== "subagent007.lifecycle") {
     return null;
   }
@@ -3344,7 +3429,8 @@ function hasCompletePrePromptOwnerObservations(state: RunTaskState): boolean {
   const activationRequired = state.requestedEffectProfile !== undefined || state.expectedSkillSha256 !== undefined;
   return (!activationRequired || state.activationReceipt !== undefined) &&
     (state.skillSnapshotBinding === undefined || state.skillSnapshotActivationReceipt !== undefined) &&
-    state.recursiveDelegationReceipt !== undefined;
+    state.recursiveDelegationReceipt !== undefined &&
+    (state.requestedSystemSkill === undefined || state.systemSkillActivationReceipt !== undefined);
 }
 
 function appendTerminalEvent(
@@ -3420,6 +3506,9 @@ async function observeOutputLine(state: RunTaskState, line: string): Promise<voi
       if (lifecycle.event === "recursive_delegation_confirmed" && !draft.recursiveDelegationReceipt) {
         return false;
       }
+      if (lifecycle.event === "system_skill_activation_confirmed" && !draft.systemSkillActivationReceipt) {
+        return false;
+      }
       if (lifecycle.event === "child_prompt_submitted" && !hasCompletePrePromptOwnerObservations(draft)) {
         return false;
       }
@@ -3436,6 +3525,8 @@ async function observeOutputLine(state: RunTaskState, line: string): Promise<voi
               ? { metadata: { receipt: draft.skillSnapshotActivationReceipt } }
             : lifecycle.event === "recursive_delegation_confirmed" && draft.recursiveDelegationReceipt
               ? { metadata: { receipt: draft.recursiveDelegationReceipt } }
+            : lifecycle.event === "system_skill_activation_confirmed" && draft.systemSkillActivationReceipt
+              ? { metadata: { receipt: draft.systemSkillActivationReceipt } }
             : lifecycle.metadata
               ? { metadata: lifecycle.metadata }
               : {}),
@@ -3572,6 +3663,28 @@ async function acceptSkillSnapshotActivationReceipt(
   state.skillSnapshotActivationObservation.resolve(state.skillSnapshotActivationReceipt);
 }
 
+async function acceptSystemSkillActivationReceipt(
+  state: RunTaskState,
+  receipt: SystemSkillActivationReceipt,
+): Promise<void> {
+  await withRunClaimOwner(state, async () => {
+    if (tasks.get(state.runId) !== state) throw taskNotFound(state.runId);
+    if (state.terminalSnapshotStarted || state.result || state.error) return;
+    const draft = cloneRunTaskTransitionState(state);
+    if (draft.systemSkillActivationReceipt) {
+      if (sameCanonicalOwnerJson(draft.systemSkillActivationReceipt, receipt)) return;
+      invalidOwnerRecord("system skill receipt conflicts with its prior bytes");
+    }
+    draft.systemSkillActivationReceipt = receipt;
+    await writeRunClaimOwned(
+      runTaskViewFromState(draft, draft.inputRequests),
+      runClaimPersistenceEvidence(draft),
+    );
+    publishRunTaskTransitionState(state, draft);
+  });
+  state.systemSkillActivationObservation.resolve(state.systemSkillActivationReceipt);
+}
+
 async function acceptRecursiveDelegationReceipt(
   state: RunTaskState,
   receipt: RecursiveDelegationReceipt,
@@ -3670,6 +3783,7 @@ function taskChildRuntimeOptions(
   onActivationConfirmed: (receipt: NonNullable<RunSubagentResult["activation_receipt"]>) => Promise<void>;
   onSkillSnapshotActivationConfirmed: (receipt: NonNullable<RunSubagentResult["skill_snapshot_activation_receipt"]>) => Promise<void>;
   onRecursiveDelegationConfirmed: (receipt: RecursiveDelegationReceipt) => Promise<void>;
+  onSystemSkillActivationConfirmed: (receipt: SystemSkillActivationReceipt) => Promise<void>;
   onOwnerLaunchObservation: (observation: unknown) => Promise<void>;
 } {
   return {
@@ -3682,6 +3796,8 @@ function taskChildRuntimeOptions(
       acceptSkillSnapshotActivationReceipt(state, receipt),
     onRecursiveDelegationConfirmed: (receipt) =>
       acceptRecursiveDelegationReceipt(state, receipt),
+    onSystemSkillActivationConfirmed: (receipt) =>
+      acceptSystemSkillActivationReceipt(state, receipt),
     // This durable grant is deliberately before writeChildRequestFile/runChildProcess.
     onOwnerLaunchObservation: (observation) => grantRunClaimFromLaunchObservation(state, observation),
     onTerminalOutputsPrepared: (ownership) => acceptPendingTerminalOutputs(state, ownership),
@@ -4389,6 +4505,7 @@ export async function startRunTask(
   const config = await loadConfig();
   const resolved = await validateAndResolveRequest(request, config);
   const snapshotPreflight = await assertSkillSnapshotBinding(resolved);
+  await resolveSystemSkillSourceForRequest(resolved);
   const skillFilePath = snapshotPreflight?.receipt.resolved_skill_path ?? resolveSkillFilePathForRequest(resolved);
   await assertExpectedSkillBinding(resolved, skillFilePath);
   const childEntrypoint = await assertPiChildEntrypointAvailable();
@@ -4766,6 +4883,7 @@ export async function runSubagentOneShotTask(
   const config = await loadConfig();
   const resolved = await validateAndResolveRequest(request, config);
   const snapshotPreflight = await assertSkillSnapshotBinding(resolved);
+  await resolveSystemSkillSourceForRequest(resolved);
   const skillFilePath = snapshotPreflight?.receipt.resolved_skill_path ?? resolveSkillFilePathForRequest(resolved);
   await assertExpectedSkillBinding(resolved, skillFilePath);
   await assertModelClassUsableForOneShot(resolved.modelClass);

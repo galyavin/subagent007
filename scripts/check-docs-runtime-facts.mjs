@@ -196,6 +196,22 @@ async function checkTerminalOutputReferenceFacts(readme) {
     : [`README is missing current terminal output-reference contract facts:\n${formatList(missing)}`];
 }
 
+async function checkSystemSkillFacts(readme) {
+  const systemSkillSource = await readOptionalText("src/systemSkill.ts");
+  if (!systemSkillSource) return [];
+  const required = [
+    "system_skill_name",
+    "system_skill_activation_receipt",
+    "after_all_other_before_agent_start_handlers",
+    "pi_system_prompt_after_before_agent_start_not_provider_payload_or_model_obedience",
+    "no governing prompt snapshot, generated copy, or version ledger",
+  ];
+  const missing = required.filter((term) => !readme.includes(term));
+  return missing.length === 0
+    ? []
+    : [`README is missing current system-skill contract facts:\n${formatList(missing)}`];
+}
+
 async function checkAuthoringEffectScopeFacts(readme) {
   const [scopeSource, contractSource] = await Promise.all([
     readOptionalText("src/authoringEffectScope.ts"),
@@ -224,6 +240,7 @@ const failures = [
   ...await checkRetiredPublicSnapshotTerms(),
   ...await checkTerminalOutputReferenceFacts(readme),
   ...await checkAuthoringEffectScopeFacts(readme),
+  ...await checkSystemSkillFacts(readme),
 ];
 
 if (failures.length > 0) {

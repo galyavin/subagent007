@@ -7,6 +7,7 @@ import path from "node:path";
 import { safeIntegerFromEnv } from "./env.js";
 import type { FailureReasonCode, ModelClass, OutputMode } from "./types.js";
 import { ValidationError } from "./types.js";
+import { validateSkillName } from "./skillBinding.js";
 
 const DEFAULT_MAX_RECURSION_DEPTH = 8;
 const MAX_RECURSION_DEPTH_ENV = "SUBAGENT007_MAX_RECURSION_DEPTH";
@@ -15,6 +16,7 @@ export interface RecursiveCallerContext {
   parent_run_id: string;
   root_run_id: string;
   recursion_depth: number;
+  system_skill_name?: string;
 }
 
 export interface RecursiveControlChildConfig extends RecursiveCallerContext {
@@ -146,10 +148,14 @@ function nonnegativeInteger(value: unknown, field: string): number {
 
 function validateCaller(value: RecursiveRpcRequest["caller"]): RecursiveCallerContext {
   const caller = asRecord(value);
+  const systemSkillName = caller.system_skill_name === undefined
+    ? undefined
+    : validateSkillName(caller.system_skill_name, "caller.system_skill_name");
   return {
     parent_run_id: nonemptyString(caller.parent_run_id, "caller.parent_run_id"),
     root_run_id: nonemptyString(caller.root_run_id, "caller.root_run_id"),
     recursion_depth: nonnegativeInteger(caller.recursion_depth, "caller.recursion_depth"),
+    ...(systemSkillName ? { system_skill_name: systemSkillName } : {}),
   };
 }
 
@@ -299,6 +305,7 @@ export function recursiveControlConfigForChild(input: {
   runId: string;
   rootRunId?: string;
   recursionDepth?: number;
+  systemSkillName?: string;
 }): RecursiveControlChildConfig | undefined {
   if (!activeHandle) {
     return undefined;
@@ -310,6 +317,7 @@ export function recursiveControlConfigForChild(input: {
     parent_run_id: input.runId,
     root_run_id: input.rootRunId ?? input.runId,
     recursion_depth: recursionDepth,
+    ...(input.systemSkillName ? { system_skill_name: input.systemSkillName } : {}),
   };
 }
 
@@ -326,6 +334,7 @@ export async function callRecursiveDelegate(
       parent_run_id: config.parent_run_id,
       root_run_id: config.root_run_id,
       recursion_depth: config.recursion_depth,
+      ...(config.system_skill_name ? { system_skill_name: config.system_skill_name } : {}),
     },
     params,
   };

@@ -25,6 +25,7 @@ export interface SkillResourceOptions {
   noAmbientExtensions?: boolean;
   explicitExtensionPaths?: string[];
   extensionFactories?: InlineExtension[];
+  systemSkill?: string;
 }
 
 export type SkillResolutionFailureCode = "skill_not_found" | "skill_ambiguous";
@@ -125,12 +126,40 @@ export function skillResourcePathsForRequest(options: SkillResourceOptions): str
 }
 
 export function createSkillScopedResourceLoader(options: SkillResourceOptions): DefaultResourceLoader {
+  if (!options.systemSkill) {
+    return new DefaultResourceLoader({
+      cwd: options.cwd,
+      agentDir: options.agentDir,
+      additionalSkillPaths: skillResourcePathsForRequest(options),
+      noSkills: true,
+      extensionFactories: options.extensionFactories,
+      ...(options.noAmbientExtensions
+        ? {
+            noExtensions: true,
+            additionalExtensionPaths: options.explicitExtensionPaths ?? [],
+          }
+        : {}),
+    });
+  }
+
+  const catalog = loadSkillCatalog(options);
+  // A run-owned selected-skill snapshot remains the first authority for that
+  // specialist name. Every other catalogue skill stays discoverable, except
+  // the governing skill whose body is promoted by the final inline extension.
+  const skillPaths = [
+    ...(options.skillFilePath ? [options.skillFilePath] : []),
+    ...catalog.skills.map((skill) => skill.filePath),
+  ].filter((entry, index, all) => all.indexOf(entry) === index);
   return new DefaultResourceLoader({
     cwd: options.cwd,
     agentDir: options.agentDir,
-    additionalSkillPaths: skillResourcePathsForRequest(options),
+    additionalSkillPaths: skillPaths,
     noSkills: true,
     extensionFactories: options.extensionFactories,
+    skillsOverride: (current) => ({
+      skills: current.skills.filter((skill) => skill.name !== options.systemSkill),
+      diagnostics: current.diagnostics,
+    }),
     ...(options.noAmbientExtensions
       ? {
           noExtensions: true,

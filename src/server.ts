@@ -31,6 +31,7 @@ import {
   getRunTask,
   lineageForRecursiveDelegate,
   waitForObservedSkillSnapshotActivation,
+  waitForObservedSystemSkillActivation,
   resolveRunOperationContext,
   runSubagentSessionTaskAndWait,
   scheduleRunTask,
@@ -43,6 +44,7 @@ import { startRecursiveControlServer } from "./recursiveControl.js";
 import {
   SKILL_NAME_PATTERN,
   SKILL_NAME_INPUT_DESCRIPTION,
+  SYSTEM_SKILL_NAME_INPUT_DESCRIPTION,
 } from "./skillBinding.js";
 import {
   LOWERCASE_SHA256_PATTERN,
@@ -349,6 +351,11 @@ const constrainedRunInputSchema = {
   recursive_delegation: z.enum(RECURSIVE_DELEGATIONS).optional().describe(
     "Explicit recursive delegate authorization. Omission resolves disabled; raw resume requires this field on every turn.",
   ),
+  system_skill_name: z
+    .string()
+    .regex(SKILL_NAME_PATTERN, "system_skill_name must be a canonical bare skill name")
+    .optional()
+    .describe(SYSTEM_SKILL_NAME_INPUT_DESCRIPTION),
   allowed_output_paths: z
     .array(z.string().min(1))
     .max(MAX_ALLOWED_OUTPUT_PATHS)
@@ -888,6 +895,22 @@ await startRecursiveControlServer(async ({ caller, params }) => {
   } catch {
     throw new ValidationError("recursive caller parent is not an active owned run", "recursive_control_invalid");
   }
+  const inheritedSystemSkillName = caller.system_skill_name;
+  let parentSystemSkillReceipt = parent.system_skill_activation_receipt;
+  if (inheritedSystemSkillName && !parentSystemSkillReceipt) {
+    // Receipt output and the recursive socket use separate child descriptors;
+    // join the already-required pre-prompt observation if the socket wins.
+    parentSystemSkillReceipt = await waitForObservedSystemSkillActivation(caller.parent_run_id);
+  }
+  if (
+    (inheritedSystemSkillName === undefined) !== (parentSystemSkillReceipt === undefined) ||
+    (inheritedSystemSkillName !== undefined && parentSystemSkillReceipt?.system_skill_name !== inheritedSystemSkillName)
+  ) {
+    throw new ValidationError(
+      "recursive system-skill authority does not match the confirmed parent activation",
+      "recursive_control_invalid",
+    );
+  }
   const inheritedSnapshotBinding = parent.skill_snapshot_binding;
   let inheritedSkillName = parent.skill_snapshot_activation_receipt?.skill_name;
   if (inheritedSnapshotBinding && !inheritedSkillName) {
@@ -923,6 +946,7 @@ await startRecursiveControlServer(async ({ caller, params }) => {
       ...(params.output_mode ? { output_mode: params.output_mode } : {}),
       ...(params.timeout_ms !== undefined ? { timeout_ms: params.timeout_ms } : {}),
       ...(params.wait_ms !== undefined ? { wait_ms: params.wait_ms } : {}),
+      ...(inheritedSystemSkillName ? { system_skill_name: inheritedSystemSkillName } : {}),
       recursive_delegation: "enabled",
     },
     {

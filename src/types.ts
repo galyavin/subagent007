@@ -111,6 +111,7 @@ export type FailureReasonCode =
   | "recursive_delegation_effect_conflict"
   | "recursive_delegation_activation_failed"
   | "recursive_delegation_unsupported"
+  | "system_skill_activation_failed"
   | "unknown_error"
   | "unknown_validation_error";
 
@@ -135,6 +136,8 @@ export interface RunSubagentRequest extends SubagentRequestBase {
   expected_skill_sha256?: string;
   skill_snapshot_binding?: SkillSnapshotLaunchBinding;
   recursive_delegation?: RecursiveDelegation;
+  /** Canonical catalogue skill promoted to the final Pi system-prompt body. */
+  system_skill_name?: string;
   /** Exact new file paths writable by task_root_authoring_v1. */
   allowed_output_paths?: string[];
 }
@@ -169,6 +172,7 @@ export interface ResolvedRunSubagentRequest {
   skillSnapshotBinding?: SkillSnapshotLaunchBinding;
   recursiveDelegation: RecursiveDelegation;
   requestedRecursiveDelegation: RecursiveDelegation | null;
+  systemSkill?: string;
   allowedOutputPaths?: string[];
   outputMode: OutputMode;
 }
@@ -451,6 +455,19 @@ export interface RecursiveDelegationReceipt {
   delegate_tool_active: boolean;
 }
 
+export interface SystemSkillActivationReceipt {
+  schema_version: 1;
+  confirmed_before_prompt: true;
+  system_skill_name: string;
+  resolved_skill_path: string;
+  content_sha256: string;
+  final_system_prompt_sha256: string;
+  system_skill_content_occurrences: 1;
+  final_system_prompt_ends_with_system_skill: true;
+  placement: "after_all_other_before_agent_start_handlers";
+  observation_scope: "pi_system_prompt_after_before_agent_start_not_provider_payload_or_model_obedience";
+}
+
 export interface PromptProvenance {
   /**
    * Safe public projection of the caller prompt. Never store the raw prompt here.
@@ -493,6 +510,8 @@ interface SubagentRunResultBase {
   requested_recursive_delegation?: RecursiveDelegation;
   resolved_recursive_delegation?: RecursiveDelegation;
   recursive_delegation_receipt?: RecursiveDelegationReceipt;
+  requested_system_skill?: string;
+  system_skill_activation_receipt?: SystemSkillActivationReceipt;
   requested_output_mode: OutputMode;
   written_output_mode: OutputMode;
   stop_reason: RunStopReason;
@@ -654,6 +673,7 @@ export type RunPublicEventName =
   | "activation_confirmed"
   | "skill_snapshot_activation_confirmed"
   | "recursive_delegation_confirmed"
+  | "system_skill_activation_confirmed"
   | "child_prompt_submitted"
   | "recursive_child_started"
   | "recursive_child_finished"

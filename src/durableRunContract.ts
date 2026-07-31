@@ -78,6 +78,7 @@ export const DURABLE_RUN_CAPABILITIES = [
   "explicit_skill_snapshot_deletion",
   "explicit_recursive_delegation",
   "terminal_recursive_subtree_closure",
+  "system_skill_governing_prompt",
   "event_driven_get_run_wait",
 ] as const;
 
@@ -419,6 +420,24 @@ export function durableRunContractView(): {
           "effect_scope_binding",
         ];
       };
+    };
+  };
+  system_skill: {
+    request_field: "system_skill_name";
+    supported_start_tools: ["run_subagent", "start_run", "schedule_run"];
+    supported_continuity_modes: ["ephemeral", "fresh", "resume"];
+    named_sessions: "unsupported";
+    source: "canonical_current_catalogue_skill";
+    catalogue: "normal_minus_governing_skill";
+    selected_specialist_field: "skill_name";
+    recursive_inheritance: "trusted_caller_context_non_widenable";
+    persistence: "no_prompt_snapshot_copy_or_version_ledger";
+    receipt: {
+      result_field: "system_skill_activation_receipt";
+      event_type: "subagent007.system_skill_activation_confirmed";
+      required_before_prompt: true;
+      placement: "after_all_other_before_agent_start_handlers";
+      observation_scope: "pi_system_prompt_after_before_agent_start_not_provider_payload_or_model_obedience";
     };
   };
   recursive_delegation: {
@@ -779,6 +798,24 @@ export function durableRunContractView(): {
             "effect_scope_binding",
           ],
         },
+      },
+    },
+    system_skill: {
+      request_field: "system_skill_name",
+      supported_start_tools: ["run_subagent", "start_run", "schedule_run"],
+      supported_continuity_modes: ["ephemeral", "fresh", "resume"],
+      named_sessions: "unsupported",
+      source: "canonical_current_catalogue_skill",
+      catalogue: "normal_minus_governing_skill",
+      selected_specialist_field: "skill_name",
+      recursive_inheritance: "trusted_caller_context_non_widenable",
+      persistence: "no_prompt_snapshot_copy_or_version_ledger",
+      receipt: {
+        result_field: "system_skill_activation_receipt",
+        event_type: "subagent007.system_skill_activation_confirmed",
+        required_before_prompt: true,
+        placement: "after_all_other_before_agent_start_handlers",
+        observation_scope: "pi_system_prompt_after_before_agent_start_not_provider_payload_or_model_obedience",
       },
     },
     recursive_delegation: {

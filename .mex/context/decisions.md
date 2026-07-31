@@ -12,7 +12,7 @@ edges:
     condition: when a decision relates to system structure
   - target: context/stack.md
     condition: when a decision relates to technology choice
-last_updated: 2026-07-27
+last_updated: 2026-07-30
 ---
 
 # Decisions
@@ -32,6 +32,13 @@ last_updated: 2026-07-27
 **Consequences:** Bendum must stop forwarding `input_manifest`, derive sorted canonical exact `allowed_output_paths` for neutral builder runs, require capability `authoring_effect_scope_binding`, and validate receipt schema 2 and its exact scope binding. Same-key changes to output closure conflict through the existing idempotent request hash. Legacy/v2 no-key behavior and creator-named schema-1 activation stay unchanged.
 
 ## Decision Log
+
+### Governing system skills are current catalogue roles, not snapshots or workflow state
+**Date:** 2026-07-30
+**Status:** Active
+**Decision:** Add optional `system_skill_name` only to the ordinary run surfaces. Resolve it through the existing canonical catalogue, reject equality with ordinary `skill_name` and combinations that remove ambient tools, expose the normal catalogue minus only that governing entry, and append its current body with the last inline `before_agent_start` handler. Recursively enabled descendants inherit the resolved name only through private caller context; the model-facing delegate schema cannot select or change it. A strict receipt reports the child-observed name, canonical path, source digest, final Pi system-prompt digest, and exactly-once suffix placement under an explicit Pi-prompt-only observation ceiling.
+**Reasoning:** First-cycle recursive-governor canaries require system-level embodiment while preserving Pi base/project instructions, ambient tools, and progressive specialist disclosure. Pi's ordered inline-extension and resource-loader seams provide that composition without forking Pi or importing caller workflow doctrine. Snapshotting the governing body would contradict current-source reentry semantics and manufacture a second semantic source.
+**Consequences:** Ephemeral, fresh, raw-resume, and recursive launches reread current source; named sessions and effect profiles remain outside this smallest mode. No governing prompt copy, immutable snapshot, version ledger, session-manifest field, queue, DAG, acceptance state, or semantic-compliance claim is added. The receipt does not witness later `before_provider_request` rewrites, provider serialization, or model obedience.
 
 ### Execution routing and timeout policy are explicit caller inputs
 **Date:** 2026-07-27

@@ -17,7 +17,7 @@ import {
 import { DEFAULT_MODEL_CLASS, resolveModelClass } from "./modelAllowlist.js";
 import { minimumRequestedTimeoutMs } from "./timeoutBudget.js";
 import { ValidationError } from "./types.js";
-import { resolveSkillBinding } from "./skillBinding.js";
+import { resolveSkillBinding, validateSkillName } from "./skillBinding.js";
 import { boundedEffectProfileSkill, isBoundedEffectProfile } from "./toolProfile.js";
 import {
   isEffectScopedAuthoringProfile,
@@ -39,6 +39,7 @@ function validationReasonCodeForKey(key: string): FailureReasonCode {
     case "expected_skill_sha256":
       return "invalid_expected_skill_sha256";
     case "skill_name":
+    case "system_skill_name":
       return "invalid_skill";
     case "continuity.mode":
     case "continuity.session_id":
@@ -298,6 +299,21 @@ export async function validateAndResolveRequest(
     }
   }
 
+  const skill = resolveSkillBinding(request, prompt);
+  const systemSkill = validateSkillName(request.system_skill_name, "system_skill_name");
+  if (systemSkill && systemSkill === skill) {
+    throw new ValidationError(
+      "system_skill_name must differ from skill_name so the governing body is not duplicated as a specialist invocation",
+      "invalid_skill",
+    );
+  }
+  if (systemSkill && effectProfile) {
+    throw new ValidationError(
+      "system_skill_name preserves ambient tools and is not supported with an effect_profile",
+      "effect_profile_unsupported",
+    );
+  }
+
   const taskRoot = isEffectScopedAuthoringProfile(effectProfile) ? await fs.realpath(cwd) : cwd;
   const allowedOutputPaths = normalizeAllowedOutputPaths(
     request.allowed_output_paths,
@@ -312,7 +328,8 @@ export async function validateAndResolveRequest(
     thinkingLevel: resolvedModelClass.thinkingLevel,
     timeoutMs,
     continuity,
-    skill: resolveSkillBinding(request, prompt),
+    skill,
+    systemSkill,
     effectProfile,
     recursiveDelegation,
     requestedRecursiveDelegation: request.recursive_delegation ?? null,
