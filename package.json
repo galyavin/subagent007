@@ -4,9 +4,7 @@
   "description": "Private MCP server for one-shot and durable Pi-backed subagent execution attempts.",
   "private": true,
   "type": "module",
-  "bin": {
-    "subagent007-pi": "./dist/server.js"
-  },
+  "files": [],
   "scripts": {
     "clean:dist": "node scripts/build-atomic.mjs --clean-inactive",
     "build": "node scripts/build-atomic.mjs",

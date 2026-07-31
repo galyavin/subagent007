@@ -449,7 +449,7 @@ npm test
 npm run models:reconcile
 ```
 
-Run `npm run build` after changing `src/`; the registered MCP command uses `dist/server.js`. This private repository does not currently provide a distributable `npm pack` contract: npm omits the `dist/current` symlink selected by that stable launcher, so use the built repository entrypoint rather than a generated tarball.
+Run `npm run build` after changing `src/`; the registered MCP command uses `dist/server.js`. This private repository has no npm distribution contract: package metadata exposes no executable and its empty `files` allowlist keeps accidental tarballs inert. Use the built repository entrypoint directly.
 Run `npm run docs:check` after changing README environment-variable docs, public model-class/internal-calibration guidance, `src/modelAllowlist.ts`, or runtime environment-variable handling in `src/` or `scripts/`; it fails when README leaks internal model IDs or environment-variable facts drift from source.
 There is no lint script; use `npm run typecheck`, `npm run docs:check`, and `npm test` as the local gates.
 

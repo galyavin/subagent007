@@ -43,8 +43,9 @@ last_updated: 2026-07-31
 ## Common Commands
 - `npm run clean:dist` — prune inactive, unleased build releases while preserving live entrypoints.
 - `npm run build` — compile a versioned release and atomically switch `dist/current` without removing live entrypoints.
+- npm package distribution is intentionally absent: package metadata has no executable and an empty `files` allowlist; build and register `dist/server.js` directly.
 - `npm run typecheck` — check source and tests without emitting.
-- `npm test` / `npm run test:local` — run the full suite through 47 bounded process-isolated semantic targets, with default six-worker scheduling, two dependency chains, bounded low-contention protected timing overlap capped at four active target processes, and guarded per-target ledgers.
+- `npm test` / `npm run test:local` — run the full suite through 48 bounded process-isolated semantic targets, with default six-worker scheduling, two dependency chains, bounded low-contention protected timing overlap capped at four active target processes, and guarded per-target ledgers.
 - `npm run docs:check` — verify README runtime facts against source constants.
 - `npm run runtime:readiness` — check the built server entrypoint and runtime contract.
 - `npm run config:migrate` — migrate supported legacy model config to model classes.
@@ -60,6 +61,5 @@ last_updated: 2026-07-31
 - **Missing Pi auth in MCP process:** Register through `zsh -ic "exec node ..."` if auth is loaded by shell startup files.
 - **Fake child leaks into real use:** Unset `SUBAGENT007_PI_CHILD_PATH` outside tests and controlled probes.
 - **Focused tests fail readiness after source edits:** Rebuild first, because direct `node scripts/run-tests-with-ledger-guard.mjs ...` does not run the package `pretest` hook.
-- **Packed tarball cannot launch:** `npm pack` omits the `dist/current` symlink required by `dist/server.js`; package tarballs are not a supported distribution path. Build and register the repository entrypoint directly.
 - **Run-owner coverage:** The run-owner suite is one isolated target containing all 11 tests; five independent crash-cut subtests run concurrently within that target.
 - **Test worker tuning:** `SUBAGENT007_TEST_WORKERS` accepts a positive integer for controlled benchmarking. Each target receives a short root, isolated state, and guarded ledger; explicit shared state, failure-ledger, or campaign-ledger paths deliberately force unsplit one-worker mode.
