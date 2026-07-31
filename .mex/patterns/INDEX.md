@@ -13,6 +13,7 @@ For a multi-section pattern, add one row per task anchor.
 |---------|----------|
 | [effect-profile-boundary.md](effect-profile-boundary.md) | Adding or changing an enforced Pi callable-tool ceiling and its activation receipt |
 | [observed-campaign-saf.md](observed-campaign-saf.md) | Running customer-style observed MCP campaigns and turning findings into SAF repairs |
+| [recursive-result-rejoin.md](recursive-result-rejoin.md) | Adding private lineage-authorized recursive descendant result retrieval after a bounded delegate wait |
 | [run-owner-transitions.md](run-owner-transitions.md) | Changing durable-run lifecycle producers, staging order, or restart reconciliation |
 | [runtime-artifact-ownership.md](runtime-artifact-ownership.md) | Adding child output, runtime temp state, or build artifacts that need explicit lifecycle ownership |
 | [skill-snapshot-foundation.md](skill-snapshot-foundation.md) | Changing complete skill-bundle validation, immutable snapshot publication, retention, deletion, or activation |
