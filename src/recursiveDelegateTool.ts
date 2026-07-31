@@ -76,7 +76,7 @@ export function createRecursiveDelegateTool(input: {
     promptGuidelines: [
       "Use delegate for independent subtasks that benefit from another Subagent007 child.",
       "Omit cwd to use the current run's cwd.",
-      "When you need the child's answer before concluding, omit wait_ms and use the returned terminal result directly.",
+      "When you need the child's answer before concluding, omit wait_ms and use the returned terminal result's complete primary_output directly.",
       "Set wait_ms:0 only when you intentionally want the parent to continue other work in parallel; the parent server still owns the descendant and waits for its subtree before terminal publication, so use the returned run_id/status/output details directly.",
       "If the bounded wait returns status working, do not claim the child answered or retry the same work; use rejoin with the returned run_id to wait again or retrieve its later terminal result.",
       "timeout_ms is the descendant's hard kill cap, not the response wait.",
@@ -113,7 +113,7 @@ export function createRecursiveRejoinTool(input: {
     promptGuidelines: [
       "Pass only a run_id returned by delegate in this recursive subtree.",
       "When delegate returned status working, use rejoin to wait again rather than delegate the same work again.",
-      "Use wait_ms:0 only to retrieve the current state; a terminal result includes the existing output references.",
+      "Use wait_ms:0 only to retrieve the current state; a terminal result includes complete primary_output plus its existing output reference.",
       "Do not use rejoin for arbitrary or ancestor run IDs; the server rejects IDs outside this caller's descendant lineage.",
     ],
     parameters: recursiveRejoinParameters,

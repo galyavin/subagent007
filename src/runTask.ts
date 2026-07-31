@@ -101,6 +101,7 @@ import {
   cleanupPendingTerminalOutputs,
   decodeRunOutputReference,
   defaultSubagentStatePath,
+  readValidatedRunOutput,
   recoverStreamingRunTranscript,
   terminalReferencesOwnPendingOutputs,
   type PendingTerminalOutputs,
@@ -2827,6 +2828,36 @@ export function lineageForRecursiveDelegate(caller: RecursiveCallerLineage): Run
     rootRunId: parent.rootRunId,
     recursionDepth: parent.recursionDepth + 1,
   };
+}
+
+export type PrivateRecursiveRunTaskView = RunTaskView & Record<string, unknown> & {
+  /** Complete public primary output, available only over recursive control. */
+  primary_output?: string;
+};
+
+/**
+ * Keeps the public durable view unchanged while making an authorized terminal
+ * descendant's already-public primary artifact consumable by its Pi parent.
+ */
+export async function projectPrivateRecursiveRunResult(
+  view: RunTaskView,
+): Promise<PrivateRecursiveRunTaskView> {
+  if (!isTerminalRunStatus(view.status)) return { ...view };
+  const primary = view.output_references
+    ?.map((reference) => decodeRunOutputReference(reference))
+    .find((reference) => reference?.name === "primary");
+  if (!primary) return { ...view };
+  try {
+    return {
+      ...view,
+      primary_output: await readValidatedRunOutput(primary),
+    };
+  } catch {
+    throw new ValidationError(
+      "recursive terminal primary output is unavailable",
+      "recursive_control_invalid",
+    );
+  }
 }
 
 export async function rejoinRecursiveDescendantRun(

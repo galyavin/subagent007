@@ -30,6 +30,7 @@ import {
   cancelRunTask,
   getRunTask,
   lineageForRecursiveDelegate,
+  projectPrivateRecursiveRunResult,
   rejoinRecursiveDescendantRun,
   waitForObservedSkillSnapshotActivation,
   waitForObservedSystemSkillActivation,
@@ -959,7 +960,7 @@ await startRecursiveControlServer({
       }),
     },
   );
-    return { ...view };
+    return projectPrivateRecursiveRunResult(view);
   },
   rejoin: async ({ caller, params }) => {
     if (
@@ -978,8 +979,8 @@ await startRecursiveControlServer({
         "recursive_control_invalid",
       );
     }
-    return {
-      ...await rejoinRecursiveDescendantRun(
+    return projectPrivateRecursiveRunResult(
+      await rejoinRecursiveDescendantRun(
         {
           parentRunId: caller.parent_run_id,
           rootRunId: caller.root_run_id,
@@ -988,7 +989,7 @@ await startRecursiveControlServer({
         params.run_id.trim(),
         params.wait_ms ?? 30_000,
       ),
-    };
+    );
   },
 });
 

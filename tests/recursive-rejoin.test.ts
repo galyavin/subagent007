@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -17,13 +18,31 @@ type RunView = {
   output_references?: Array<{
     name: string;
     relative_path: string;
+    size_bytes: number;
+    content_sha256: string;
   }>;
+  primary_output?: string;
 };
 
 function outputPathFor(view: RunView, runsDir: string): string {
   const primary = view.output_references?.find((reference) => reference.name === "primary");
   assert.ok(primary, "terminal result must preserve the primary output reference");
   return path.join(runsDir, primary.relative_path);
+}
+
+function assertCompletePrimaryOutput(view: RunView): string {
+  const primary = view.output_references?.find((reference) => reference.name === "primary");
+  assert.ok(primary, "terminal result must preserve the primary output reference");
+  const primaryOutput = view.primary_output;
+  assert.ok(typeof primaryOutput === "string", "private recursive result must include complete primary output");
+  assert.ok(primaryOutput.length > 1_000, "primary output must not be capped at the public excerpt limit");
+  assert.match(primaryOutput.slice(1_000), /RECURSIVE LONG END/);
+  assert.equal(Buffer.byteLength(primaryOutput, "utf8"), primary.size_bytes);
+  assert.equal(
+    createHash("sha256").update(primaryOutput, "utf8").digest("hex"),
+    primary.content_sha256,
+  );
+  return primaryOutput;
 }
 
 async function withFakeClient(run: (client: Client, projectDir: string, runsDir: string) => Promise<void>): Promise<void> {
@@ -84,7 +103,7 @@ test("rejoin is a minimal child-facing recursive tool", () => {
   assert.match((tool.promptGuidelines ?? []).join("\n"), /outside this caller's descendant lineage/i);
 });
 
-test("recursive callers can rejoin working descendants at each depth and receive terminal output references", async () => {
+test("recursive terminal delegate and rejoin return complete primary output privately across two depths", async () => {
   await withFakeClient(async (client, projectDir, runsDir) => {
     const response = await client.callTool({
       name: "schedule_run",
@@ -107,15 +126,27 @@ test("recursive callers can rejoin working descendants at each depth and receive
       rejoined: RunView;
     };
     assert.equal(rootOutput.initial.status, "working");
+    assert.equal(Object.hasOwn(rootOutput.initial, "primary_output"), false, "nonterminal delegate stays unchanged");
     assert.equal(rootOutput.rejoined.status, "completed");
-    assert.ok(rootOutput.rejoined.output_references?.some((reference) => reference.name === "primary"));
 
-    const childOutput = JSON.parse(
-      await fs.readFile(outputPathFor(rootOutput.rejoined, runsDir), "utf8"),
-    ) as { initial: RunView; rejoined: RunView };
-    assert.equal(childOutput.initial.status, "working");
+    const childOutput = JSON.parse(assertCompletePrimaryOutput(rootOutput.rejoined)) as {
+      delegated: RunView;
+      rejoined: RunView;
+    };
+    assert.equal(childOutput.delegated.status, "completed");
     assert.equal(childOutput.rejoined.status, "completed");
-    assert.ok(childOutput.rejoined.output_references?.some((reference) => reference.name === "primary"));
+    const delegatedOutput = assertCompletePrimaryOutput(childOutput.delegated);
+    const rejoinedOutput = assertCompletePrimaryOutput(childOutput.rejoined);
+    assert.equal(rejoinedOutput, delegatedOutput, "later rejoin must retain the exact delegated result");
+
+    const publicGet = await client.callTool({
+      name: "get_run",
+      arguments: { run_id: childOutput.rejoined.run_id },
+    });
+    assert.notEqual(publicGet.isError, true);
+    const publicView = publicGet.structuredContent as RunView;
+    assert.equal(Object.hasOwn(publicView, "primary_output"), false, "public get_run must not receive the private payload");
+    assert.deepEqual(publicView.output_references, childOutput.rejoined.output_references);
   });
 });
 
@@ -136,8 +167,11 @@ test("recursive rejoin rejects a caller's own non-descendant run ID without expo
     const output = JSON.parse(await fs.readFile(outputPathFor(root, runsDir), "utf8")) as {
       rejoined: Record<string, unknown>;
     };
-    assert.equal(output.rejoined.status, "rejected");
     assert.equal(output.rejoined.reason_code, "recursive_control_invalid");
-    assert.equal(Object.hasOwn(output.rejoined, "run_id"), false);
+    assert.equal(output.rejoined.status, "rejected", "rejection status belongs to the control result, not the target");
+    assert.equal(output.rejoined.success, false);
+    for (const field of ["run_id", "output_references", "primary_output", "last_public_output_excerpt"] as const) {
+      assert.equal(Object.hasOwn(output.rejoined, field), false, `rejection must not expose target ${field}`);
+    }
   });
 });

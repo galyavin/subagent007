@@ -156,6 +156,54 @@ export function runOutputPath(reference: RunOutputReference, runsDir = resolveRu
   return path.join(resolveRunsDir(runsDir), validated.relative_path);
 }
 
+/**
+ * Reads a published public output only when its canonical reference still
+ * names the same bounded no-follow regular file and exact bytes. This is for
+ * private in-process consumers; public views retain references only.
+ */
+export async function readValidatedRunOutput(
+  reference: RunOutputReference,
+  runsDir = resolveRunsDir(),
+): Promise<string> {
+  const validated = decodeRunOutputReference(reference);
+  if (!validated) throw new Error("run output cannot be validated");
+  try {
+    const outputPath = runOutputPath(validated, runsDir);
+    const handle = await openNoFollowRegular(outputPath, fsConstants.O_RDONLY);
+    try {
+      const inspected = await inspectBoundedDescriptor(handle);
+      if (
+        inspected.sizeBytes !== validated.size_bytes ||
+        inspected.contentSha256 !== validated.content_sha256
+      ) {
+        throw new Error("run output cannot be validated");
+      }
+      await assertPathStillNamesDescriptor(outputPath, inspected.stat);
+      const bytes = Buffer.allocUnsafe(inspected.sizeBytes);
+      let offset = 0;
+      while (offset < bytes.length) {
+        const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
+        if (bytesRead <= 0) throw new Error("run output cannot be validated");
+        offset += bytesRead;
+      }
+      const afterRead = await handle.stat({ bigint: true });
+      if (!unchangedDescriptorStat(inspected.stat, afterRead)) {
+        throw new Error("run output cannot be validated");
+      }
+      await assertPathStillNamesDescriptor(outputPath, afterRead);
+      const output = bytes.toString("utf8");
+      if (!Buffer.from(output, "utf8").equals(bytes)) {
+        throw new Error("run output cannot be validated");
+      }
+      return output;
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    throw new Error("run output cannot be validated");
+  }
+}
+
 export async function createFinalMessageTarget(
   outputMode: OutputMode,
   tmpPrefix: string,
