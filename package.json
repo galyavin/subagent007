@@ -1,7 +1,7 @@
 {
   "name": "subagent007-pi",
   "version": "0.1.0",
-  "description": "Private MCP server for one-shot and persistent Pi-backed subagent invocations.",
+  "description": "Private MCP server for one-shot and durable Pi-backed subagent execution attempts.",
   "private": true,
   "type": "module",
   "bin": {

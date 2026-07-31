@@ -2,8 +2,10 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
   callRecursiveDelegate,
+  callRecursiveRejoin,
   type RecursiveControlChildConfig,
   type RecursiveDelegateParams,
+  type RecursiveRejoinParams,
 } from "./recursiveControl.js";
 import { MODEL_CLASSES, OUTPUT_MODES } from "./types.js";
 import type { ModelClass, OutputMode } from "./types.js";
@@ -18,6 +20,11 @@ const recursiveDelegateParameters = Type.Object({
   output_mode: Type.Optional(Type.Union(OUTPUT_MODES.map((value) => Type.Literal(value)))),
   wait_ms: Type.Optional(Type.Number({ minimum: 0 })),
   timeout_ms: Type.Optional(Type.Number({ minimum: 1 })),
+});
+
+const recursiveRejoinParameters = Type.Object({
+  run_id: Type.String({ minLength: 1 }),
+  wait_ms: Type.Optional(Type.Number({ minimum: 0 })),
 });
 
 function integer(value: unknown, field: string): number {
@@ -71,7 +78,7 @@ export function createRecursiveDelegateTool(input: {
       "Omit cwd to use the current run's cwd.",
       "When you need the child's answer before concluding, omit wait_ms and use the returned terminal result directly.",
       "Set wait_ms:0 only when you intentionally want the parent to continue other work in parallel; the parent server still owns the descendant and waits for its subtree before terminal publication, so use the returned run_id/status/output details directly.",
-      "If the bounded wait returns status working, do not claim the child answered or retry the same work; this child-facing tool currently has no polling operation.",
+      "If the bounded wait returns status working, do not claim the child answered or retry the same work; use rejoin with the returned run_id to wait again or retrieve its later terminal result.",
       "timeout_ms is the descendant's hard kill cap, not the response wait.",
       "Do not pass secrets or private control data; the tool already carries the private recursive capability.",
     ],
@@ -82,6 +89,42 @@ export function createRecursiveDelegateTool(input: {
         recursiveControl,
         normalizeDelegateParams(params, input.cwd),
       );
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        details: result,
+      };
+    },
+  };
+}
+
+export function createRecursiveRejoinTool(input: {
+  recursiveControl?: RecursiveControlChildConfig;
+}): ToolDefinition<typeof recursiveRejoinParameters> | undefined {
+  const recursiveControl = input.recursiveControl;
+  if (!recursiveControl) {
+    return undefined;
+  }
+  return {
+    name: "rejoin",
+    label: "Rejoin Descendant",
+    description:
+      "Wait again for, or retrieve, an existing recursive descendant result by its run_id. The run_id must have been returned by delegate within this caller's descendant lineage. Omission waits up to 30,000 ms; wait_ms:0 returns the current truthful state.",
+    promptSnippet: "Use rejoin with a prior delegate run_id when its bounded wait returned working.",
+    promptGuidelines: [
+      "Pass only a run_id returned by delegate in this recursive subtree.",
+      "When delegate returned status working, use rejoin to wait again rather than delegate the same work again.",
+      "Use wait_ms:0 only to retrieve the current state; a terminal result includes the existing output references.",
+      "Do not use rejoin for arbitrary or ancestor run IDs; the server rejects IDs outside this caller's descendant lineage.",
+    ],
+    parameters: recursiveRejoinParameters,
+    executionMode: "sequential",
+    async execute(_toolCallId, params) {
+      const result = await callRecursiveRejoin(recursiveControl, {
+        run_id: params.run_id.trim(),
+        ...(params.wait_ms === undefined
+          ? { wait_ms: DEFAULT_RECURSIVE_DELEGATE_WAIT_MS }
+          : { wait_ms: integer(params.wait_ms, "wait_ms") }),
+      } satisfies RecursiveRejoinParams);
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         details: result,

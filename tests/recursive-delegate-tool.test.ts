@@ -90,5 +90,5 @@ test("recursive delegate guidance states its bounded wait and ownership semantic
   assert.match(tool.description, /wait_ms:0 returns immediately/i);
   const guidelines = tool.promptGuidelines ?? [];
   assert.match(guidelines.join("\n"), /still owns the descendant/i);
-  assert.match(guidelines.join("\n"), /no polling operation/i);
+  assert.match(guidelines.join("\n"), /use rejoin with the returned run_id/i);
 });

@@ -30,6 +30,7 @@ import {
   cancelRunTask,
   getRunTask,
   lineageForRecursiveDelegate,
+  rejoinRecursiveDescendantRun,
   waitForObservedSkillSnapshotActivation,
   waitForObservedSystemSkillActivation,
   resolveRunOperationContext,
@@ -888,7 +889,8 @@ server.registerTool(
   ),
 );
 
-await startRecursiveControlServer(async ({ caller, params }) => {
+await startRecursiveControlServer({
+  delegate: async ({ caller, params }) => {
   let parent;
   try {
     parent = await getRunTask(caller.parent_run_id);
@@ -957,7 +959,37 @@ await startRecursiveControlServer(async ({ caller, params }) => {
       }),
     },
   );
-  return { ...view };
+    return { ...view };
+  },
+  rejoin: async ({ caller, params }) => {
+    if (
+      Object.keys(params).some((key) => key !== "run_id" && key !== "wait_ms") ||
+      typeof params.run_id !== "string" ||
+      params.run_id.trim() === "" ||
+      (params.wait_ms !== undefined && (
+        typeof params.wait_ms !== "number" ||
+        !Number.isFinite(params.wait_ms) ||
+        !Number.isInteger(params.wait_ms) ||
+        params.wait_ms < 0
+      ))
+    ) {
+      throw new ValidationError(
+        "recursive rejoin requires a nonempty run_id and optional nonnegative integer wait_ms",
+        "recursive_control_invalid",
+      );
+    }
+    return {
+      ...await rejoinRecursiveDescendantRun(
+        {
+          parentRunId: caller.parent_run_id,
+          rootRunId: caller.root_run_id,
+          recursionDepth: caller.recursion_depth,
+        },
+        params.run_id.trim(),
+        params.wait_ms ?? 30_000,
+      ),
+    };
+  },
 });
 
 const transport = new StdioServerTransport();

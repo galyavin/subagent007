@@ -2799,11 +2799,11 @@ async function settleDescendantSubtreeBeforeTerminal(
   await Promise.allSettled(children.map((child) => child.promise));
 }
 
-export function lineageForRecursiveDelegate(caller: RecursiveCallerLineage): RunTaskLineage {
+function activeRecursiveCaller(caller: RecursiveCallerLineage): RunTaskState {
   const parent = tasks.get(caller.parentRunId);
-  if (!parent) {
+  if (!parent || parent.terminalSnapshotStarted || parent.result || parent.error) {
     throw new ValidationError(
-      `recursive delegate parent run is not active: ${caller.parentRunId}`,
+      `recursive caller parent run is not active: ${caller.parentRunId}`,
       "recursive_control_invalid",
     );
   }
@@ -2813,15 +2813,42 @@ export function lineageForRecursiveDelegate(caller: RecursiveCallerLineage): Run
     parent.requestedRecursiveDelegation !== "enabled"
   ) {
     throw new ValidationError(
-      "recursive delegate caller lineage does not match the active parent run",
+      "recursive caller lineage does not match the active parent run",
       "recursive_control_invalid",
     );
   }
+  return parent;
+}
+
+export function lineageForRecursiveDelegate(caller: RecursiveCallerLineage): RunTaskLineage {
+  const parent = activeRecursiveCaller(caller);
   return {
     parentRunId: parent.runId,
     rootRunId: parent.rootRunId,
     recursionDepth: parent.recursionDepth + 1,
   };
+}
+
+export async function rejoinRecursiveDescendantRun(
+  caller: RecursiveCallerLineage,
+  descendantRunId: string,
+  waitMs: unknown,
+): Promise<RunTaskView> {
+  const parent = activeRecursiveCaller(caller);
+  if (
+    typeof descendantRunId !== "string" ||
+    descendantRunId.trim() === "" ||
+    !parent.descendantRunIds.includes(descendantRunId)
+  ) {
+    throw new ValidationError(
+      "recursive rejoin run_id is not a descendant of the active caller",
+      "recursive_control_invalid",
+    );
+  }
+  // Authorization is complete before this reads any descendant state. The
+  // existing owner-backed get_run wait preserves truthful active/terminal
+  // views and the established terminal output-reference transport.
+  return getRunTask(descendantRunId, false, waitMs);
 }
 
 export async function waitForObservedSkillSnapshotActivation(

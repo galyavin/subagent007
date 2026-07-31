@@ -17,7 +17,7 @@ import { createInputRequest } from "./inputMailbox.js";
 import { terminateOwnedProcessGroupOnControlLoss } from "./controlChannel.js";
 import { CHILD_OWNER_COMMIT_RELEASE_FRAME } from "./processRunner.js";
 import { resolvePiAgentDir } from "./piAgentDir.js";
-import { createRecursiveDelegateTool } from "./recursiveDelegateTool.js";
+import { createRecursiveDelegateTool, createRecursiveRejoinTool } from "./recursiveDelegateTool.js";
 import { createSkillScopedResourceLoader } from "./skillResources.js";
 import { createTaskRootAuthoringTools } from "./taskRootAuthoringTools.js";
 import {
@@ -635,8 +635,11 @@ async function main(): Promise<void> {
       cwd: request.cwd,
       recursiveControl: request.recursiveControl,
     });
-    if (recursiveDelegateTool) {
-      customTools.push(recursiveDelegateTool);
+    const recursiveRejoinTool = createRecursiveRejoinTool({
+      recursiveControl: request.recursiveControl,
+    });
+    if (recursiveDelegateTool && recursiveRejoinTool) {
+      customTools.push(recursiveDelegateTool, recursiveRejoinTool);
     }
   }
 

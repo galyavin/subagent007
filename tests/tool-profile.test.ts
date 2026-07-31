@@ -24,6 +24,7 @@ test("activates every registered session tool", () => {
     { name: "web_read" },
     { name: "extension_tool" },
     { name: "delegate" },
+    { name: "rejoin" },
   ];
   let activeNames: string[] = [];
 
@@ -55,7 +56,7 @@ test("disabled recursive delegation excludes every registered delegate tool", ()
   activateAllRegisteredTools({
     getAllTools: () => [
       { name: "read" }, { name: "web_search" }, { name: "web_read" },
-      { name: "delegate" }, { name: "extension_tool" },
+      { name: "delegate" }, { name: "rejoin" }, { name: "extension_tool" },
     ],
     setActiveToolsByName: (names) => { activeNames = names; },
     getActiveToolNames: () => activeNames,

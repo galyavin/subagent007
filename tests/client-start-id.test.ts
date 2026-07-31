@@ -37,6 +37,8 @@ type RunView = {
   child_started_at?: string;
   queue_wait_ms?: number;
   client_start_binding?: { client_start_id: string; request_sha256: string; run_id: string };
+  requested_system_skill?: string;
+  system_skill_activation_receipt?: { system_skill_name?: string };
   recent_events?: Array<{
     kind?: string;
     event?: string;
@@ -104,6 +106,26 @@ async function fixture() {
   await fs.mkdir(project);
   await fs.writeFile(config, JSON.stringify({ default_model_class: "C" }));
   return { root, project, config, fakeChild: fake.childPath, fakeLog: fake.logPath };
+}
+
+async function writeSkillFixture(root: string, name: string): Promise<void> {
+  const skillDir = path.join(root, name.replace(/:/g, "__"));
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.writeFile(
+    path.join(skillDir, "SKILL.md"),
+    [
+      "---",
+      `name: ${name}`,
+      `description: Test skill ${name}`,
+      "---",
+      "",
+      `# ${name}`,
+      "",
+      "Use only for tests.",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
 }
 
 async function waitTerminal(client: Client, runId: string): Promise<RunView> {
@@ -758,6 +780,19 @@ test("client start identity is strict, schema-normalized, and deterministically 
     clientStartAdmissionApi.canonicalClientStartRequestSha256(left as never),
     clientStartAdmissionApi.canonicalClientStartRequestSha256({ ...left, prompt: "FAST changed" } as never),
   );
+  const governed = { ...left, system_skill_name: "governor-skill" };
+  assert.equal(normalize(governed).system_skill_name, "governor-skill");
+  assert.notEqual(
+    clientStartAdmissionApi.canonicalClientStartRequestSha256(left as never),
+    clientStartAdmissionApi.canonicalClientStartRequestSha256(governed as never),
+  );
+  assert.notEqual(
+    clientStartAdmissionApi.canonicalClientStartRequestSha256(governed as never),
+    clientStartAdmissionApi.canonicalClientStartRequestSha256({
+      ...governed,
+      system_skill_name: "alternate-governor",
+    } as never),
+  );
   for (const retired of [
     { ...left, skill: "retired-skill" },
     { ...left, tool_profile: "all" },
@@ -768,6 +803,55 @@ test("client start identity is strict, schema-normalized, and deterministically 
 });
 
 describe("live client-start admission", { concurrency: 2 }, () => {
+test("client_start_id binds system_skill_name through activation and rejects governor drift", async () => {
+  const f = await fixture();
+  const skillsRoot = path.join(f.root, "skills");
+  await Promise.all([
+    writeSkillFixture(skillsRoot, "governor-skill"),
+    writeSkillFixture(skillsRoot, "alternate-governor"),
+  ]);
+  try {
+    await withServer(f, async (client) => {
+      const request = {
+        cwd: f.project,
+        prompt: "FAST",
+        client_start_id: "governed-client-start",
+        system_skill_name: "governor-skill",
+      };
+      const firstResponse = await client.callTool({ name: "start_run", arguments: request });
+      assert.notEqual(firstResponse.isError, true, JSON.stringify(firstResponse.content));
+      const first = firstResponse.structuredContent as RunView;
+
+      const replayResponse = await client.callTool({ name: "start_run", arguments: request });
+      assert.notEqual(replayResponse.isError, true, JSON.stringify(replayResponse.content));
+      const replay = replayResponse.structuredContent as RunView;
+      assert.equal(replay.run_id, first.run_id);
+      assert.deepEqual(replay.client_start_binding, first.client_start_binding);
+
+      const driftResponse = await client.callTool({
+        name: "start_run",
+        arguments: { ...request, system_skill_name: "alternate-governor" },
+      });
+      assert.notEqual(driftResponse.isError, true, JSON.stringify(driftResponse.content));
+      const drift = driftResponse.structuredContent as RunView;
+      assert.equal(drift.kind, "preflight_rejected");
+      assert.equal(drift.reason_code, "client_start_id_conflict");
+      assert.equal(drift.child_started, false);
+      assert.equal("run_id" in drift, false, "governor drift must not create another run");
+
+      const terminal = await waitTerminal(client, first.run_id);
+      assert.equal(terminal.status, "completed", JSON.stringify(terminal));
+      assert.equal(terminal.requested_system_skill, "governor-skill");
+      assert.equal(terminal.system_skill_activation_receipt?.system_skill_name, "governor-skill");
+      const logs = await readJsonl<{ request: { systemSkill?: string } }>(f.fakeLog);
+      assert.equal(logs.length, 1, "exact replay and governor drift must not admit another child");
+      assert.equal(logs[0]?.request.systemSkill, "governor-skill");
+    }, { SUBAGENT007_PI_SKILL_PATHS: skillsRoot });
+  } finally {
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
 test("client_start_id exact replay returns one run while body drift rejects and distinct keys admit", async () => {
   const f = await fixture();
   try {

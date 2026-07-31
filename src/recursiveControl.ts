@@ -34,9 +34,19 @@ export interface RecursiveDelegateParams {
   timeout_ms?: number;
 }
 
+export interface RecursiveRejoinParams {
+  run_id: string;
+  wait_ms?: number;
+}
+
 export interface RecursiveDelegateRequest {
   caller: RecursiveCallerContext;
   params: RecursiveDelegateParams;
+}
+
+export interface RecursiveRejoinRequest {
+  caller: RecursiveCallerContext;
+  params: RecursiveRejoinParams;
 }
 
 export interface RecursiveDelegateRejectedResult {
@@ -49,12 +59,21 @@ export interface RecursiveDelegateRejectedResult {
 }
 
 export type RecursiveDelegateHandler = (request: RecursiveDelegateRequest) => Promise<Record<string, unknown>>;
+export type RecursiveRejoinHandler = (request: RecursiveRejoinRequest) => Promise<Record<string, unknown>>;
 export type RecursiveDelegateResult = Record<string, unknown> | RecursiveDelegateRejectedResult;
+export type RecursiveRejoinResult = Record<string, unknown> | RecursiveDelegateRejectedResult;
+
+type RecursiveRpcMethod = "delegate" | "rejoin";
+
+export interface RecursiveControlHandlers {
+  delegate: RecursiveDelegateHandler;
+  rejoin: RecursiveRejoinHandler;
+}
 
 interface RecursiveRpcRequest {
   id?: string;
   token?: string;
-  method?: string;
+  method?: RecursiveRpcMethod;
   caller?: Partial<RecursiveCallerContext>;
   params?: unknown;
 }
@@ -161,8 +180,9 @@ function validateCaller(value: RecursiveRpcRequest["caller"]): RecursiveCallerCo
 
 function validateEnvelope(value: unknown, token: string): {
   id: string;
+  method: RecursiveRpcMethod;
   caller: RecursiveCallerContext;
-  params: RecursiveDelegateParams;
+  params: Record<string, unknown>;
 } {
   const envelope = asRecord(value) as RecursiveRpcRequest;
   const id = typeof envelope.id === "string" && envelope.id.trim() !== ""
@@ -171,28 +191,29 @@ function validateEnvelope(value: unknown, token: string): {
   if (envelope.token !== token) {
     throw new ValidationError("recursive control token is invalid", "recursive_control_invalid");
   }
-  if (envelope.method !== "delegate") {
-    throw new ValidationError("recursive control method must be delegate", "recursive_control_invalid");
+  if (envelope.method !== "delegate" && envelope.method !== "rejoin") {
+    throw new ValidationError("recursive control method must be delegate or rejoin", "recursive_control_invalid");
   }
   const caller = validateCaller(envelope.caller);
   return {
     id,
+    method: envelope.method,
     caller,
-    params: asRecord(envelope.params) as unknown as RecursiveDelegateParams,
+    params: asRecord(envelope.params),
   };
 }
 
 async function handleRpcLine(
   line: string,
   handle: RecursiveControlServerHandle,
-  delegate: RecursiveDelegateHandler,
+  handlers: RecursiveControlHandlers,
 ): Promise<RecursiveRpcResponse> {
   let id = randomBytes(6).toString("hex");
   try {
     const parsed = JSON.parse(line) as unknown;
     const envelope = validateEnvelope(parsed, handle.token);
     id = envelope.id;
-    if (envelope.caller.recursion_depth >= handle.maxDepth) {
+    if (envelope.method === "delegate" && envelope.caller.recursion_depth >= handle.maxDepth) {
       return {
         id,
         ok: true,
@@ -210,10 +231,15 @@ async function handleRpcLine(
       return {
         id,
         ok: true,
-        result: await delegate({
-          caller: envelope.caller,
-          params: envelope.params,
-        }),
+        result: envelope.method === "delegate"
+          ? await handlers.delegate({
+              caller: envelope.caller,
+              params: envelope.params as unknown as RecursiveDelegateParams,
+            })
+          : await handlers.rejoin({
+              caller: envelope.caller,
+              params: envelope.params as unknown as RecursiveRejoinParams,
+            }),
       };
     } catch (error) {
       return {
@@ -244,7 +270,7 @@ async function writeResponse(socket: net.Socket, response: RecursiveRpcResponse)
 }
 
 export async function startRecursiveControlServer(
-  delegate: RecursiveDelegateHandler,
+  handlers: RecursiveControlHandlers,
 ): Promise<void> {
   if (activeHandle) {
     return;
@@ -268,7 +294,7 @@ export async function startRecursiveControlServer(
         }
         const line = buffer.slice(0, newlineIndex);
         socket.pause();
-        void handleRpcLine(line, handle, delegate)
+        void handleRpcLine(line, handle, handlers)
           .then((response) => writeResponse(socket, response))
           .catch((error) =>
             writeResponse(socket, {
@@ -321,15 +347,16 @@ export function recursiveControlConfigForChild(input: {
   };
 }
 
-export async function callRecursiveDelegate(
+async function callRecursiveControl(
   config: RecursiveControlChildConfig,
-  params: RecursiveDelegateParams,
-): Promise<RecursiveDelegateResult> {
+  method: RecursiveRpcMethod,
+  params: RecursiveDelegateParams | RecursiveRejoinParams,
+): Promise<RecursiveDelegateResult | RecursiveRejoinResult> {
   const id = randomBytes(6).toString("hex");
   const request = {
     id,
     token: config.token,
-    method: "delegate",
+    method,
     caller: {
       parent_run_id: config.parent_run_id,
       root_run_id: config.root_run_id,
@@ -338,7 +365,7 @@ export async function callRecursiveDelegate(
     },
     params,
   };
-  return new Promise<RecursiveDelegateResult>((resolve, reject) => {
+  return new Promise<RecursiveDelegateResult | RecursiveRejoinResult>((resolve, reject) => {
     const socket = net.createConnection(config.socket_path);
     let buffer = "";
     socket.setEncoding("utf8");
@@ -382,4 +409,18 @@ export async function callRecursiveDelegate(
       }
     });
   });
+}
+
+export async function callRecursiveDelegate(
+  config: RecursiveControlChildConfig,
+  params: RecursiveDelegateParams,
+): Promise<RecursiveDelegateResult> {
+  return callRecursiveControl(config, "delegate", params) as Promise<RecursiveDelegateResult>;
+}
+
+export async function callRecursiveRejoin(
+  config: RecursiveControlChildConfig,
+  params: RecursiveRejoinParams,
+): Promise<RecursiveRejoinResult> {
+  return callRecursiveControl(config, "rejoin", params) as Promise<RecursiveRejoinResult>;
 }

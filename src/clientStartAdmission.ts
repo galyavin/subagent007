@@ -7,6 +7,7 @@ import { z } from "zod";
 import { newRunId } from "./inputMailbox.js";
 import { defaultSubagentStatePath } from "./output.js";
 import { processIsDefinitelyGone } from "./processLiveness.js";
+import { SKILL_NAME_PATTERN } from "./skillBinding.js";
 import {
   EFFECT_PROFILES,
   MODEL_CLASSES,
@@ -47,6 +48,7 @@ const clientStartIdentitySchema = z.strictObject({
   expected_skill_sha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
   skill_snapshot_binding: snapshotBindingIdentitySchema.optional(),
   recursive_delegation: z.enum(RECURSIVE_DELEGATIONS).optional(),
+  system_skill_name: z.string().regex(SKILL_NAME_PATTERN).optional(),
   allowed_output_paths: z.array(z.string().min(1)).max(128).optional(),
   continuity: continuityIdentitySchema.optional(),
   timeout_ms: z.number().int().positive().optional(),

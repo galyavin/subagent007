@@ -11,7 +11,7 @@ edges:
     condition: before interpreting tool lifecycle or failure projection findings
   - target: context/conventions.md
     condition: before changing public result fields, reason codes, tests, or README
-last_updated: 2026-07-27
+last_updated: 2026-07-31
 ---
 
 # Observed Campaign SAF
@@ -44,7 +44,7 @@ Load architecture, conventions, setup, decisions, and this pattern. Use isolated
 - Full-current session failure coverage should include `start_session_run` packet-failure telemetry correlation: failure logs must keep `tool:"start_session_run"`, the public durable `run_id`, and `task_kind:"session"`.
 - Recursive delegate coverage must prove root-visible lineage, parent `recursive_child_started`/`recursive_child_finished` event visibility, wait-0 child completion after parent terminalization, depth-limit rejection, and forged-lineage rejection through structured fields and run views. Event child ids must match the delegated run id. Do not expose recursive control token/socket payloads in ledgers, summaries, or public artifacts.
 - A deterministic child may prove protocol acceptance but cannot certify real Pi activation/tool enforcement by echoing a parent-provided receipt. Narrow the claim or use an explicitly live canary.
-- `client_start_id` coverage must replay while active and after terminal settlement, prove one child admission, and retain changed-body conflict. Output identity must hash and size one captured byte buffer and reject direct public path fields.
+- `client_start_id` coverage must replay while active and after terminal settlement, prove one child admission, and retain changed-body conflict. When a finding involves an added `start_run` request field, focused coverage must also prove that the strict client-start identity admits it and changes its digest with its value; `system_skill_name` specifically requires governed activation, exact replay, and same-key governor conflict before another run exists. Output identity must hash and size one captured byte buffer and reject direct public path fields.
 - Snapshot lifecycle coverage should prove exact publication replay, changed-request conflict, and a genuine stale deletion-impact transition; an arbitrary wrong confirmation alone is not a stale-impact race.
 - A recursive answer-delivery repair is not accepted from terminal status alone: the live parent must receive and use answer evidence from the child. `working` beyond a bounded wait remains an explicit survivor when no child-facing poll exists.
 - Public bounded `get_run` coverage must prove one initially working resident run becomes actionable before the requested window, and tool listing must expose `wait_ms` plus the resident/nonresident ceiling. Keep expiry, input-required, omission/zero, and no-polling mechanics in focused lifecycle tests rather than synthesizing them from campaign prose.
