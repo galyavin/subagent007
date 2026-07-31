@@ -53,6 +53,7 @@ import type {
   RecursiveDelegationReceipt,
   ActivationSkillBinding,
   OutputMode,
+  ModelClass,
   PromptProvenance,
   ResolvedRunSubagentRequest,
   RunContinuity,
@@ -785,6 +786,7 @@ export async function runSubagentCore(
       resolvedRecursiveDelegation: ResolvedRunSubagentRequest["recursiveDelegation"];
       systemSkillName?: string;
       systemSkillPath?: string;
+      governingModelClass?: ModelClass;
     }) => void | Promise<void>;
   } = {},
 ): Promise<RunSubagentResult> {
@@ -865,6 +867,7 @@ export async function runSubagentCore(
       ...(systemSkillSource ? {
         systemSkillName: systemSkillSource.name,
         systemSkillPath: systemSkillSource.path,
+        governingModelClass: resolved.modelClass,
       } : {}),
     });
     const childSkillFilePath = resolved.skill
@@ -897,6 +900,7 @@ export async function runSubagentCore(
               rootRunId: options.rootRunId,
               recursionDepth: options.recursionDepth,
               systemSkillName: systemSkillSource?.name,
+              governingModelClass: systemSkillSource ? resolved.modelClass : undefined,
             }),
           }
         : {}),

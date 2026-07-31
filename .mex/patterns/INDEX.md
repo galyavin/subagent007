@@ -12,6 +12,7 @@ For a multi-section pattern, add one row per task anchor.
 | Pattern | Use when |
 |---------|----------|
 | [effect-profile-boundary.md](effect-profile-boundary.md) | Adding or changing an enforced Pi callable-tool ceiling and its activation receipt |
+| [governed-recursion-class-inheritance.md](governed-recursion-class-inheritance.md) | Changing private model-class inheritance beneath system-skill recursion |
 | [observed-campaign-saf.md](observed-campaign-saf.md) | Running customer-style observed MCP campaigns and turning findings into SAF repairs |
 | [recursive-result-rejoin.md](recursive-result-rejoin.md) | Adding private lineage-authorized recursive descendant result retrieval after a bounded delegate wait |
 | [run-owner-transitions.md](run-owner-transitions.md) | Changing durable-run lifecycle producers, staging order, or restart reconciliation |

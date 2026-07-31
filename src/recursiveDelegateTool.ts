@@ -12,14 +12,22 @@ import type { ModelClass, OutputMode } from "./types.js";
 
 const DEFAULT_RECURSIVE_DELEGATE_WAIT_MS = 30_000;
 
-const recursiveDelegateParameters = Type.Object({
+const recursiveDelegateBaseParameters = {
   prompt: Type.String({ minLength: 1 }),
   cwd: Type.Optional(Type.String({ minLength: 1 })),
-  model_class: Type.Optional(Type.Union(MODEL_CLASSES.map((value) => Type.Literal(value)))),
   skill_name: Type.Optional(Type.Union([Type.String({ minLength: 1 }), Type.Null()])),
   output_mode: Type.Optional(Type.Union(OUTPUT_MODES.map((value) => Type.Literal(value)))),
   wait_ms: Type.Optional(Type.Number({ minimum: 0 })),
   timeout_ms: Type.Optional(Type.Number({ minimum: 1 })),
+};
+
+const recursiveDelegateParameters = Type.Object({
+  ...recursiveDelegateBaseParameters,
+  model_class: Type.Optional(Type.Union(MODEL_CLASSES.map((value) => Type.Literal(value)))),
+});
+
+const governedRecursiveDelegateParameters = Type.Object({
+  ...recursiveDelegateBaseParameters,
 });
 
 const recursiveRejoinParameters = Type.Object({
@@ -82,7 +90,9 @@ export function createRecursiveDelegateTool(input: {
       "timeout_ms is the descendant's hard kill cap, not the response wait.",
       "Do not pass secrets or private control data; the tool already carries the private recursive capability.",
     ],
-    parameters: recursiveDelegateParameters,
+    parameters: (recursiveControl.system_skill_name
+      ? governedRecursiveDelegateParameters
+      : recursiveDelegateParameters) as typeof recursiveDelegateParameters,
     executionMode: "sequential",
     async execute(_toolCallId, params) {
       const result = await callRecursiveDelegate(

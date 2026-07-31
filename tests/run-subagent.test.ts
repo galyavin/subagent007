@@ -83,6 +83,7 @@ type RunSubagentMetadata = {
   effective_wait_ms?: number;
   wait_truncated?: boolean;
   requested_skill?: string | null;
+  resolved_model_class?: "A" | "B" | "C" | "D" | "E" | "Z1" | "Z2" | "Z3" | "Z4" | "Z5";
   requested_system_skill?: string;
   system_skill_activation_receipt?: {
     schema_version: 1;
@@ -3910,6 +3911,89 @@ test("system skill is inherited through trusted recursion while the selected spe
     assert.equal(logs[1]?.request.skill, undefined);
     assert.match(await fs.readFile(specialistPath, "utf8"), /# specialist-skill/);
   }, { env: { SUBAGENT007_PI_SKILL_PATHS: skillsRoot } });
+});
+
+test("governed recursion privately inherits the root class while generic delegation retains selection", async () => {
+  const skillsRoot = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-governed-recursion-"));
+  await writeSkillFixture(skillsRoot, "governor-skill");
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    const governedResponse = await client.callTool({
+      name: "schedule_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "GOVERNED_RECURSIVE_TWO_HOP_ROOT",
+        model_class: "D",
+        system_skill_name: "governor-skill",
+        recursive_delegation: "enabled",
+        wait_ms: 2_000,
+      },
+    });
+    assert.notEqual(governedResponse.isError, true);
+    let governedRoot = governedResponse.structuredContent as RunSubagentMetadata;
+    if (governedRoot.status !== "completed") governedRoot = await waitForTerminalRun(client, governedRoot.run_id);
+    assert.equal(governedRoot.status, "completed", JSON.stringify(governedRoot));
+    assert.equal(governedRoot.resolved_model_class, "D");
+    assert.equal(governedRoot.descendant_run_ids?.length, 2);
+    assert.deepEqual(Object.values(governedRoot.descendant_terminal_statuses ?? {}), ["completed", "completed"]);
+
+    const governedChild = (JSON.parse(await fs.readFile(outputPathFor(governedRoot), "utf8")) as {
+      delegated: RunSubagentMetadata & { primary_output?: string };
+    }).delegated;
+    assert.equal(governedChild.resolved_model_class, "D");
+    assert.ok(governedChild.primary_output);
+    const governedGrandchild = (JSON.parse(governedChild.primary_output!) as {
+      delegated: RunSubagentMetadata;
+    }).delegated;
+    assert.equal(governedGrandchild.resolved_model_class, "D");
+
+    const beforeForged = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
+    const forgedResponse = await client.callTool({
+      name: "schedule_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "GOVERNED_FORGED_MODEL_CLASS",
+        model_class: "D",
+        system_skill_name: "governor-skill",
+        recursive_delegation: "enabled",
+        wait_ms: 2_000,
+      },
+    });
+    assert.notEqual(forgedResponse.isError, true);
+    const forgedRoot = forgedResponse.structuredContent as RunSubagentMetadata;
+    assert.equal(forgedRoot.status, "completed");
+    const forged = (JSON.parse(await fs.readFile(outputPathFor(forgedRoot), "utf8")) as {
+      delegated: RunSubagentMetadata;
+    }).delegated;
+    assert.equal(forged.status, "rejected");
+    assert.equal(forged.reason_code, "recursive_control_invalid");
+    const afterForged = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
+    assert.equal(afterForged.length, beforeForged.length + 1, "forged governed selector must not admit a child");
+
+    const genericResponse = await client.callTool({
+      name: "schedule_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "RECURSIVE_DELEGATE_MODEL_CLASS_A",
+        recursive_delegation: "enabled",
+        wait_ms: 2_000,
+      },
+    });
+    assert.notEqual(genericResponse.isError, true);
+    const genericRoot = genericResponse.structuredContent as RunSubagentMetadata;
+    assert.equal(genericRoot.status, "completed");
+    assert.equal(genericRoot.resolved_model_class, "C");
+    const genericChild = (JSON.parse(await fs.readFile(outputPathFor(genericRoot), "utf8")) as {
+      delegated: RunSubagentMetadata;
+    }).delegated;
+    assert.equal(genericChild.resolved_model_class, "A");
+
+    const requests = await readJsonl<{ request: { recursiveControl?: { governing_model_class?: string } } }>(fakeLogPath);
+    assert.deepEqual(
+      requests.slice(0, 3).map((entry) => entry.request.recursiveControl?.governing_model_class),
+      ["D", "D", "D"],
+    );
+  }, { env: { SUBAGENT007_PI_SKILL_PATHS: skillsRoot } });
+  await fs.rm(skillsRoot, { recursive: true, force: true });
 });
 
 test("MCP schedule_run lets a child delegate a root-visible recursive run", async () => {

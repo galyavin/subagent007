@@ -72,6 +72,7 @@ import {
   type RunTaskTerminalStatus,
 } from "./runLifecycle.js";
 import type {
+  ModelClass,
   RecursiveDelegationReceipt,
   RunPublicEvent,
   RunPublicEventName,
@@ -309,6 +310,8 @@ interface RunTaskState {
   recursiveDelegationReceipt?: RecursiveDelegationReceipt;
   requestedRecursiveDelegation?: RunSubagentRequest["recursive_delegation"];
   requestedSystemSkill?: string;
+  /** Private root-resolved class for a live governed recursive lineage. */
+  governingModelClass?: ModelClass;
   systemSkillActivationReceipt?: SystemSkillActivationReceipt;
   systemSkillActivationObservation: {
     promise: Promise<SystemSkillActivationReceipt | undefined>;
@@ -500,6 +503,7 @@ function recordOwnerLaunchObservation(
     resolvedRecursiveDelegation: "disabled" | "enabled";
     systemSkillName?: string;
     systemSkillPath?: string;
+    governingModelClass?: ModelClass;
   },
 ): void {
   const scopeBytes = observation.authoringEffectScope
@@ -2244,6 +2248,7 @@ function publishRunTaskTransitionState(state: RunTaskState, draft: RunTaskState)
   state.recursiveDelegationReceipt = draft.recursiveDelegationReceipt;
   state.requestedRecursiveDelegation = draft.requestedRecursiveDelegation;
   state.requestedSystemSkill = draft.requestedSystemSkill;
+  state.governingModelClass = draft.governingModelClass;
   state.systemSkillActivationReceipt = draft.systemSkillActivationReceipt;
   state.expectedSkillSha256 = draft.expectedSkillSha256;
   state.claimDeclarations = draft.claimDeclarations;
@@ -2819,6 +2824,12 @@ function activeRecursiveCaller(caller: RecursiveCallerLineage): RunTaskState {
     );
   }
   return parent;
+}
+
+export function governingModelClassForRecursiveDelegate(
+  caller: RecursiveCallerLineage,
+): ModelClass | undefined {
+  return activeRecursiveCaller(caller).governingModelClass;
 }
 
 export function lineageForRecursiveDelegate(caller: RecursiveCallerLineage): RunTaskLineage {
@@ -3768,10 +3779,23 @@ async function grantRunClaimFromLaunchObservation(state: RunTaskState, observati
   await withRunClaimOwner(state, async () => {
     if (tasks.get(state.runId) !== state) throw taskNotFound(state.runId);
     if (state.terminalSnapshotStarted || state.result || state.error) return;
+    const typedObservation = observation as Parameters<typeof recordOwnerLaunchObservation>[1];
+    if (
+      typedObservation.governingModelClass !== undefined &&
+      (!typedObservation.systemSkillName || !MODEL_CLASS_SET.has(typedObservation.governingModelClass))
+    ) {
+      invalidOwnerRecord("governed model class is not bound to a governing system skill");
+    }
     const draft = cloneRunTaskTransitionState(state);
+    if (typedObservation.governingModelClass !== undefined) {
+      if (draft.governingModelClass && draft.governingModelClass !== typedObservation.governingModelClass) {
+        invalidOwnerRecord("governed model class changed after launch observation");
+      }
+      draft.governingModelClass = typedObservation.governingModelClass;
+    }
     recordOwnerLaunchObservation(
       draft,
-      observation as Parameters<typeof recordOwnerLaunchObservation>[1],
+      typedObservation,
     );
     if (!draft.ownerLaunchObservation) invalidOwnerRecord("execution grant lacks launch evidence");
     await writeRunClaimOwned(

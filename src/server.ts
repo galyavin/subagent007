@@ -29,6 +29,7 @@ import {
   answerRunTaskInput,
   cancelRunTask,
   getRunTask,
+  governingModelClassForRecursiveDelegate,
   lineageForRecursiveDelegate,
   projectPrivateRecursiveRunResult,
   rejoinRecursiveDescendantRun,
@@ -898,7 +899,28 @@ await startRecursiveControlServer({
   } catch {
     throw new ValidationError("recursive caller parent is not an active owned run", "recursive_control_invalid");
   }
+  const callerLineage = {
+    parentRunId: caller.parent_run_id,
+    rootRunId: caller.root_run_id,
+    recursionDepth: caller.recursion_depth,
+  };
   const inheritedSystemSkillName = caller.system_skill_name;
+  const governingModelClass = governingModelClassForRecursiveDelegate(callerLineage);
+  if (
+    (inheritedSystemSkillName === undefined) !== (governingModelClass === undefined) ||
+    caller.governing_model_class !== governingModelClass
+  ) {
+    throw new ValidationError(
+      "recursive governed model class does not match the active parent lineage",
+      "recursive_control_invalid",
+    );
+  }
+  if (governingModelClass !== undefined && params.model_class !== undefined) {
+    throw new ValidationError(
+      "governed recursive delegation does not accept model_class",
+      "recursive_control_invalid",
+    );
+  }
   let parentSystemSkillReceipt = parent.system_skill_activation_receipt;
   if (inheritedSystemSkillName && !parentSystemSkillReceipt) {
     // Receipt output and the recursive socket use separate child descriptors;
@@ -942,7 +964,9 @@ await startRecursiveControlServer({
     {
       prompt: params.prompt,
       cwd: params.cwd,
-      ...(params.model_class ? { model_class: params.model_class } : {}),
+      ...(governingModelClass
+        ? { model_class: governingModelClass }
+        : params.model_class ? { model_class: params.model_class } : {}),
       ...(inheritedSnapshotBinding
         ? { skill_name: inheritedSkillName, skill_snapshot_binding: inheritedSnapshotBinding }
         : params.skill_name !== undefined ? { skill_name: params.skill_name } : {}),
@@ -954,9 +978,7 @@ await startRecursiveControlServer({
     },
     {
       lineage: lineageForRecursiveDelegate({
-        parentRunId: caller.parent_run_id,
-        rootRunId: caller.root_run_id,
-        recursionDepth: caller.recursion_depth,
+        ...callerLineage,
       }),
     },
   );

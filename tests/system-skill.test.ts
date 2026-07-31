@@ -231,4 +231,19 @@ test("system_skill_name must differ from the ordinary specialist and is absent f
   assert.ok(tool);
   const schema = tool.parameters as unknown as { properties?: Record<string, unknown> };
   assert.equal(Object.hasOwn(schema.properties ?? {}, "system_skill_name"), false);
+  assert.equal(Object.hasOwn(schema.properties ?? {}, "model_class"), false);
+
+  const genericTool = createRecursiveDelegateTool({
+    cwd: tmp,
+    recursiveControl: {
+      socket_path: path.join(tmp, "generic-control.sock"),
+      token: "generic-test-token",
+      parent_run_id: "generic-parent",
+      root_run_id: "generic-root",
+      recursion_depth: 0,
+    },
+  });
+  assert.ok(genericTool);
+  const genericSchema = genericTool.parameters as unknown as { properties?: Record<string, unknown> };
+  assert.equal(Object.hasOwn(genericSchema.properties ?? {}, "model_class"), true);
 });
