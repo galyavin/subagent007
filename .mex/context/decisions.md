@@ -12,7 +12,7 @@ edges:
     condition: when a decision relates to system structure
   - target: context/stack.md
     condition: when a decision relates to technology choice
-last_updated: 2026-07-30
+last_updated: 2026-07-31
 ---
 
 # Decisions
@@ -57,7 +57,7 @@ last_updated: 2026-07-30
 ### Recursive delegate omission waits at the caller-without-poll boundary
 **Date:** 2026-07-25
 **Status:** Active
-**Decision:** Only the private child-facing `delegate` adapter normalizes omitted `wait_ms` to 30000 ms. Explicit zero and positive values remain exact before the existing scheduler ceiling, and public `schedule_run` keeps its 1000 ms omission default. No polling/cancellation tool or second lifecycle owner is added.
+**Decision:** Only the private child-facing `delegate` adapter normalizes omitted `wait_ms` to 30000 ms. Explicit zero and positive values remain exact before the existing scheduler ceiling, and public `schedule_run` keeps its 1000 ms omission default. The delegate surface calls the optional termination authority `hard_timeout_ms`; only an explicit value maps to the existing internal durable `timeout_ms`, while omission forwards no hard lifetime. No polling/cancellation tool or second lifecycle owner is added.
 **Reasoning:** Public scheduler callers can recover an active result through `get_run`; recursive children receive one sequential `delegate` response and cannot poll. The former shared one-second default returned `working` for an observed 15.6-second child that later completed, leaving the parent unable to consume the answer. A bounded private default is the smallest owner-observable repair.
 **Consequences:** Ordinary descendants settling within the effective bound return usable terminal evidence to the same tool call. `wait_ms:0` remains intentional parallel work but does not detach descendant ownership. Configured lower ceilings may truncate omission, and children exceeding the effective bound can still return `working`; that survivor does not authorize retrying the same attempt or claiming an answer.
 

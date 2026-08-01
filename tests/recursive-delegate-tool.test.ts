@@ -67,6 +67,7 @@ async function observeDelegateParams(
 test("recursive delegate omission requests the bounded private maximum", async () => {
   const observed = await observeDelegateParams({});
   assert.equal(observed.wait_ms, 30_000);
+  assert.equal(Object.hasOwn(observed, "timeout_ms"), false);
 });
 
 test("recursive delegate preserves explicit zero and positive waits", async () => {
@@ -74,7 +75,13 @@ test("recursive delegate preserves explicit zero and positive waits", async () =
   assert.equal((await observeDelegateParams({ wait_ms: 1733 })).wait_ms, 1733);
 });
 
-test("recursive delegate guidance states its bounded wait and ownership semantics", () => {
+test("recursive delegate maps an explicit hard lifetime to the durable timeout mechanic", async () => {
+  const observed = await observeDelegateParams({ hard_timeout_ms: 1733 });
+  assert.equal(observed.timeout_ms, 1733);
+  assert.equal(Object.hasOwn(observed, "hard_timeout_ms"), false);
+});
+
+test("recursive delegate guidance distinguishes observation from termination authority", () => {
   const tool = createRecursiveDelegateTool({
     cwd: "/tmp",
     recursiveControl: {
@@ -88,7 +95,12 @@ test("recursive delegate guidance states its bounded wait and ownership semantic
   assert.ok(tool);
   assert.match(tool.description, /omission waits up to 30,000 ms/i);
   assert.match(tool.description, /wait_ms:0 returns immediately/i);
+  assert.match(tool.description, /omit hard_timeout_ms for no time-based termination/i);
   const guidelines = tool.promptGuidelines ?? [];
   assert.match(guidelines.join("\n"), /still owns the descendant/i);
   assert.match(guidelines.join("\n"), /use rejoin with the returned run_id/i);
+  assert.match(guidelines.join("\n"), /hard_timeout_ms.*terminate the descendant/i);
+  const properties = (tool.parameters as unknown as { properties: Record<string, unknown> }).properties;
+  assert.equal(Object.hasOwn(properties, "hard_timeout_ms"), true);
+  assert.equal(Object.hasOwn(properties, "timeout_ms"), false);
 });
