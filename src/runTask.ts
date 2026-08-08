@@ -73,6 +73,7 @@ import {
 } from "./runLifecycle.js";
 import type {
   ModelClass,
+  RecursiveEdgePromptWitness,
   RecursiveDelegationReceipt,
   RunPublicEvent,
   RunPublicEventName,
@@ -211,6 +212,8 @@ export interface RunTaskView extends Partial<RunSubagentResult>, Partial<RunSuba
   contract_version: typeof DURABLE_RUN_CONTRACT_VERSION;
   task_kind?: "run" | "session";
   parent_run_id?: string;
+  requested_recursive_edge_witness?: RunSubagentRequest["recursive_edge_witness"];
+  recursive_edge_prompt_witness?: RecursiveEdgePromptWitness;
   root_run_id: string;
   recursion_depth: number;
   child_run_ids: string[];
@@ -251,9 +254,12 @@ export interface RunTaskLineage {
   parentRunId?: string;
   rootRunId?: string;
   recursionDepth?: number;
+  recursiveEdgePromptWitness?: RecursiveEdgePromptWitness;
 }
 
-export type RecursiveCallerLineage = Required<RunTaskLineage>;
+export type RecursiveCallerLineage = Required<
+  Pick<RunTaskLineage, "parentRunId" | "rootRunId" | "recursionDepth">
+>;
 
 interface RunTaskState {
   runId: string;
@@ -283,6 +289,8 @@ interface RunTaskState {
   failureLogTool?: RunTaskFailureLogTool;
   sessionKey?: string;
   parentRunId?: string;
+  requestedRecursiveEdgeWitness?: RunSubagentRequest["recursive_edge_witness"];
+  recursiveEdgePromptWitness?: RecursiveEdgePromptWitness;
   rootRunId: string;
   recursionDepth: number;
   childRunIds: string[];
@@ -465,6 +473,9 @@ function ownerRequestDeclarationsFromRequest(
     ...(request.expected_skill_sha256 ? { expectedSkillSha256: request.expected_skill_sha256 } : {}),
     ...(request.skill_snapshot_binding ? { skillSnapshotBinding: request.skill_snapshot_binding } : {}),
     requestedRecursiveDelegation: request.recursive_delegation ?? null,
+    ...(request.recursive_edge_witness
+      ? { requestedRecursiveEdgeWitness: request.recursive_edge_witness }
+      : {}),
   };
 }
 
@@ -794,6 +805,8 @@ function assertOwnerViewTransition(existing: RunTaskView | undefined, next: RunT
     "activation_receipt",
     "skill_snapshot_activation_receipt",
     "recursive_delegation_receipt",
+    "requested_recursive_edge_witness",
+    "recursive_edge_prompt_witness",
   ] as const) {
     if (
       existing[field] !== undefined &&
@@ -1240,6 +1253,7 @@ interface OwnerRequestDeclarations {
   expectedSkillSha256?: string;
   skillSnapshotBinding?: NonNullable<RunSubagentRequest["skill_snapshot_binding"]>;
   requestedRecursiveDelegation: "disabled" | "enabled" | null;
+  requestedRecursiveEdgeWitness?: NonNullable<RunSubagentRequest["recursive_edge_witness"]>;
 }
 
 function ownerRequestDeclarations(view: RunTaskView): OwnerRequestDeclarations | null {
@@ -1260,6 +1274,9 @@ function ownerRequestDeclarations(view: RunTaskView): OwnerRequestDeclarations |
     ? view.requested_recursive_delegation
     : undefined;
   const requestedRecursiveDelegation = rawRequestedRecursiveDelegation ?? null;
+  const requestedRecursiveEdgeWitness = hasOwnDefined(view, "requested_recursive_edge_witness")
+    ? view.requested_recursive_edge_witness
+    : undefined;
   if (
     (effectProfile !== undefined && !EFFECT_PROFILE_SET.has(effectProfile)) ||
     (systemSkillName !== undefined && (typeof systemSkillName !== "string" || systemSkillName.length === 0)) ||
@@ -1268,6 +1285,8 @@ function ownerRequestDeclarations(view: RunTaskView): OwnerRequestDeclarations |
     (isBoundedEffectProfile(effectProfile) && rawSnapshotBinding === undefined) ||
     (hasRequestedRecursiveDelegation &&
       (rawRequestedRecursiveDelegation === undefined || !RECURSIVE_DELEGATION_SET.has(rawRequestedRecursiveDelegation))) ||
+    (requestedRecursiveEdgeWitness !== undefined && requestedRecursiveEdgeWitness !== "prompt_sha256_v1") ||
+    (requestedRecursiveEdgeWitness !== undefined && requestedRecursiveDelegation !== "enabled") ||
     (expectedSkillSha256 !== undefined && rawSnapshotBinding !== undefined) ||
     (effectProfile !== undefined && requestedRecursiveDelegation === "enabled")
   ) return null;
@@ -1277,6 +1296,7 @@ function ownerRequestDeclarations(view: RunTaskView): OwnerRequestDeclarations |
     ...(expectedSkillSha256 ? { expectedSkillSha256 } : {}),
     ...(rawSnapshotBinding ? { skillSnapshotBinding: rawSnapshotBinding } : {}),
     requestedRecursiveDelegation,
+    ...(requestedRecursiveEdgeWitness ? { requestedRecursiveEdgeWitness } : {}),
   };
 }
 
@@ -1632,12 +1652,37 @@ function hasOwnerTerminalEvidence(view: RunTaskView): boolean {
   return taxonomyValid && hasExactOwnerTerminalEvent(view, expectedEvent);
 }
 
+function hasValidRecursiveEdgePromptWitness(value: unknown): value is RecursiveEdgePromptWitness {
+  if (!isRecord(value) || !exactRecordKeys(value, [
+    "schema_version",
+    "encoding",
+    "size_bytes",
+    "content_sha256",
+    "observation_scope",
+  ])) return false;
+  return value.schema_version === 1 &&
+    value.encoding === "utf-8" &&
+    Number.isSafeInteger(value.size_bytes) && Number(value.size_bytes) >= 0 &&
+    typeof value.content_sha256 === "string" && /^[0-9a-f]{64}$/.test(value.content_sha256) &&
+    value.observation_scope === "raw_recursive_delegate_prompt_received_before_host_normalization_or_child_prompt_composition";
+}
+
 function hasCurrentSnapshotStructure(view: RunTaskView): boolean {
+  const hasParent = view.parent_run_id !== undefined;
+  const edgeWitnessMode = view.requested_recursive_edge_witness;
+  const edgePromptWitness = view.recursive_edge_prompt_witness;
+  const edgeWitnessExact = edgeWitnessMode === undefined
+    ? edgePromptWitness === undefined
+    : edgeWitnessMode === "prompt_sha256_v1" &&
+      view.requested_recursive_delegation === "enabled" &&
+      (hasParent ? hasValidRecursiveEdgePromptWitness(edgePromptWitness) : edgePromptWitness === undefined);
   return view.contract_name === DURABLE_RUN_CONTRACT_NAME &&
     view.contract_version === DURABLE_RUN_CONTRACT_VERSION &&
     isNonemptyString(view.run_id) &&
     view.task_id === view.run_id &&
     (view.task_kind === "run" || view.task_kind === "session") &&
+    (!hasParent || isNonemptyString(view.parent_run_id)) &&
+    edgeWitnessExact &&
     isNonemptyString(view.root_run_id) &&
     Number.isSafeInteger(view.recursion_depth) && view.recursion_depth >= 0 &&
     isUniqueStringArray(view.child_run_ids) &&
@@ -1902,6 +1947,9 @@ function createRunTaskState(
     },
     ...(sessionKey ? { sessionKey } : {}),
     ...(lineage.parentRunId ? { parentRunId: lineage.parentRunId } : {}),
+    ...(lineage.recursiveEdgePromptWitness
+      ? { recursiveEdgePromptWitness: lineage.recursiveEdgePromptWitness }
+      : {}),
     rootRunId: lineage.rootRunId ?? runId,
     recursionDepth: lineage.recursionDepth ?? 0,
     childRunIds: [],
@@ -2116,10 +2164,13 @@ function admissionView(state: RunTaskState): Pick<
 
 function lineageView(state: RunTaskState): Pick<
   RunTaskView,
-  "parent_run_id" | "root_run_id" | "recursion_depth" | "child_run_ids" | "descendant_run_ids" | "descendant_terminal_statuses"
+  "parent_run_id" | "recursive_edge_prompt_witness" | "root_run_id" | "recursion_depth" | "child_run_ids" | "descendant_run_ids" | "descendant_terminal_statuses"
 > {
   return {
     ...(state.parentRunId ? { parent_run_id: state.parentRunId } : {}),
+    ...(state.recursiveEdgePromptWitness
+      ? { recursive_edge_prompt_witness: state.recursiveEdgePromptWitness }
+      : {}),
     root_run_id: state.rootRunId,
     recursion_depth: state.recursionDepth,
     child_run_ids: state.childRunIds,
@@ -2134,7 +2185,7 @@ function activeProgressView(state: RunTaskState): RunTaskProgressView {
 
 function activationView(state: RunTaskState): Pick<
   RunTaskView,
-  "requested_effect_profile" | "resolved_effect_profile" | "expected_skill_sha256" | "activation_receipt" | "skill_snapshot_binding" | "skill_snapshot_activation_receipt" | "requested_recursive_delegation" | "resolved_recursive_delegation" | "recursive_delegation_receipt" | "requested_system_skill" | "system_skill_activation_receipt"
+  "requested_effect_profile" | "resolved_effect_profile" | "expected_skill_sha256" | "activation_receipt" | "skill_snapshot_binding" | "skill_snapshot_activation_receipt" | "requested_recursive_delegation" | "resolved_recursive_delegation" | "recursive_delegation_receipt" | "requested_recursive_edge_witness" | "requested_system_skill" | "system_skill_activation_receipt"
 > {
   return {
     ...(state.requestedEffectProfile ? { requested_effect_profile: state.requestedEffectProfile } : {}),
@@ -2156,6 +2207,9 @@ function activationView(state: RunTaskState): Pick<
       resolved_recursive_delegation: state.recursiveDelegationReceipt.resolved_recursive_delegation,
       recursive_delegation_receipt: state.recursiveDelegationReceipt,
     } : {}),
+    ...(state.requestedRecursiveEdgeWitness
+      ? { requested_recursive_edge_witness: state.requestedRecursiveEdgeWitness }
+      : {}),
     ...(state.requestedSystemSkill ? { requested_system_skill: state.requestedSystemSkill } : {}),
     ...(state.systemSkillActivationReceipt
       ? { system_skill_activation_receipt: state.systemSkillActivationReceipt }
@@ -2225,6 +2279,8 @@ function publishRunTaskTransitionState(state: RunTaskState, draft: RunTaskState)
   state.failureLogTool = draft.failureLogTool;
   state.sessionKey = draft.sessionKey;
   state.parentRunId = draft.parentRunId;
+  state.requestedRecursiveEdgeWitness = draft.requestedRecursiveEdgeWitness;
+  state.recursiveEdgePromptWitness = draft.recursiveEdgePromptWitness;
   state.rootRunId = draft.rootRunId;
   state.recursionDepth = draft.recursionDepth;
   state.childRunIds = draft.childRunIds;
@@ -2700,6 +2756,7 @@ function bindRequestToRunTaskState(
   if ("expected_skill_sha256" in request) state.expectedSkillSha256 = request.expected_skill_sha256;
   if ("skill_snapshot_binding" in request) state.skillSnapshotBinding = request.skill_snapshot_binding;
   if ("recursive_delegation" in request) state.requestedRecursiveDelegation = request.recursive_delegation;
+  if ("recursive_edge_witness" in request) state.requestedRecursiveEdgeWitness = request.recursive_edge_witness;
   if ("system_skill_name" in request) state.requestedSystemSkill = request.system_skill_name;
 }
 
@@ -2832,12 +2889,35 @@ export function governingModelClassForRecursiveDelegate(
   return activeRecursiveCaller(caller).governingModelClass;
 }
 
-export function lineageForRecursiveDelegate(caller: RecursiveCallerLineage): RunTaskLineage {
+export function lineageForRecursiveDelegate(
+  caller: RecursiveCallerLineage,
+  rawPrompt: unknown,
+): RunTaskLineage & { requestedRecursiveEdgeWitness?: NonNullable<RunSubagentRequest["recursive_edge_witness"]> } {
   const parent = activeRecursiveCaller(caller);
+  const requestedRecursiveEdgeWitness = parent.requestedRecursiveEdgeWitness;
+  let recursiveEdgePromptWitness: RecursiveEdgePromptWitness | undefined;
+  if (requestedRecursiveEdgeWitness) {
+    if (typeof rawPrompt !== "string") {
+      throw new ValidationError(
+        "witnessed recursive delegate prompt must be a string",
+        "recursive_control_invalid",
+      );
+    }
+    const bytes = Buffer.from(rawPrompt, "utf8");
+    recursiveEdgePromptWitness = {
+      schema_version: 1,
+      encoding: "utf-8",
+      size_bytes: bytes.byteLength,
+      content_sha256: createHash("sha256").update(bytes).digest("hex"),
+      observation_scope: "raw_recursive_delegate_prompt_received_before_host_normalization_or_child_prompt_composition",
+    };
+  }
   return {
     parentRunId: parent.runId,
     rootRunId: parent.rootRunId,
     recursionDepth: parent.recursionDepth + 1,
+    ...(requestedRecursiveEdgeWitness ? { requestedRecursiveEdgeWitness } : {}),
+    ...(recursiveEdgePromptWitness ? { recursiveEdgePromptWitness } : {}),
   };
 }
 

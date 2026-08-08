@@ -77,6 +77,7 @@ export const DURABLE_RUN_CAPABILITIES = [
   "retained_skill_snapshot_source_resolution",
   "explicit_skill_snapshot_deletion",
   "explicit_recursive_delegation",
+  "recursive_edge_prompt_witness",
   "terminal_recursive_subtree_closure",
   "system_skill_governing_prompt",
   "event_driven_get_run_wait",
@@ -451,6 +452,14 @@ export function durableRunContractView(): {
     parent_terminal_rule: "full_subtree_terminal";
     descendant_ids_field: "descendant_run_ids";
     descendant_statuses_field: "descendant_terminal_statuses";
+    edge_witness: {
+      request_field: "recursive_edge_witness";
+      mode: "prompt_sha256_v1";
+      inheritance: "active_parent_private_non_widenable";
+      child_result_field: "recursive_edge_prompt_witness";
+      durable_raw_prompt_retention: "none";
+      observation_scope: "raw_recursive_delegate_prompt_received_before_host_normalization_or_child_prompt_composition";
+    };
     receipt: {
       result_field: "recursive_delegation_receipt";
       event_type: "subagent007.recursive_delegation_confirmed";
@@ -829,6 +838,14 @@ export function durableRunContractView(): {
       parent_terminal_rule: "full_subtree_terminal",
       descendant_ids_field: "descendant_run_ids",
       descendant_statuses_field: "descendant_terminal_statuses",
+      edge_witness: {
+        request_field: "recursive_edge_witness",
+        mode: "prompt_sha256_v1",
+        inheritance: "active_parent_private_non_widenable",
+        child_result_field: "recursive_edge_prompt_witness",
+        durable_raw_prompt_retention: "none",
+        observation_scope: "raw_recursive_delegate_prompt_received_before_host_normalization_or_child_prompt_composition",
+      },
       receipt: {
         result_field: "recursive_delegation_receipt",
         event_type: "subagent007.recursive_delegation_confirmed",

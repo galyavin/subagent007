@@ -13,6 +13,7 @@ import {
   MODEL_CLASSES,
   OUTPUT_MODES,
   RECURSIVE_DELEGATIONS,
+  RECURSIVE_EDGE_WITNESSES,
   ValidationError,
   type StartRunTaskRequest,
 } from "./types.js";
@@ -48,6 +49,7 @@ const clientStartIdentitySchema = z.strictObject({
   expected_skill_sha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
   skill_snapshot_binding: snapshotBindingIdentitySchema.optional(),
   recursive_delegation: z.enum(RECURSIVE_DELEGATIONS).optional(),
+  recursive_edge_witness: z.enum(RECURSIVE_EDGE_WITNESSES).optional(),
   system_skill_name: z.string().regex(SKILL_NAME_PATTERN).optional(),
   allowed_output_paths: z.array(z.string().min(1)).max(128).optional(),
   continuity: continuityIdentitySchema.optional(),

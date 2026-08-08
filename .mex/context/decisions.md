@@ -12,7 +12,7 @@ edges:
     condition: when a decision relates to system structure
   - target: context/stack.md
     condition: when a decision relates to technology choice
-last_updated: 2026-07-31
+last_updated: 2026-08-08
 ---
 
 # Decisions
@@ -32,6 +32,13 @@ last_updated: 2026-07-31
 **Consequences:** Bendum must stop forwarding `input_manifest`, derive sorted canonical exact `allowed_output_paths` for neutral builder runs, require capability `authoring_effect_scope_binding`, and validate receipt schema 2 and its exact scope binding. Same-key changes to output closure conflict through the existing idempotent request hash. Legacy/v2 no-key behavior and creator-named schema-1 activation stay unchanged.
 
 ## Decision Log
+
+### Recursive semantic edges have an opt-in digest witness
+**Date:** 2026-08-08
+**Status:** Active
+**Decision:** Add optional root `recursive_edge_witness:"prompt_sha256_v1"` only with enabled recursion. Inherit it from active parent state outside the model-facing delegate schema. Bind each child run to the SHA-256 and UTF-8 byte count of the exact raw recursive prompt received before normalization or child-prompt composition; persist no additional raw prompt or ancestor witness map.
+**Reasoning:** Existing lineage, settlement, Git effects, and outputs witness what descendants did but not which model-authored Task crossed an edge. A caller-owned Task artifact plus this digest resolves that one mechanical uncertainty without asking the host to store prompts, judge narrowing, certify return consumption, or own AB1 workflow state.
+**Consequences:** The unsalted digest is public and can reveal equality or enable guessing of low-entropy prompts, so it is opt-in and unsuitable for secrets. Omission is unchanged. Existing private `delegate`/`rejoin` output delivery remains sufficient mechanical transport evidence; semantic integration still requires product dependence, tests, or ablation rather than a host receipt that cannot observe cognition.
 
 ### Governing system skills are current catalogue roles, not snapshots or workflow state
 **Date:** 2026-07-30

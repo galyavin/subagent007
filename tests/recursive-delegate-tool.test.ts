@@ -103,4 +103,5 @@ test("recursive delegate guidance distinguishes observation from termination aut
   const properties = (tool.parameters as unknown as { properties: Record<string, unknown> }).properties;
   assert.equal(Object.hasOwn(properties, "hard_timeout_ms"), true);
   assert.equal(Object.hasOwn(properties, "timeout_ms"), false);
+  assert.equal(Object.hasOwn(properties, "recursive_edge_witness"), false);
 });
