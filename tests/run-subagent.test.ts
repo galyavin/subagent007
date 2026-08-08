@@ -138,14 +138,6 @@ type RunSubagentMetadata = {
   input_response_receipt?: string;
   input_response_outcome?: string;
   parent_run_id?: string;
-  requested_recursive_edge_witness?: "prompt_sha256_v1";
-  recursive_edge_prompt_witness?: {
-    schema_version: 1;
-    encoding: "utf-8";
-    size_bytes: number;
-    content_sha256: string;
-    observation_scope: string;
-  };
   root_run_id?: string;
   recursion_depth?: number;
   child_run_ids?: string[];
@@ -2810,11 +2802,6 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       ]);
       assert.equal(Object.hasOwn(properties, "expected_skill_sha256"), true);
       assert.equal(Object.hasOwn(properties, "skill_snapshot_binding"), true);
-      assert.equal(Object.hasOwn(properties, "recursive_edge_witness"), true);
-      assert.deepEqual(
-        (properties.recursive_edge_witness as { enum?: string[] }).enum,
-        ["prompt_sha256_v1"],
-      );
       assert.equal(Object.hasOwn(properties, "system_skill_name"), true);
       assert.equal(Object.hasOwn(properties, "allowed_output_paths"), true);
     }
@@ -2844,7 +2831,6 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       assert.equal(Object.hasOwn(properties, "effect_profile"), false);
       assert.equal(Object.hasOwn(properties, "expected_skill_sha256"), false);
       assert.equal(Object.hasOwn(properties, "skill_snapshot_binding"), false);
-      assert.equal(Object.hasOwn(properties, "recursive_edge_witness"), false);
       assert.equal(Object.hasOwn(properties, "system_skill_name"), false);
       assert.equal(Object.hasOwn(properties, "allowed_output_paths"), false);
     }
@@ -2926,16 +2912,6 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
         persistence?: string;
         receipt?: { result_field?: string; event_type?: string; required_before_prompt?: boolean; observation_scope?: string };
       };
-      recursive_delegation?: {
-        edge_witness?: {
-          request_field?: string;
-          mode?: string;
-          inheritance?: string;
-          child_result_field?: string;
-          durable_raw_prompt_retention?: string;
-          observation_scope?: string;
-        };
-      };
       effect_profiles?: {
         workspace_read_only?: {
           supported_tools?: string[];
@@ -2999,7 +2975,6 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.equal(contract.capabilities?.includes("batch_skill_binding_verification"), true);
     assert.equal(contract.capabilities?.includes("batch_skill_binding_resolution"), true);
     assert.equal(contract.capabilities?.includes("explicit_recursive_delegation"), true);
-    assert.equal(contract.capabilities?.includes("recursive_edge_prompt_witness"), true);
     assert.equal(contract.capabilities?.includes("terminal_recursive_subtree_closure"), true);
     assert.equal(contract.capabilities?.includes("system_skill_governing_prompt"), true);
     assert.equal(contract.capabilities?.includes("event_driven_get_run_wait"), true);
@@ -3016,14 +2991,6 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.equal(contract.system_skill?.receipt?.event_type, "subagent007.system_skill_activation_confirmed");
     assert.equal(contract.system_skill?.receipt?.required_before_prompt, true);
     assert.match(contract.system_skill?.receipt?.observation_scope ?? "", /not_provider_payload_or_model_obedience/);
-    assert.deepEqual(contract.recursive_delegation?.edge_witness, {
-      request_field: "recursive_edge_witness",
-      mode: "prompt_sha256_v1",
-      inheritance: "active_parent_private_non_widenable",
-      child_result_field: "recursive_edge_prompt_witness",
-      durable_raw_prompt_retention: "none",
-      observation_scope: "raw_recursive_delegate_prompt_received_before_host_normalization_or_child_prompt_composition",
-    });
     assert.deepEqual(contract.observation, {
       tool: "get_run",
       wait_field: "wait_ms",
@@ -4093,116 +4060,6 @@ test("MCP schedule_run lets a child delegate a root-visible recursive run", asyn
     assert.equal((logs[1].request.recursiveControl as { parent_run_id?: string }).parent_run_id, delegated.run_id);
     assert.equal((logs[1].request.recursiveControl as { root_run_id?: string }).root_run_id, root.run_id);
     assert.equal((logs[1].request.recursiveControl as { recursion_depth?: number }).recursion_depth, 1);
-  });
-});
-
-test("opt-in recursive edge witnesses bind exact raw prompt bytes across two hops without retaining prompt text", async () => {
-  await connectFakeClient(async (client, { projectDir, configPath, fakeLogPath }) => {
-    const childPrompt = "  RECURSIVE_EDGE_WITNESS_CHILD ☃ SECRET_EDGE_SENTINEL\n";
-    const leafPrompt = "\tRECURSIVE_EDGE_WITNESS_LEAF Ω \n";
-    const expectedWitness = (prompt: string) => ({
-      schema_version: 1,
-      encoding: "utf-8",
-      size_bytes: Buffer.byteLength(prompt, "utf8"),
-      content_sha256: createHash("sha256").update(Buffer.from(prompt, "utf8")).digest("hex"),
-      observation_scope: "raw_recursive_delegate_prompt_received_before_host_normalization_or_child_prompt_composition",
-    });
-    const response = await client.callTool({
-      name: "schedule_run",
-      arguments: {
-        cwd: projectDir,
-        prompt: "RECURSIVE_EDGE_WITNESS_ROOT",
-        recursive_delegation: "enabled",
-        recursive_edge_witness: "prompt_sha256_v1",
-        wait_ms: 2_000,
-      },
-    });
-    assert.notEqual(response.isError, true);
-    let root = response.structuredContent as RunSubagentMetadata;
-    if (root.status !== "completed") {
-      root = await waitForTerminalRun(client, root.run_id);
-    }
-    assert.equal(root.requested_recursive_edge_witness, "prompt_sha256_v1");
-    assert.equal(root.recursive_edge_prompt_witness, undefined);
-
-    const rootOutput = JSON.parse(await fs.readFile(outputPathFor(root), "utf8")) as {
-      delegated: RunSubagentMetadata;
-    };
-    const child = rootOutput.delegated;
-    assert.equal(child.parent_run_id, root.run_id);
-    assert.equal(child.requested_recursive_edge_witness, "prompt_sha256_v1");
-    assert.deepEqual(child.recursive_edge_prompt_witness, expectedWitness(childPrompt));
-
-    const childOutput = JSON.parse(await fs.readFile(outputPathFor(child), "utf8")) as {
-      delegated: RunSubagentMetadata;
-    };
-    const leaf = childOutput.delegated;
-    assert.equal(leaf.parent_run_id, child.run_id);
-    assert.equal(leaf.requested_recursive_edge_witness, "prompt_sha256_v1");
-    assert.deepEqual(leaf.recursive_edge_prompt_witness, expectedWitness(leafPrompt));
-
-    for (const run of [child, leaf]) {
-      const persistedResponse = await client.callTool({
-        name: "get_run",
-        arguments: { run_id: run.run_id },
-      });
-      assert.notEqual(persistedResponse.isError, true);
-      const persisted = persistedResponse.structuredContent as RunSubagentMetadata;
-      assert.deepEqual(persisted.recursive_edge_prompt_witness, run.recursive_edge_prompt_witness);
-    }
-    const childRequests = await readJsonl<{ request: { recursiveControl?: Record<string, unknown> } }>(fakeLogPath);
-    for (const request of childRequests) {
-      assert.equal(request.request.recursiveControl?.recursive_edge_witness, undefined);
-    }
-
-    const stateDir = path.dirname(configPath);
-    for (const filePath of [
-      path.join(stateDir, "run-tasks", `${root.run_id}.json`),
-      path.join(stateDir, "run-tasks", `${child.run_id}.json`),
-      path.join(stateDir, "run-tasks", `${leaf.run_id}.json`),
-      outputPathFor(root),
-      outputPathFor(child),
-      outputPathFor(leaf),
-    ]) {
-      assert.equal((await fs.readFile(filePath, "utf8")).includes("SECRET_EDGE_SENTINEL"), false);
-    }
-  });
-});
-
-test("recursive edge witness omission is unchanged and the mode requires enabled recursion", async () => {
-  await connectFakeClient(async (client, { projectDir }) => {
-    const ordinaryResponse = await client.callTool({
-      name: "schedule_run",
-      arguments: {
-        cwd: projectDir,
-        prompt: "RECURSIVE_DELEGATE_FAST",
-        recursive_delegation: "enabled",
-        wait_ms: 1_000,
-      },
-    });
-    assert.notEqual(ordinaryResponse.isError, true);
-    const ordinaryRoot = ordinaryResponse.structuredContent as RunSubagentMetadata;
-    const ordinaryOutput = JSON.parse(await fs.readFile(outputPathFor(ordinaryRoot), "utf8")) as {
-      delegated: RunSubagentMetadata;
-    };
-    assert.equal(ordinaryRoot.requested_recursive_edge_witness, undefined);
-    assert.equal(ordinaryRoot.recursive_edge_prompt_witness, undefined);
-    assert.equal(ordinaryOutput.delegated.requested_recursive_edge_witness, undefined);
-    assert.equal(ordinaryOutput.delegated.recursive_edge_prompt_witness, undefined);
-
-    const rejected = await client.callTool({
-      name: "schedule_run",
-      arguments: {
-        cwd: projectDir,
-        prompt: "FAST",
-        recursive_edge_witness: "prompt_sha256_v1",
-      },
-    });
-    assert.notEqual(rejected.isError, true);
-    const rejection = rejected.structuredContent as RunSubagentMetadata;
-    assert.equal(rejection.kind, "preflight_rejected");
-    assert.equal(rejection.reason_code, "recursive_control_invalid");
-    assert.equal(rejection.child_started, false);
   });
 });
 

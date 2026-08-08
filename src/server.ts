@@ -79,7 +79,6 @@ import {
   type PreflightRejectedResult,
   RESUME_MODES,
   RECURSIVE_DELEGATIONS,
-  RECURSIVE_EDGE_WITNESSES,
   RUN_KINDS,
   SESSION_PACKET_POLICIES,
   ValidationError,
@@ -354,9 +353,6 @@ const constrainedRunInputSchema = {
   ),
   recursive_delegation: z.enum(RECURSIVE_DELEGATIONS).optional().describe(
     "Explicit recursive delegate authorization. Omission resolves disabled; raw resume requires this field on every turn.",
-  ),
-  recursive_edge_witness: z.enum(RECURSIVE_EDGE_WITNESSES).optional().describe(
-    "Opt-in public SHA-256 and UTF-8 byte-count witness for every raw recursive delegate prompt. Requires recursive_delegation enabled; descendants inherit it privately.",
   ),
   system_skill_name: z
     .string()
@@ -964,7 +960,6 @@ await startRecursiveControlServer({
       "invalid_skill_snapshot_binding",
     );
   }
-  const childLineage = lineageForRecursiveDelegate(callerLineage, params.prompt);
   const view = await scheduleRunTask(
     {
       prompt: params.prompt,
@@ -980,12 +975,11 @@ await startRecursiveControlServer({
       ...(params.wait_ms !== undefined ? { wait_ms: params.wait_ms } : {}),
       ...(inheritedSystemSkillName ? { system_skill_name: inheritedSystemSkillName } : {}),
       recursive_delegation: "enabled",
-      ...(childLineage.requestedRecursiveEdgeWitness
-        ? { recursive_edge_witness: childLineage.requestedRecursiveEdgeWitness }
-        : {}),
     },
     {
-      lineage: childLineage,
+      lineage: lineageForRecursiveDelegate({
+        ...callerLineage,
+      }),
     },
   );
     return projectPrivateRecursiveRunResult(view);

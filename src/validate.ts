@@ -5,7 +5,6 @@ import {
   MODEL_CLASSES,
   EFFECT_PROFILES,
   OUTPUT_MODES,
-  RECURSIVE_EDGE_WITNESSES,
   RUN_CONTINUITY_MODES,
   type ModelClass,
   type OutputMode,
@@ -37,8 +36,6 @@ function validationReasonCodeForKey(key: string): FailureReasonCode {
       return "invalid_effect_profile";
     case "allowed_output_paths":
       return "authoring_effect_scope_invalid";
-    case "recursive_edge_witness":
-      return "recursive_control_invalid";
     case "expected_skill_sha256":
       return "invalid_expected_skill_sha256";
     case "skill_name":
@@ -244,17 +241,6 @@ export async function validateAndResolveRequest(
 
   const effectProfile = validateChoice(request.effect_profile, "effect_profile", EFFECT_PROFILES);
   const recursiveDelegation = request.recursive_delegation ?? "disabled";
-  const recursiveEdgeWitness = validateChoice(
-    request.recursive_edge_witness,
-    "recursive_edge_witness",
-    RECURSIVE_EDGE_WITNESSES,
-  );
-  if (recursiveEdgeWitness && recursiveDelegation !== "enabled") {
-    throw new ValidationError(
-      "recursive_edge_witness requires recursive_delegation enabled",
-      "recursive_control_invalid",
-    );
-  }
   if (isBoundedEffectProfile(effectProfile)) {
     const requiredSkill = boundedEffectProfileSkill(effectProfile);
     if (request.skill_name !== requiredSkill) {

@@ -136,8 +136,6 @@ export interface RunSubagentRequest extends SubagentRequestBase {
   expected_skill_sha256?: string;
   skill_snapshot_binding?: SkillSnapshotLaunchBinding;
   recursive_delegation?: RecursiveDelegation;
-  /** Opt-in public digest of each raw recursive delegate prompt; inherited and non-widenable. */
-  recursive_edge_witness?: RecursiveEdgeWitness;
   /** Canonical catalogue skill promoted to the final Pi system-prompt body. */
   system_skill_name?: string;
   /** Exact new file paths writable by task_root_authoring_v1. */
@@ -155,17 +153,6 @@ export interface GetRunTaskRequest {
 
 export const RECURSIVE_DELEGATIONS = ["disabled", "enabled"] as const;
 export type RecursiveDelegation = (typeof RECURSIVE_DELEGATIONS)[number];
-
-export const RECURSIVE_EDGE_WITNESSES = ["prompt_sha256_v1"] as const;
-export type RecursiveEdgeWitness = (typeof RECURSIVE_EDGE_WITNESSES)[number];
-
-export interface RecursiveEdgePromptWitness {
-  schema_version: 1;
-  encoding: "utf-8";
-  size_bytes: number;
-  content_sha256: string;
-  observation_scope: "raw_recursive_delegate_prompt_received_before_host_normalization_or_child_prompt_composition";
-}
 
 export interface RunnerConfig {
   default_model_class?: ModelClass;

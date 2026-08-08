@@ -475,26 +475,6 @@ test("current durable client-start snapshots obey one lifecycle/result invariant
     last_child_lifecycle_event: "child_prompt_submitted",
     last_child_lifecycle_at: terminalEvidence.finished_at,
   };
-  const edgePromptWitness = {
-    schema_version: 1,
-    encoding: "utf-8",
-    size_bytes: 17,
-    content_sha256: "7".repeat(64),
-    observation_scope: "raw_recursive_delegate_prompt_received_before_host_normalization_or_child_prompt_composition",
-  };
-  const witnessedRoot = {
-    ...active,
-    requested_recursive_delegation: "enabled",
-    requested_recursive_edge_witness: "prompt_sha256_v1",
-  };
-  const witnessedChild = {
-    ...witnessedRoot,
-    client_start_binding: undefined,
-    parent_run_id: "parent-run",
-    root_run_id: "parent-run",
-    recursion_depth: 1,
-    recursive_edge_prompt_witness: edgePromptWitness,
-  };
   const retiredRoutingOwnerFailure = {
     ...observedOwnerFailure,
     client_start_binding: undefined,
@@ -507,12 +487,6 @@ test("current durable client-start snapshots obey one lifecycle/result invariant
   const matrix: Array<{ name: string; valid: boolean; view: Record<string, unknown>; expected?: Record<string, unknown> }> = [
     { name: "working", valid: true, view: active },
     { name: "queued pre-child working", valid: true, view: { ...active, active_phase: "queued" } },
-    { name: "witnessed recursive root", valid: true, view: witnessedRoot },
-    { name: "witnessed recursive child", valid: true, view: witnessedChild },
-    { name: "witnessed child cannot omit prompt witness", valid: false, view: { ...witnessedChild, recursive_edge_prompt_witness: undefined } },
-    { name: "root cannot carry edge prompt witness", valid: false, view: { ...witnessedRoot, recursive_edge_prompt_witness: edgePromptWitness } },
-    { name: "edge prompt witness requires mode", valid: false, view: { ...witnessedChild, requested_recursive_edge_witness: undefined } },
-    { name: "edge prompt witness digest is exact", valid: false, view: { ...witnessedChild, recursive_edge_prompt_witness: { ...edgePromptWitness, content_sha256: "bad" } } },
     {
       name: "input_required",
       valid: true,
@@ -818,19 +792,6 @@ test("client start identity is strict, schema-normalized, and deterministically 
       ...governed,
       system_skill_name: "alternate-governor",
     } as never),
-  );
-  const witnessed = {
-    ...left,
-    recursive_delegation: "enabled",
-    recursive_edge_witness: "prompt_sha256_v1",
-  };
-  assert.equal(normalize(witnessed).recursive_edge_witness, "prompt_sha256_v1");
-  assert.notEqual(
-    clientStartAdmissionApi.canonicalClientStartRequestSha256({
-      ...left,
-      recursive_delegation: "enabled",
-    } as never),
-    clientStartAdmissionApi.canonicalClientStartRequestSha256(witnessed as never),
   );
   for (const retired of [
     { ...left, skill: "retired-skill" },
