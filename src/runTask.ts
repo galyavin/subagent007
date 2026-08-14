@@ -81,6 +81,7 @@ import type {
   RunSubagentSessionRequest,
   RunSubagentSessionResult,
   StartRunTaskRequest,
+  SpecialistCatalogueScope,
   SystemSkillActivationReceipt,
 } from "./types.js";
 import {
@@ -130,7 +131,9 @@ import {
   clientStartAdmissionOwnerLiveness,
   claimClientStartAdmission,
   findClientStartAdmission,
+  requestClientStartContainment,
   resolveClientStartAdmissionBinding,
+  withClientStartLaunchGuard,
   type ClientStartAdmission,
   type ClientStartBinding,
 } from "./clientStartAdmission.js";
@@ -247,6 +250,39 @@ export interface RunTaskView extends Partial<RunSubagentResult>, Partial<RunSuba
   client_start_binding?: ClientStartBinding;
 }
 
+export type ClientStartContainmentView =
+  | {
+      contract_name: "subagent007.client_start_containment";
+      contract_version: 1;
+      client_start_id: string;
+      containment_status: "fenced";
+      contained: true;
+      terminal: true;
+      fenced_at: string;
+    }
+  | {
+      contract_name: "subagent007.client_start_containment";
+      contract_version: 1;
+      client_start_id: string;
+      containment_status: "terminal";
+      contained: true;
+      terminal: true;
+      run_id: string;
+      run_status: RunTaskTerminalStatus;
+      run: RunTaskView;
+    }
+  | {
+      contract_name: "subagent007.client_start_containment";
+      contract_version: 1;
+      client_start_id: string;
+      containment_status: "unknown";
+      contained: false;
+      terminal: false;
+      run_id?: string;
+      reason_code: "run_liveness_unknown";
+      message: string;
+    };
+
 export interface RunTaskLineage {
   parentRunId?: string;
   rootRunId?: string;
@@ -310,6 +346,7 @@ interface RunTaskState {
   recursiveDelegationReceipt?: RecursiveDelegationReceipt;
   requestedRecursiveDelegation?: RunSubagentRequest["recursive_delegation"];
   requestedSystemSkill?: string;
+  requestedSpecialistCatalogueScope?: SpecialistCatalogueScope;
   /** Private root-resolved class for a live governed recursive lineage. */
   governingModelClass?: ModelClass;
   systemSkillActivationReceipt?: SystemSkillActivationReceipt;
@@ -405,6 +442,7 @@ interface RunOwnerLaunchObservation {
     resolved_recursive_delegation: "disabled" | "enabled";
     system_skill_name?: string;
     system_skill_path?: string;
+    specialist_catalogue_scope?: SpecialistCatalogueScope;
   };
 }
 
@@ -462,6 +500,9 @@ function ownerRequestDeclarationsFromRequest(
   return {
     ...(request.effect_profile ? { effectProfile: request.effect_profile } : {}),
     ...(request.system_skill_name ? { systemSkillName: request.system_skill_name } : {}),
+    ...(request.specialist_catalogue_scope
+      ? { specialistCatalogueScope: request.specialist_catalogue_scope }
+      : {}),
     ...(request.expected_skill_sha256 ? { expectedSkillSha256: request.expected_skill_sha256 } : {}),
     ...(request.skill_snapshot_binding ? { skillSnapshotBinding: request.skill_snapshot_binding } : {}),
     requestedRecursiveDelegation: request.recursive_delegation ?? null,
@@ -503,6 +544,7 @@ function recordOwnerLaunchObservation(
     resolvedRecursiveDelegation: "disabled" | "enabled";
     systemSkillName?: string;
     systemSkillPath?: string;
+    specialistCatalogueScope?: SpecialistCatalogueScope;
     governingModelClass?: ModelClass;
   },
 ): void {
@@ -527,6 +569,9 @@ function recordOwnerLaunchObservation(
         system_skill_name: observation.systemSkillName,
         system_skill_path: observation.systemSkillPath,
       } : {}),
+      ...(observation.specialistCatalogueScope
+        ? { specialist_catalogue_scope: observation.specialistCatalogueScope }
+        : {}),
     },
   };
 }
@@ -600,9 +645,11 @@ function assertRunOwnerRecord(record: CurrentRunClaimV1): void {
       "skill_snapshot_binding", "skill_snapshot_activation_receipt",
       "requested_recursive_delegation", "resolved_recursive_delegation",
       ...(declarations.systemSkillName ? ["system_skill_name", "system_skill_path"] : []),
+      ...(declarations.specialistCatalogueScope ? ["specialist_catalogue_scope"] : []),
     ]) ||
       expectation.requested_effect_profile !== (declarations.effectProfile ?? null) ||
       expectation.system_skill_name !== declarations.systemSkillName ||
+      expectation.specialist_catalogue_scope !== declarations.specialistCatalogueScope ||
       (declarations.systemSkillName !== undefined && !isNonemptyString(expectation.system_skill_path)) ||
       expectation.expected_skill_sha256 !== (declarations.expectedSkillSha256 ?? null) ||
       !sameCanonicalOwnerJson(expectation.skill_snapshot_binding, declarations.skillSnapshotBinding ?? null) ||
@@ -635,7 +682,8 @@ function assertRunOwnerRecord(record: CurrentRunClaimV1): void {
           ...(expectation.expected_skill_sha256 !== null
             ? { expectedSkillSha256: expectation.expected_skill_sha256 as string }
             : {}),
-          ...(isBoundedEffectProfile(expectation.requested_effect_profile as RunSubagentRequest["effect_profile"])
+          ...((isBoundedEffectProfile(expectation.requested_effect_profile as RunSubagentRequest["effect_profile"]) ||
+            expectation.requested_effect_profile === "task_root_read_only_v1")
             ? { expectedToolBindings: expectation.tool_bindings as import("./types.js").ActivationToolBinding[] }
             : {}),
           ...(expectedScope ? { expectedEffectScopeBinding: expectedScope as import("./types.js").AuthoringEffectScopeBinding } : {}),
@@ -1189,7 +1237,7 @@ const RETIRED_CURRENT_RUN_FIELDS = [
 const OWNER_VALIDATION_REASON_CODES = new Set<FailureReasonCode>([
   "child_entrypoint_missing", "child_entrypoint_not_file", "config_missing_default_model_class",
   "cancelled_before_first_output", "cwd_inaccessible", "cwd_not_absolute", "cwd_not_directory",
-  "disk_reserve_exhausted", "client_start_id_conflict", "invalid_output_mode", "invalid_packet_policy",
+  "disk_reserve_exhausted", "client_start_id_conflict", "client_start_id_fenced", "invalid_output_mode", "invalid_packet_policy",
   "invalid_model", "invalid_model_class", "model_class_unhealthy", "invalid_resume_mode",
   "invalid_session_id", "invalid_session_key", "invalid_skill", "invalid_thinking_level",
   "invalid_effect_profile", "authoring_effect_scope_invalid",
@@ -1237,6 +1285,7 @@ interface DerivedOwnerTerminalLifecycle {
 interface OwnerRequestDeclarations {
   effectProfile?: NonNullable<RunSubagentRequest["effect_profile"]>;
   systemSkillName?: string;
+  specialistCatalogueScope?: SpecialistCatalogueScope;
   expectedSkillSha256?: string;
   skillSnapshotBinding?: NonNullable<RunSubagentRequest["skill_snapshot_binding"]>;
   requestedRecursiveDelegation: "disabled" | "enabled" | null;
@@ -1252,6 +1301,9 @@ function ownerRequestDeclarations(view: RunTaskView): OwnerRequestDeclarations |
   const systemSkillName = hasOwnDefined(view, "requested_system_skill")
     ? view.requested_system_skill
     : undefined;
+  const specialistCatalogueScope = hasOwnDefined(view, "requested_specialist_catalogue_scope")
+    ? view.requested_specialist_catalogue_scope
+    : undefined;
   const rawSnapshotBinding = hasOwnDefined(view, "skill_snapshot_binding")
     ? view.skill_snapshot_binding
     : undefined;
@@ -1263,6 +1315,8 @@ function ownerRequestDeclarations(view: RunTaskView): OwnerRequestDeclarations |
   if (
     (effectProfile !== undefined && !EFFECT_PROFILE_SET.has(effectProfile)) ||
     (systemSkillName !== undefined && (typeof systemSkillName !== "string" || systemSkillName.length === 0)) ||
+    (specialistCatalogueScope !== undefined && specialistCatalogueScope !== "selected_only") ||
+    (specialistCatalogueScope !== undefined && systemSkillName === undefined) ||
     (expectedSkillSha256 !== undefined && !/^[0-9a-f]{64}$/.test(expectedSkillSha256)) ||
     (rawSnapshotBinding !== undefined && !validatedSkillSnapshotLaunchBinding(rawSnapshotBinding)) ||
     (isBoundedEffectProfile(effectProfile) && rawSnapshotBinding === undefined) ||
@@ -1274,6 +1328,7 @@ function ownerRequestDeclarations(view: RunTaskView): OwnerRequestDeclarations |
   return {
     ...(effectProfile ? { effectProfile } : {}),
     ...(systemSkillName ? { systemSkillName } : {}),
+    ...(specialistCatalogueScope ? { specialistCatalogueScope } : {}),
     ...(expectedSkillSha256 ? { expectedSkillSha256 } : {}),
     ...(rawSnapshotBinding ? { skillSnapshotBinding: rawSnapshotBinding } : {}),
     requestedRecursiveDelegation,
@@ -2134,7 +2189,7 @@ function activeProgressView(state: RunTaskState): RunTaskProgressView {
 
 function activationView(state: RunTaskState): Pick<
   RunTaskView,
-  "requested_effect_profile" | "resolved_effect_profile" | "expected_skill_sha256" | "activation_receipt" | "skill_snapshot_binding" | "skill_snapshot_activation_receipt" | "requested_recursive_delegation" | "resolved_recursive_delegation" | "recursive_delegation_receipt" | "requested_system_skill" | "system_skill_activation_receipt"
+  "requested_effect_profile" | "resolved_effect_profile" | "expected_skill_sha256" | "activation_receipt" | "skill_snapshot_binding" | "skill_snapshot_activation_receipt" | "requested_recursive_delegation" | "resolved_recursive_delegation" | "recursive_delegation_receipt" | "requested_system_skill" | "requested_specialist_catalogue_scope" | "system_skill_activation_receipt"
 > {
   return {
     ...(state.requestedEffectProfile ? { requested_effect_profile: state.requestedEffectProfile } : {}),
@@ -2157,6 +2212,9 @@ function activationView(state: RunTaskState): Pick<
       recursive_delegation_receipt: state.recursiveDelegationReceipt,
     } : {}),
     ...(state.requestedSystemSkill ? { requested_system_skill: state.requestedSystemSkill } : {}),
+    ...(state.requestedSpecialistCatalogueScope
+      ? { requested_specialist_catalogue_scope: state.requestedSpecialistCatalogueScope }
+      : {}),
     ...(state.systemSkillActivationReceipt
       ? { system_skill_activation_receipt: state.systemSkillActivationReceipt }
       : {}),
@@ -2248,6 +2306,7 @@ function publishRunTaskTransitionState(state: RunTaskState, draft: RunTaskState)
   state.recursiveDelegationReceipt = draft.recursiveDelegationReceipt;
   state.requestedRecursiveDelegation = draft.requestedRecursiveDelegation;
   state.requestedSystemSkill = draft.requestedSystemSkill;
+  state.requestedSpecialistCatalogueScope = draft.requestedSpecialistCatalogueScope;
   state.governingModelClass = draft.governingModelClass;
   state.systemSkillActivationReceipt = draft.systemSkillActivationReceipt;
   state.expectedSkillSha256 = draft.expectedSkillSha256;
@@ -2701,6 +2760,9 @@ function bindRequestToRunTaskState(
   if ("skill_snapshot_binding" in request) state.skillSnapshotBinding = request.skill_snapshot_binding;
   if ("recursive_delegation" in request) state.requestedRecursiveDelegation = request.recursive_delegation;
   if ("system_skill_name" in request) state.requestedSystemSkill = request.system_skill_name;
+  if ("specialist_catalogue_scope" in request) {
+    state.requestedSpecialistCatalogueScope = request.specialist_catalogue_scope;
+  }
 }
 
 async function registerRunTaskState(
@@ -4400,22 +4462,48 @@ export async function reconcilePersistedActiveRunTasks(): Promise<number> {
   return reconciled;
 }
 
-function executeRunTask(
+async function executeRunTask(
   state: RunTaskState,
   request: RunSubagentRequest,
   skillFilePath: string | undefined,
   options: { runsDir?: string; heartbeat?: HeartbeatNotify; heartbeatIntervalMs?: number },
 ): Promise<RunSubagentResult> {
-  return runSubagentCore(request, {
+  const runtimeOptions = taskChildRuntimeOptions(state, options);
+  const launch = (onChildSpawned = runtimeOptions.onChildSpawned) => runSubagentCore(request, {
     runId: state.runId,
     mailboxRoot: state.mailboxRoot,
     runsDir: options.runsDir,
     allowTimeout: true,
     skillFilePath,
     ...taskRecursiveRuntimeOptions(state),
-    ...taskChildRuntimeOptions(state, options),
+    ...runtimeOptions,
+    onChildSpawned,
     ...taskInputControlOptions(state),
   });
+  if (!state.clientStartBinding) return launch();
+
+  let processPromise: Promise<RunSubagentResult> | undefined;
+  try {
+    await withClientStartLaunchGuard(state.clientStartBinding, async () => {
+      let releaseSpawnWait!: () => void;
+      const spawned = new Promise<void>((resolve) => { releaseSpawnWait = resolve; });
+      processPromise = launch(async (occurredAt) => {
+        await runtimeOptions.onChildSpawned(occurredAt);
+        releaseSpawnWait();
+      });
+      await Promise.race([
+        spawned,
+        processPromise.then(() => undefined, () => undefined),
+      ]);
+    });
+  } catch (error) {
+    if (error instanceof ValidationError && error.reasonCode === "client_start_id_fenced") {
+      await acceptRunCancellation(state);
+    }
+    throw error;
+  }
+  if (!processPromise) throw new Error("client-start launch guard returned without an execution attempt");
+  return processPromise;
 }
 
 async function replayClientStartAdmission(
@@ -4582,6 +4670,20 @@ export async function startRunTask(
   const failureLogTool = options.failureLogTool ?? "start_run";
   const replayAdmission = await findClientStartAdmission(request);
   if (replayAdmission) {
+    if (replayAdmission.cancellation_requested_at) {
+      const contained = await cancelClientStartTask(replayAdmission.binding.client_start_id);
+      if (contained.containment_status === "terminal") return contained.run;
+      if (contained.containment_status === "fenced") {
+        throw new ValidationError(
+          "client_start_id is fenced and cannot admit a run",
+          "client_start_id_fenced",
+        );
+      }
+      throw new ValidationError(
+        contained.message,
+        "run_liveness_unknown",
+      );
+    }
     return replayClientStartAdmission(replayAdmission, request, failureLogTool, options.lineage);
   }
   const config = await loadConfig();
@@ -4688,7 +4790,9 @@ export async function startRunTask(
         terminal.result = await executeRunTask(state, request, skillFilePath, options);
       } catch (error) {
         terminal.error = error instanceof Error ? error : new Error(String(error));
-        await logBackgroundHandlerError(failureLogTool, request, error);
+        if (!(error instanceof ValidationError && error.reasonCode === "client_start_id_fenced")) {
+          await logBackgroundHandlerError(failureLogTool, request, error);
+        }
       } finally {
         await releaseQueueTicket(queuedAdmission.ticket);
         await finalizeRegisteredRunTask(
@@ -4725,7 +4829,9 @@ export async function startRunTask(
       terminal.result = await executeRunTask(state, request, skillFilePath, options);
     } catch (error) {
       terminal.error = error instanceof Error ? error : new Error(String(error));
-      await logBackgroundHandlerError(failureLogTool, request, error);
+      if (!(error instanceof ValidationError && error.reasonCode === "client_start_id_fenced")) {
+        await logBackgroundHandlerError(failureLogTool, request, error);
+      }
     } finally {
       await finalizeRegisteredRunTask(
         state,
@@ -5095,6 +5201,150 @@ export async function cancelRunTask(runId: string): Promise<RunTaskView> {
     if (state.cancelRequested) state.abortController.abort();
     throw error;
   }
+}
+
+function clientStartFenceView(
+  clientStartId: string,
+  fencedAt: string,
+): ClientStartContainmentView {
+  return {
+    contract_name: "subagent007.client_start_containment",
+    contract_version: 1,
+    client_start_id: clientStartId,
+    containment_status: "fenced",
+    contained: true,
+    terminal: true,
+    fenced_at: fencedAt,
+  };
+}
+
+function clientStartTerminalView(
+  clientStartId: string,
+  run: RunTaskView,
+): ClientStartContainmentView {
+  if (!isTerminalRunStatus(run.status)) {
+    throw new Error("client-start containment terminal projection requires a terminal run");
+  }
+  return {
+    contract_name: "subagent007.client_start_containment",
+    contract_version: 1,
+    client_start_id: clientStartId,
+    containment_status: "terminal",
+    contained: true,
+    terminal: true,
+    run_id: run.run_id,
+    run_status: run.status as RunTaskTerminalStatus,
+    run,
+  };
+}
+
+function clientStartUnknownView(
+  clientStartId: string,
+  message: string,
+  runId?: string,
+): ClientStartContainmentView {
+  return {
+    contract_name: "subagent007.client_start_containment",
+    contract_version: 1,
+    client_start_id: clientStartId,
+    containment_status: "unknown",
+    contained: false,
+    terminal: false,
+    ...(runId ? { run_id: runId } : {}),
+    reason_code: "run_liveness_unknown",
+    message,
+  };
+}
+
+/**
+ * Fence or cancel one exact client-start admission without invoking start_run.
+ * The admission store owns token identity; the existing run owner owns attempt
+ * cancellation and terminal evidence.
+ */
+export async function cancelClientStartTask(
+  clientStartId: string,
+): Promise<ClientStartContainmentView> {
+  const disposition = await requestClientStartContainment(clientStartId);
+  if (disposition.kind === "fenced") {
+    return clientStartFenceView(disposition.client_start_id, disposition.fenced_at);
+  }
+  if (disposition.kind === "unknown") {
+    return clientStartUnknownView(
+      disposition.client_start_id,
+      disposition.message,
+    );
+  }
+
+  const admission = disposition.admission;
+  const runId = admission.binding.run_id;
+  try {
+    let snapshot = await readTaskSnapshot(runId);
+    if (!snapshot) {
+      snapshot = await promotePreparedClientStartCandidate(admission).catch(() => null);
+    }
+    if (snapshot && isTerminalRunStatus(snapshot.status)) {
+      return clientStartTerminalView(clientStartId, await getRunTask(runId));
+    }
+
+    let ownerLiveness: Awaited<ReturnType<typeof clientStartAdmissionOwnerLiveness>> | undefined;
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      const state = tasks.get(runId);
+      if (state) {
+        await cancelRunTask(runId);
+        if (state.promise) await state.promise;
+        const terminal = await getRunTask(runId);
+        if (isTerminalRunStatus(terminal.status)) {
+          return clientStartTerminalView(clientStartId, terminal);
+        }
+      } else {
+        const current = await readTaskSnapshot(runId);
+        if (current && isTerminalRunStatus(current.status)) {
+          return clientStartTerminalView(clientStartId, await getRunTask(runId));
+        }
+        ownerLiveness ??= await clientStartAdmissionOwnerLiveness(admission);
+        if (ownerLiveness === "gone") {
+          if (current) {
+            const terminal = await getRunTask(runId);
+            if (isTerminalRunStatus(terminal.status)) {
+              return clientStartTerminalView(clientStartId, terminal);
+            }
+          } else {
+            return clientStartUnknownView(
+              clientStartId,
+              "the exact bound attempt did not reach observable terminal containment",
+              runId,
+            );
+          }
+        }
+        if (ownerLiveness === "unknown") {
+          return clientStartUnknownView(
+            clientStartId,
+            "the bound client-start attempt owner cannot be observed safely",
+            runId,
+          );
+        }
+        if (ownerLiveness === "live" && admission.owner_pid !== process.pid) {
+          return clientStartUnknownView(
+            clientStartId,
+            "the exact bound attempt did not reach observable terminal containment",
+            runId,
+          );
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  } catch (error) {
+    return clientStartUnknownView(
+      clientStartId,
+      error instanceof Error ? error.message : String(error),
+      runId,
+    );
+  }
+  return clientStartUnknownView(
+    clientStartId,
+    "the exact bound attempt did not reach observable terminal containment",
+    runId,
+  );
 }
 
 export interface RunOperationContext {

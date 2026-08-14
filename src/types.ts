@@ -6,6 +6,7 @@ export const OUTPUT_MODES = ["final", "transcript"] as const;
 export type OutputMode = (typeof OUTPUT_MODES)[number];
 export const EFFECT_PROFILES = [
   "workspace_read_only",
+  "task_root_read_only_v1",
   "task_root_authoring_v1",
   "skill_creator_authoring_v1",
   "researcher_bounded_v1",
@@ -46,6 +47,7 @@ export type FailureReasonCode =
   | "disk_reserve_exhausted"
   | "handler_error"
   | "client_start_id_conflict"
+  | "client_start_id_fenced"
   | "invalid_output_mode"
   | "invalid_packet_policy"
   | "invalid_model"
@@ -138,6 +140,8 @@ export interface RunSubagentRequest extends SubagentRequestBase {
   recursive_delegation?: RecursiveDelegation;
   /** Canonical catalogue skill promoted to the final Pi system-prompt body. */
   system_skill_name?: string;
+  /** With a system skill, expose only the explicitly selected ordinary specialist, or none. */
+  specialist_catalogue_scope?: SpecialistCatalogueScope;
   /** Exact new file paths writable by task_root_authoring_v1. */
   allowed_output_paths?: string[];
 }
@@ -153,6 +157,9 @@ export interface GetRunTaskRequest {
 
 export const RECURSIVE_DELEGATIONS = ["disabled", "enabled"] as const;
 export type RecursiveDelegation = (typeof RECURSIVE_DELEGATIONS)[number];
+
+export const SPECIALIST_CATALOGUE_SCOPES = ["selected_only"] as const;
+export type SpecialistCatalogueScope = (typeof SPECIALIST_CATALOGUE_SCOPES)[number];
 
 export interface RunnerConfig {
   default_model_class?: ModelClass;
@@ -173,6 +180,7 @@ export interface ResolvedRunSubagentRequest {
   recursiveDelegation: RecursiveDelegation;
   requestedRecursiveDelegation: RecursiveDelegation | null;
   systemSkill?: string;
+  specialistCatalogueScope?: SpecialistCatalogueScope;
   allowedOutputPaths?: string[];
   outputMode: OutputMode;
 }
@@ -198,7 +206,16 @@ export interface AuthoringEffectScopeBinding {
 }
 
 export interface ActivationToolBinding {
-  tool_name: "request_input" | "web_read" | "web_search" | "researchctl" | "aj_switchboard";
+  tool_name:
+    | "read"
+    | "grep"
+    | "find"
+    | "ls"
+    | "request_input"
+    | "web_read"
+    | "web_search"
+    | "researchctl"
+    | "aj_switchboard";
   provider_id: string;
   implementation_sha256: string;
 }
@@ -511,6 +528,7 @@ interface SubagentRunResultBase {
   resolved_recursive_delegation?: RecursiveDelegation;
   recursive_delegation_receipt?: RecursiveDelegationReceipt;
   requested_system_skill?: string;
+  requested_specialist_catalogue_scope?: SpecialistCatalogueScope;
   system_skill_activation_receipt?: SystemSkillActivationReceipt;
   requested_output_mode: OutputMode;
   written_output_mode: OutputMode;

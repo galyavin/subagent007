@@ -1,7 +1,7 @@
 ---
 name: runtime-artifact-ownership
 description: Prevent disk and build garbage by assigning every runtime artifact an observable owner, successor, and cleanup condition.
-last_updated: 2026-07-26
+last_updated: 2026-08-08
 ---
 
 # Runtime Artifact Ownership
@@ -18,6 +18,7 @@ Use this pattern when adding or changing child output, temporary directories, so
 - When one terminal result requires multiple public files, prepare and witness all files first, persist their exact private ownership before the first non-atomic publish, and clear that ownership only in the terminal commit that references the complete set. Consumers select references by their exact role name, never array position or single-reference cardinality. Owner-loss cleanup must remove staged and partially published members; failed cleanup keeps a retryable durable owner rather than an orphan.
 - A protected free-space reserve stops new or active work before the host reaches filesystem exhaustion; it does not silently truncate a continuing run.
 - Builds compile away from the runtime-visible release, publish through one atomic pointer switch, and retain any release with a live server lease.
+- On Unix, a child-created process group that may outlive its immediate launcher must be registered with the nearest surviving live execution owner before consequential bytes or effects are released. Keep a separate group when per-call cancellation requires it; retain it until targeted observation proves the group empty, or settle it at episode terminality with the existing graceful/force windows and observe absence before returning. Use only private live control frames—never a durable process journal, workspace scan, or public receipt. Treat the registered group as the observation ceiling unless a real OS sandbox or external process manager is explicitly in scope.
 
 ## Verification
 
@@ -27,3 +28,4 @@ Use this pattern when adding or changing child output, temporary directories, so
 4. Prove cleanup preserves live-owned and unowned legacy paths while removing stale owned paths.
 5. Prove descriptor finalization/recovery reject symlink, directory, FIFO, hardlink, pre-rename same-inode rewrite, pathname replacement, post-read mutation, oversize/growth, and declared size/digest mismatch; prove a rename-window rewrite emits the exact final bytes' digest and ordinary rename ctime changes succeed.
 6. Prove runtime entrypoints remain present during build publication, readiness exposes the lease-owned loaded release and `dist/current` release identities, and an older loaded release is blocked rather than accepted from stable launcher bytes.
+7. Prove a Bash-started background HTTP service is reachable from a later call in the same episode and that its process and port are absent after success, failure, cancellation, forced child death, and ignored graceful termination.

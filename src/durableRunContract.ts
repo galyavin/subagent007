@@ -8,6 +8,7 @@ import {
   ASSUMPTION_AUDIT_BOUNDED_V1_TOOL_NAMES,
   RESEARCHER_BOUNDED_V1_TOOL_NAMES,
   SKILL_CREATOR_AUTHORING_V1_TOOL_NAMES,
+  TASK_ROOT_READ_ONLY_V1_TOOL_NAMES,
   TASK_ROOT_AUTHORING_V1_TOOL_NAMES,
   WORKSPACE_READ_ONLY_TOOL_NAMES,
 } from "./toolProfile.js";
@@ -60,6 +61,7 @@ export const DURABLE_RUN_CAPABILITIES = [
   "restart_drift_fail_closed",
   "recursive_delegate_lineage",
   "workspace_read_only_effect_profile",
+  "task_root_read_only_v1_effect_profile",
   "skill_creator_authoring_v1_effect_profile",
   "task_root_authoring_v1_effect_profile",
   "authoring_effect_scope_binding",
@@ -79,7 +81,9 @@ export const DURABLE_RUN_CAPABILITIES = [
   "explicit_recursive_delegation",
   "terminal_recursive_subtree_closure",
   "system_skill_governing_prompt",
+  "selected_only_specialist_catalogue",
   "event_driven_get_run_wait",
+  "client_start_containment_fence",
 ] as const;
 
 export function durableRunContractView(): {
@@ -98,6 +102,7 @@ export function durableRunContractView(): {
     poll: "get_run";
     answer_input: "answer_run_input";
     cancel: "cancel_run";
+    cancel_client_start: "cancel_client_start";
   };
   observation: {
     tool: "get_run";
@@ -155,7 +160,13 @@ export function durableRunContractView(): {
     binding_durability: "file_and_parent_directory_fsync";
     replay: "same_run_across_process_restart";
     conflict_reason_code: "client_start_id_conflict";
-    lookup_tool: "none";
+    fenced_reason_code: "client_start_id_fenced";
+    containment_tool: "cancel_client_start";
+    containment_contract: "subagent007.client_start_containment.v1";
+    containment_is_non_creating: true;
+    unbound_containment: "durable_fence_before_child_launch";
+    bound_containment: "cancel_exact_bound_attempt";
+    unknown_containment: "typed_run_liveness_unknown";
     lost_owner_terminal: "restart_drift";
   };
   skill_binding_verification: {
@@ -245,6 +256,38 @@ export function durableRunContractView(): {
       provider_binding: "explicit_identity_and_sha256";
       enforcement_boundary: "pi_create_agent_session_tools_allowlist";
       claim_ceiling: "pi_tool_dispatch_not_os_sandbox";
+      activation_receipt: {
+        result_field: "activation_receipt";
+        event_type: "subagent007.activation_confirmed";
+        required_before_prompt: true;
+        schema_version: 1;
+        fields: [
+          "schema_version",
+          "confirmed_before_prompt",
+          "requested_effect_profile",
+          "resolved_effect_profile",
+          "active_tool_names",
+          "tool_bindings",
+          "toolset_sha256",
+          "skill_binding",
+        ];
+      };
+    };
+    task_root_read_only_v1: {
+      supported_tools: typeof TASK_ROOT_READ_ONLY_V1_TOOL_NAMES;
+      supported_start_tools: ["run_subagent", "start_run", "schedule_run"];
+      supported_continuity_modes: ["ephemeral", "fresh", "resume"];
+      named_sessions: "unsupported";
+      recursive_delegate: "excluded";
+      ambient_extensions: "disabled";
+      ambient_instructions: "disabled";
+      provider_binding: "guard_implementation_and_activation_config_sha256";
+      enforcement_boundary: "pi_create_agent_session_tools_allowlist_task_root_path_guards_and_resource_loader";
+      task_root: "exact_real_run_cwd";
+      task_root_read_scope: "exact_root_path_boundary";
+      snapshot_runtime_read_scope: "selected_run_owned_or_active_validated_snapshot_runtime_root_or_none";
+      symbolic_link_escape: "rejected_and_recursive_tools_do_not_follow_links";
+      claim_ceiling: "pi_tool_dispatch_path_guards_and_resource_loader_not_os_sandbox";
       activation_receipt: {
         result_field: "activation_receipt";
         event_type: "subagent007.activation_confirmed";
@@ -430,6 +473,15 @@ export function durableRunContractView(): {
     source: "canonical_current_catalogue_skill";
     catalogue: "normal_minus_governing_skill";
     selected_specialist_field: "skill_name";
+    specialist_catalogue_scope: {
+      request_field: "specialist_catalogue_scope";
+      values: ["selected_only"];
+      omission: "normal_minus_governing_skill";
+      selected_only: "exact_selected_skill_or_none";
+      recursive_inheritance: "trusted_caller_context_non_widenable";
+      enforcement: "pi_resource_loader_exact_match_before_prompt";
+      claim_ceiling: "pi_specialist_resource_catalogue_not_filesystem_or_tool_sandbox";
+    };
     recursive_inheritance: "trusted_caller_context_non_widenable";
     persistence: "no_prompt_snapshot_copy_or_version_ledger";
     receipt: {
@@ -476,6 +528,7 @@ export function durableRunContractView(): {
       poll: "get_run",
       answer_input: "answer_run_input",
       cancel: "cancel_run",
+      cancel_client_start: "cancel_client_start",
     },
     observation: {
       tool: "get_run",
@@ -533,7 +586,13 @@ export function durableRunContractView(): {
       binding_durability: "file_and_parent_directory_fsync",
       replay: "same_run_across_process_restart",
       conflict_reason_code: "client_start_id_conflict",
-      lookup_tool: "none",
+      fenced_reason_code: "client_start_id_fenced",
+      containment_tool: "cancel_client_start",
+      containment_contract: "subagent007.client_start_containment.v1",
+      containment_is_non_creating: true,
+      unbound_containment: "durable_fence_before_child_launch",
+      bound_containment: "cancel_exact_bound_attempt",
+      unknown_containment: "typed_run_liveness_unknown",
       lost_owner_terminal: "restart_drift",
     },
     skill_binding_verification: {
@@ -623,6 +682,38 @@ export function durableRunContractView(): {
         provider_binding: "explicit_identity_and_sha256",
         enforcement_boundary: "pi_create_agent_session_tools_allowlist",
         claim_ceiling: "pi_tool_dispatch_not_os_sandbox",
+        activation_receipt: {
+          result_field: "activation_receipt",
+          event_type: "subagent007.activation_confirmed",
+          required_before_prompt: true,
+          schema_version: 1,
+          fields: [
+            "schema_version",
+            "confirmed_before_prompt",
+            "requested_effect_profile",
+            "resolved_effect_profile",
+            "active_tool_names",
+            "tool_bindings",
+            "toolset_sha256",
+            "skill_binding",
+          ],
+        },
+      },
+      task_root_read_only_v1: {
+        supported_tools: TASK_ROOT_READ_ONLY_V1_TOOL_NAMES,
+        supported_start_tools: ["run_subagent", "start_run", "schedule_run"],
+        supported_continuity_modes: ["ephemeral", "fresh", "resume"],
+        named_sessions: "unsupported",
+        recursive_delegate: "excluded",
+        ambient_extensions: "disabled",
+        ambient_instructions: "disabled",
+        provider_binding: "guard_implementation_and_activation_config_sha256",
+        enforcement_boundary: "pi_create_agent_session_tools_allowlist_task_root_path_guards_and_resource_loader",
+        task_root: "exact_real_run_cwd",
+        task_root_read_scope: "exact_root_path_boundary",
+        snapshot_runtime_read_scope: "selected_run_owned_or_active_validated_snapshot_runtime_root_or_none",
+        symbolic_link_escape: "rejected_and_recursive_tools_do_not_follow_links",
+        claim_ceiling: "pi_tool_dispatch_path_guards_and_resource_loader_not_os_sandbox",
         activation_receipt: {
           result_field: "activation_receipt",
           event_type: "subagent007.activation_confirmed",
@@ -808,6 +899,15 @@ export function durableRunContractView(): {
       source: "canonical_current_catalogue_skill",
       catalogue: "normal_minus_governing_skill",
       selected_specialist_field: "skill_name",
+      specialist_catalogue_scope: {
+        request_field: "specialist_catalogue_scope",
+        values: ["selected_only"],
+        omission: "normal_minus_governing_skill",
+        selected_only: "exact_selected_skill_or_none",
+        recursive_inheritance: "trusted_caller_context_non_widenable",
+        enforcement: "pi_resource_loader_exact_match_before_prompt",
+        claim_ceiling: "pi_specialist_resource_catalogue_not_filesystem_or_tool_sandbox",
+      },
       recursive_inheritance: "trusted_caller_context_non_widenable",
       persistence: "no_prompt_snapshot_copy_or_version_ledger",
       receipt: {

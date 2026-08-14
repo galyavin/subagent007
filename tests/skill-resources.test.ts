@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import {
+  assertSpecialistCatalogueScope,
   createSkillScopedResourceLoader,
   resolveRequestedSkill,
   skillResourcePathsForRequest,
@@ -66,6 +67,52 @@ test("skill-scoped resource loader exposes only the requested skill", async () =
   assert.equal(skills.length, 1);
   assert.equal(skills[0].name, "requested-skill");
   assert.equal(skills[0].filePath, requestedPath);
+});
+
+test("selected-only governed loading exposes exactly the admitted specialist or none", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-selected-catalogue-"));
+  const cwd = path.join(tmp, "project");
+  const agentDir = path.join(tmp, "agent");
+  const skillsRoot = path.join(tmp, "skills");
+  await fs.mkdir(cwd, { recursive: true });
+  await writeSkill(skillsRoot, "governor", "governor-skill");
+  const selectedPath = await writeSkill(skillsRoot, "selected", "selected-skill");
+  await writeSkill(skillsRoot, "ambient", "ambient-skill");
+
+  const selectedOptions = {
+    cwd,
+    agentDir,
+    lookupPaths: [skillsRoot],
+    systemSkill: "governor-skill",
+    specialistCatalogueScope: "selected_only" as const,
+    skill: "selected-skill",
+    skillFilePath: selectedPath,
+  };
+  const selectedLoader = createSkillScopedResourceLoader(selectedOptions);
+  await selectedLoader.reload();
+  assert.deepEqual(
+    selectedLoader.getSkills().skills.map((skill) => [skill.name, skill.filePath]),
+    [["selected-skill", selectedPath]],
+  );
+  assert.doesNotThrow(() =>
+    assertSpecialistCatalogueScope(selectedOptions, selectedLoader.getSkills().skills));
+  assert.throws(
+    () => assertSpecialistCatalogueScope(selectedOptions, []),
+    /does not match the admitted skill binding/,
+  );
+
+  const unboundOptions = {
+    cwd,
+    agentDir,
+    lookupPaths: [skillsRoot],
+    systemSkill: "governor-skill",
+    specialistCatalogueScope: "selected_only" as const,
+  };
+  const unboundLoader = createSkillScopedResourceLoader(unboundOptions);
+  await unboundLoader.reload();
+  assert.deepEqual(unboundLoader.getSkills().skills, []);
+  assert.doesNotThrow(() =>
+    assertSpecialistCatalogueScope(unboundOptions, unboundLoader.getSkills().skills));
 });
 
 test("requested skill resolution fails fast for unknown or ambiguous skills", async () => {

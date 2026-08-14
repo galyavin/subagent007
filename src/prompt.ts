@@ -10,7 +10,10 @@ export function composePrompt({
   skill?: string;
 }): string {
   if (skill) {
-    return [`/skill:${skill}`, "", "<prompt>", prompt, "</prompt>"].join("\n");
+    // Pi recognizes the end of `/skill:name` only at the first literal space.
+    // Keep the caller prompt as the command argument so Pi expands the selected
+    // SKILL.md before the first model turn.
+    return [`/skill:${skill} <prompt>`, prompt, "</prompt>"].join("\n");
   }
 
   return prompt;

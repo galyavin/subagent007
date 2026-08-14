@@ -1,12 +1,17 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fsp from "node:fs/promises";
 import { StringDecoder } from "node:string_decoder";
+import {
+  episodeProcessGroupRegistrationAckFrame,
+  parseEpisodeProcessGroupRegistration,
+} from "./episodeBash.js";
 import { DEFAULT_HEARTBEAT_INTERVAL_MS, type HeartbeatNotify } from "./progress.js";
 import type { TimeoutBudget } from "./timeoutBudget.js";
 import type { RunStopReason } from "./types.js";
 
 export const CHILD_OWNER_COMMIT_RELEASE_FRAME =
   `${JSON.stringify({ type: "subagent007.owner_commit_release", version: 1 })}\n`;
+const PROCESS_GROUP_RECHECK_INTERVAL_MS = 100;
 
 export interface DiskReserveGuard {
   path: string;
@@ -75,6 +80,19 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
       detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],
     });
+    const writeControlFrame = (frame: string): Promise<void> => new Promise((release, rejectWrite) => {
+      if (child.stdin.destroyed || !child.stdin.writable) {
+        rejectWrite(new Error("child control pipe closed before process ownership was established"));
+        return;
+      }
+      child.stdin.write(frame, (error) => {
+        if (error) {
+          rejectWrite(error);
+        } else {
+          release();
+        }
+      });
+    });
     let resolveSpawnObservation!: () => void;
     let rejectSpawnObservation!: (error: Error) => void;
     let spawnObservationError: Error | undefined;
@@ -83,19 +101,8 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
       rejectSpawnObservation = reject;
     });
     void spawnObservation.catch(() => undefined);
-    const releaseChildAfterOwnerCommit = (): Promise<void> => new Promise((release, reject) => {
-      if (child.stdin.destroyed || !child.stdin.writable) {
-        reject(new Error("child control pipe closed before owner commit release"));
-        return;
-      }
-      child.stdin.write(CHILD_OWNER_COMMIT_RELEASE_FRAME, (error) => {
-        if (error) {
-          reject(error);
-        } else {
-          release();
-        }
-      });
-    });
+    const releaseChildAfterOwnerCommit = (): Promise<void> =>
+      writeControlFrame(CHILD_OWNER_COMMIT_RELEASE_FRAME);
     child.once("spawn", () => {
       const occurredAt = new Date().toISOString();
       void Promise.resolve()
@@ -139,14 +146,19 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
     let forceTimeout: NodeJS.Timeout | undefined;
     let heartbeatInterval: NodeJS.Timeout | undefined;
     let diskInterval: NodeJS.Timeout | undefined;
+    let processGroupObservationInterval: NodeJS.Timeout | undefined;
     let heartbeatBeat = 0;
     let heartbeatInFlight = false;
     let diskCheckInFlight = false;
     let abortListener: (() => void) | undefined;
     let cleanupOnParentExit: (() => void) | undefined;
     let terminationStarted = false;
+    let terminationStartedAt: number | undefined;
     let lastSignalSent: NodeJS.Signals | null = null;
     let outputChain: Promise<void> = spawnObservation;
+    const ownedProcessGroups = new Set<number>();
+    const processGroupRegistrations = new Map<string, number>();
+    let episodeSettlement: Promise<boolean> | undefined;
     const forceFinishDelayMs = options.timeoutBudget.killGraceMs + options.timeoutBudget.forceGraceMs;
 
     const clearTimers = () => {
@@ -161,6 +173,35 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
       if (cleanupOnParentExit) {
         process.removeListener("exit", cleanupOnParentExit);
       }
+      if (processGroupObservationInterval) {
+        clearInterval(processGroupObservationInterval);
+      }
+    };
+
+    const signalProcessGroup = (processGroupId: number, signal: NodeJS.Signals) => {
+      try {
+        process.kill(-processGroupId, signal);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+          try {
+            process.kill(processGroupId, signal);
+          } catch {
+            // The owned group has already settled or is no longer observable.
+          }
+        }
+      }
+    };
+
+    const signalOwnedProcessGroups = (signal: NodeJS.Signals, includeChildGroup: boolean) => {
+      if (process.platform === "win32") {
+        return;
+      }
+      if (includeChildGroup && child.pid) {
+        signalProcessGroup(child.pid, signal);
+      }
+      for (const processGroupId of ownedProcessGroups) {
+        signalProcessGroup(processGroupId, signal);
+      }
     };
 
     const signalChild = (signal: NodeJS.Signals) => {
@@ -169,17 +210,85 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
         return;
       }
       if (process.platform !== "win32") {
-        try {
-          process.kill(-child.pid, signal);
-          return;
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
-            child.kill(signal);
-          }
-          return;
-        }
+        signalProcessGroup(child.pid, signal);
+        return;
       }
       child.kill(signal);
+    };
+
+    const processGroupExists = (processGroupId: number): boolean => {
+      try {
+        process.kill(-processGroupId, 0);
+        return true;
+      } catch (error) {
+        return (error as NodeJS.ErrnoException).code !== "ESRCH";
+      }
+    };
+
+    const retireAbsentOwnedProcessGroups = () => {
+      for (const processGroupId of ownedProcessGroups) {
+        if (!processGroupExists(processGroupId)) {
+          ownedProcessGroups.delete(processGroupId);
+        }
+      }
+      if (ownedProcessGroups.size === 0 && processGroupObservationInterval) {
+        clearInterval(processGroupObservationInterval);
+        processGroupObservationInterval = undefined;
+      }
+    };
+
+    const observeOwnedProcessGroups = () => {
+      retireAbsentOwnedProcessGroups();
+      if (ownedProcessGroups.size > 0 && !processGroupObservationInterval) {
+        processGroupObservationInterval = setInterval(
+          retireAbsentOwnedProcessGroups,
+          PROCESS_GROUP_RECHECK_INTERVAL_MS,
+        );
+      }
+    };
+
+    const allEpisodeProcessGroupsAbsent = (): boolean => {
+      if (process.platform === "win32") {
+        return true;
+      }
+      retireAbsentOwnedProcessGroups();
+      const processGroupIds = new Set(ownedProcessGroups);
+      if (child.pid) {
+        processGroupIds.add(child.pid);
+      }
+      return [...processGroupIds].every((processGroupId) => !processGroupExists(processGroupId));
+    };
+
+    const waitForEpisodeProcessGroupsAbsent = async (deadline: number): Promise<boolean> => {
+      while (!allEpisodeProcessGroupsAbsent()) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          return false;
+        }
+        await new Promise((release) => setTimeout(release, Math.min(10, remaining)));
+      }
+      return true;
+    };
+
+    const settleEpisodeProcessGroups = async (): Promise<boolean> => {
+      if (process.platform === "win32" || allEpisodeProcessGroupsAbsent()) {
+        return true;
+      }
+      const gracefulStartedAt = terminationStartedAt ?? Date.now();
+      if (terminationStartedAt === undefined) {
+        signalOwnedProcessGroups("SIGTERM", true);
+      }
+      const killAt = gracefulStartedAt + options.timeoutBudget.killGraceMs;
+      if (await waitForEpisodeProcessGroupsAbsent(killAt)) {
+        return true;
+      }
+      signalOwnedProcessGroups("SIGKILL", true);
+      return waitForEpisodeProcessGroupsAbsent(killAt + options.timeoutBudget.forceGraceMs);
+    };
+
+    const startEpisodeProcessSettlement = (): Promise<boolean> => {
+      episodeSettlement ??= settleEpisodeProcessGroups();
+      return episodeSettlement;
     };
 
     const finish = (exitCode: number | null, stopSignal: NodeJS.Signals | null = lastSignalSent) => {
@@ -227,14 +336,22 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
         return;
       }
       terminationStarted = true;
+      terminationStartedAt = Date.now();
       signalChild("SIGTERM");
+      signalOwnedProcessGroups("SIGTERM", false);
       killTimeout = setTimeout(() => {
         if (!closed) {
           signalChild("SIGKILL");
+        } else {
+          signalOwnedProcessGroups("SIGKILL", true);
         }
+        signalOwnedProcessGroups("SIGKILL", false);
       }, options.timeoutBudget.killGraceMs);
       forceTimeout = setTimeout(() => {
         if (!closed) {
+          if (!allEpisodeProcessGroupsAbsent()) {
+            outputError ??= new Error("episode-owned processes did not settle after forced termination");
+          }
           finish(null);
         }
       }, forceFinishDelayMs);
@@ -261,20 +378,55 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
       });
     };
 
-    const consumeStream = async (stream: ChildProcessWithoutNullStreams["stdout"]): Promise<void> => {
+    const consumeStream = async (
+      stream: ChildProcessWithoutNullStreams["stdout"],
+      acceptsProcessOwnershipFrames: boolean,
+    ): Promise<void> => {
       const decoder = new StringDecoder("utf8");
       let pendingLine = "";
+      const consumeLine = async (line: string) => {
+        const registration = acceptsProcessOwnershipFrames
+          ? parseEpisodeProcessGroupRegistration(line)
+          : null;
+        if (!registration) {
+          await queueOutputLine(line);
+          return;
+        }
+        if (process.platform === "win32" || !child.pid || registration.process_group_id === child.pid) {
+          throw new Error("child reported an invalid episode process-group owner");
+        }
+        const previousProcessGroupId = processGroupRegistrations.get(registration.registration_id);
+        if (
+          previousProcessGroupId !== undefined &&
+          previousProcessGroupId !== registration.process_group_id
+        ) {
+          throw new Error("child reused an episode process-group registration id");
+        }
+        processGroupRegistrations.set(registration.registration_id, registration.process_group_id);
+        if (!processGroupExists(registration.process_group_id)) {
+          throw new Error("child reported an absent episode process group");
+        }
+        ownedProcessGroups.add(registration.process_group_id);
+        observeOwnedProcessGroups();
+        if (terminationStarted) {
+          signalProcessGroup(registration.process_group_id, "SIGTERM");
+          return;
+        }
+        await writeControlFrame(
+          episodeProcessGroupRegistrationAckFrame(registration.registration_id),
+        );
+      };
       for await (const chunk of stream) {
         pendingLine += decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
         const lines = pendingLine.split(/\r?\n/);
         pendingLine = lines.pop() ?? "";
         for (const line of lines) {
-          await queueOutputLine(line);
+          await consumeLine(line);
         }
       }
       pendingLine += decoder.end();
       if (pendingLine.trim() !== "") {
-        await queueOutputLine(pendingLine);
+        await consumeLine(pendingLine);
       }
     };
 
@@ -325,6 +477,7 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
       if (!settled && !closed) {
         signalChild("SIGKILL");
       }
+      signalOwnedProcessGroups("SIGKILL", true);
     };
     process.once("exit", cleanupOnParentExit);
 
@@ -362,8 +515,8 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
     }
 
     const consumers = Promise.all([
-      consumeStream(child.stdout),
-      consumeStream(child.stderr),
+      consumeStream(child.stdout, true),
+      consumeStream(child.stderr, false),
     ]).catch((error: unknown) => {
       outputError ??= error instanceof Error ? error : new Error(String(error));
       if (isDiskExhaustionError(error)) {
@@ -377,9 +530,20 @@ export async function runChildProcess(options: ProcessRunOptions): Promise<Proce
       resolveSpawnObservation();
       appendControlMarker(`[spawn error] ${error.message}`);
     });
+    child.on("exit", () => {
+      void startEpisodeProcessSettlement();
+    });
     child.on("close", (code, signal) => {
       closed = true;
-      void consumers.finally(() => finish(code, signal));
+      void consumers.then(async () => {
+        const processGroupsSettled = await startEpisodeProcessSettlement();
+        if (!processGroupsSettled) {
+          outputError ??= new Error("episode-owned processes remained after forced settlement");
+          finish(null, null);
+          return;
+        }
+        finish(code, signal);
+      });
     });
   });
 }

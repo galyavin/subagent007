@@ -8,10 +8,11 @@ const OPENAI_CODEX_MIN_GPT5_MINOR = 4;
 
 export const CURATED_EXACT_MODEL_REFS = [
   "openrouter/deepseek/deepseek-v4-flash",
-  "openrouter/deepseek/deepseek-v4-pro",
+  "openrouter/deepseek/deepseek-v4-pro-0813",
   "openrouter/moonshotai/kimi-k3",
   "openrouter/anthropic/claude-sonnet-5",
   "openrouter/anthropic/claude-opus-5",
+  "openrouter/qwen/qwen3.8-2.4t-a95b",
   "openrouter/z-ai/glm-5.2",
 ] as const;
 
@@ -22,6 +23,12 @@ export const CURATED_EXACT_MODEL_REFS = [
  * target model id and remains gated by the configured provider auth.
  */
 export const MODEL_RUNTIME_FALLBACKS = {
+  "openrouter/deepseek/deepseek-v4-pro-0813": {
+    template: "openrouter/deepseek/deepseek-v4-pro",
+    name: "DeepSeek: DeepSeek V4 Pro 0813",
+    contextWindow: 1_048_576,
+    maxTokens: 384_000,
+  },
   "openrouter/moonshotai/kimi-k3": {
     template: "openrouter/z-ai/glm-5.2",
     name: "MoonshotAI: Kimi K3",
@@ -33,6 +40,12 @@ export const MODEL_RUNTIME_FALLBACKS = {
     name: "Claude Opus 5",
     contextWindow: 1_000_000,
     maxTokens: 128_000,
+  },
+  "openrouter/qwen/qwen3.8-2.4t-a95b": {
+    template: "openrouter/z-ai/glm-5.2",
+    name: "Qwen: Qwen3.8 2.4T A95B",
+    contextWindow: 1_048_576,
+    maxTokens: 262_144,
   },
 } as const;
 
@@ -77,7 +90,7 @@ export const MODEL_CLASS_CALIBRATIONS: Record<ModelClass, {
     description: "Highest-abstraction, highest-difficulty work requiring the deepest technical judgment.",
   },
   Z1: {
-    model: "openrouter/deepseek/deepseek-v4-pro",
+    model: "openrouter/deepseek/deepseek-v4-pro-0813",
     thinkingLevel: "xhigh",
     description: "External expert class for maximum-difficulty work requiring an independent frontier-model perspective.",
   },
@@ -87,7 +100,7 @@ export const MODEL_CLASS_CALIBRATIONS: Record<ModelClass, {
     description: "External expert class for maximum-difficulty work requiring an independent technical perspective.",
   },
   Z3: {
-    model: "openrouter/anthropic/claude-sonnet-5",
+    model: "openrouter/qwen/qwen3.8-2.4t-a95b",
     thinkingLevel: "xhigh",
     description: "External expert class for maximum-difficulty work requiring deep synthesis and independent judgment.",
   },

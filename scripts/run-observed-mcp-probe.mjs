@@ -20,6 +20,7 @@ const PROFILES = new Set(Object.keys(MANIFEST.profiles));
 const PROBE_MODES = new Set(["protocol-deterministic", "live-model"]);
 const EXPECTED_PUBLIC_TOOLS = [
   "answer_run_input",
+  "cancel_client_start",
   "cancel_run",
   "get_run",
   "get_run_contract",

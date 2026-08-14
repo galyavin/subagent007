@@ -191,6 +191,11 @@ async function createProcessScript(tmpPrefix = "subagent007-process-runner-"): P
       "  fs.writeFileSync(path.join(process.cwd(), 'child.pid'), String(child.pid));",
       "  process.stdout.write('TIMEOUT START\\n' + 'A'.repeat(200000) + '\\n');",
       "  setInterval(() => {}, 1000);",
+      "} else if (mode === 'SUCCESS_SPAWN_CHILD') {",
+      "  const child = spawn(process.execPath, ['-e', \"setInterval(() => {}, 1000);\"], { stdio: ['ignore', 'inherit', 'inherit'] });",
+      "  fs.writeFileSync(path.join(process.cwd(), 'child.pid'), String(child.pid));",
+      "  child.unref();",
+      "  process.stdout.write('SUCCESS STARTED');",
       "} else {",
       "  process.stdout.write('FAST FINAL');",
       "}",
@@ -566,6 +571,35 @@ test("runChildProcess clears heartbeat interval after timeout", async () => {
   const childPid = Number(await fs.readFile(path.join(projectDir, "child.pid"), "utf8"));
   assert.equal(Number.isInteger(childPid), true);
   await waitForProcessExit(childPid);
+});
+
+test("runChildProcess settles descendants before reporting natural success", async () => {
+  if (process.platform === "win32") {
+    return;
+  }
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-success-settlement-"));
+  const scriptPath = await createProcessScript();
+  const result = await runChildProcess({
+    command: process.execPath,
+    args: [scriptPath, "SUCCESS_SPAWN_CHILD"],
+    cwd: tmp,
+    timeoutBudget: computeTimeoutBudget(1_000, {
+      responseHeadroomMs: 0,
+      killGraceMs: 50,
+      forceGraceMs: 50,
+    }),
+  });
+  const childPid = Number(await fs.readFile(path.join(tmp, "child.pid"), "utf8"));
+
+  try {
+    assert.equal(result.stopReason, "completed");
+    assert.equal(processIsAlive(childPid), false, "terminal success must not precede descendant settlement");
+  } finally {
+    if (processIsAlive(childPid)) {
+      process.kill(childPid, "SIGKILL");
+      await waitForProcessExit(childPid);
+    }
+  }
 });
 
 test("runChildProcess kills detached child group when the parent process exits", async () => {

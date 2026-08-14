@@ -5,7 +5,13 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { safeIntegerFromEnv } from "./env.js";
-import { MODEL_CLASSES, type FailureReasonCode, type ModelClass, type OutputMode } from "./types.js";
+import {
+  MODEL_CLASSES,
+  type FailureReasonCode,
+  type ModelClass,
+  type OutputMode,
+  type SpecialistCatalogueScope,
+} from "./types.js";
 import { ValidationError } from "./types.js";
 import { validateSkillName } from "./skillBinding.js";
 
@@ -41,6 +47,7 @@ export interface RecursiveCallerContext {
   root_run_id: string;
   recursion_depth: number;
   system_skill_name?: string;
+  specialist_catalogue_scope?: SpecialistCatalogueScope;
   /** Root-resolved class for a governed recursive lineage; private control data. */
   governing_model_class?: ModelClass;
 }
@@ -274,6 +281,15 @@ function validateCaller(value: RecursiveRpcRequest["caller"]): RecursiveCallerCo
   const governingModelClass = caller.governing_model_class === undefined
     ? undefined
     : caller.governing_model_class;
+  const specialistCatalogueScope = caller.specialist_catalogue_scope === undefined
+    ? undefined
+    : caller.specialist_catalogue_scope;
+  if (specialistCatalogueScope !== undefined && specialistCatalogueScope !== "selected_only") {
+    throw new ValidationError(
+      "caller.specialist_catalogue_scope must be selected_only",
+      "recursive_control_invalid",
+    );
+  }
   if (governingModelClass !== undefined && !MODEL_CLASSES.includes(governingModelClass as ModelClass)) {
     throw new ValidationError("caller.governing_model_class must be a valid model class", "recursive_control_invalid");
   }
@@ -283,11 +299,18 @@ function validateCaller(value: RecursiveRpcRequest["caller"]): RecursiveCallerCo
       "recursive_control_invalid",
     );
   }
+  if (specialistCatalogueScope !== undefined && systemSkillName === undefined) {
+    throw new ValidationError(
+      "recursive specialist catalogue scope requires a governing system skill",
+      "recursive_control_invalid",
+    );
+  }
   return {
     parent_run_id: nonemptyString(caller.parent_run_id, "caller.parent_run_id"),
     root_run_id: nonemptyString(caller.root_run_id, "caller.root_run_id"),
     recursion_depth: nonnegativeInteger(caller.recursion_depth, "caller.recursion_depth"),
     ...(systemSkillName ? { system_skill_name: systemSkillName } : {}),
+    ...(specialistCatalogueScope ? { specialist_catalogue_scope: specialistCatalogueScope } : {}),
     ...(governingModelClass ? { governing_model_class: governingModelClass as ModelClass } : {}),
   };
 }
@@ -452,6 +475,7 @@ export function recursiveControlConfigForChild(input: {
   rootRunId?: string;
   recursionDepth?: number;
   systemSkillName?: string;
+  specialistCatalogueScope?: SpecialistCatalogueScope;
   governingModelClass?: ModelClass;
 }): RecursiveControlChildConfig | undefined {
   if (!activeHandle) {
@@ -465,6 +489,9 @@ export function recursiveControlConfigForChild(input: {
     root_run_id: input.rootRunId ?? input.runId,
     recursion_depth: recursionDepth,
     ...(input.systemSkillName ? { system_skill_name: input.systemSkillName } : {}),
+    ...(input.specialistCatalogueScope
+      ? { specialist_catalogue_scope: input.specialistCatalogueScope }
+      : {}),
     ...(input.governingModelClass ? { governing_model_class: input.governingModelClass } : {}),
   };
 }
@@ -484,6 +511,9 @@ async function callRecursiveControl(
       root_run_id: config.root_run_id,
       recursion_depth: config.recursion_depth,
       ...(config.system_skill_name ? { system_skill_name: config.system_skill_name } : {}),
+      ...(config.specialist_catalogue_scope
+        ? { specialist_catalogue_scope: config.specialist_catalogue_scope }
+        : {}),
       ...(config.governing_model_class ? { governing_model_class: config.governing_model_class } : {}),
     },
     params,

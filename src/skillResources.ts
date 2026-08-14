@@ -7,7 +7,7 @@ import {
   type InlineExtension,
   type Skill,
 } from "@earendil-works/pi-coding-agent";
-import { ValidationError } from "./types.js";
+import { ValidationError, type SpecialistCatalogueScope } from "./types.js";
 
 interface SkillCollisionDiagnostic {
   collision?: {
@@ -23,9 +23,11 @@ export interface SkillResourceOptions {
   skillFilePath?: string;
   lookupPaths?: string[];
   noAmbientExtensions?: boolean;
+  noAmbientInstructions?: boolean;
   explicitExtensionPaths?: string[];
   extensionFactories?: InlineExtension[];
   systemSkill?: string;
+  specialistCatalogueScope?: SpecialistCatalogueScope;
 }
 
 export type SkillResolutionFailureCode = "skill_not_found" | "skill_ambiguous";
@@ -125,14 +127,45 @@ export function skillResourcePathsForRequest(options: SkillResourceOptions): str
   return [resolveRequestedSkill(options.skill, options).filePath];
 }
 
-export function createSkillScopedResourceLoader(options: SkillResourceOptions): DefaultResourceLoader {
+export function assertSpecialistCatalogueScope(
+  options: Pick<
+    SkillResourceOptions,
+    "skill" | "skillFilePath" | "systemSkill" | "specialistCatalogueScope"
+  >,
+  skills: readonly Pick<Skill, "name" | "filePath">[],
+): void {
+  if (options.specialistCatalogueScope !== "selected_only") return;
   if (!options.systemSkill) {
+    throw new Error("selected-only specialist catalogue requires a governing system skill");
+  }
+  const expected = options.skill && options.skillFilePath
+    ? [{ name: options.skill, filePath: options.skillFilePath }]
+    : [];
+  if (
+    skills.length !== expected.length ||
+    skills.some((skill, index) =>
+      skill.name !== expected[index]?.name || skill.filePath !== expected[index]?.filePath)
+  ) {
+    throw new Error("selected-only specialist catalogue does not match the admitted skill binding");
+  }
+}
+
+export function createSkillScopedResourceLoader(options: SkillResourceOptions): DefaultResourceLoader {
+  const ambientInstructionOverrides = options.noAmbientInstructions
+    ? {
+        noContextFiles: true,
+        systemPromptOverride: () => undefined,
+        appendSystemPromptOverride: () => [],
+      }
+    : {};
+  if (!options.systemSkill || options.specialistCatalogueScope === "selected_only") {
     return new DefaultResourceLoader({
       cwd: options.cwd,
       agentDir: options.agentDir,
       additionalSkillPaths: skillResourcePathsForRequest(options),
       noSkills: true,
       extensionFactories: options.extensionFactories,
+      ...ambientInstructionOverrides,
       ...(options.noAmbientExtensions
         ? {
             noExtensions: true,
@@ -156,6 +189,7 @@ export function createSkillScopedResourceLoader(options: SkillResourceOptions): 
     additionalSkillPaths: skillPaths,
     noSkills: true,
     extensionFactories: options.extensionFactories,
+    ...ambientInstructionOverrides,
     skillsOverride: (current) => ({
       skills: current.skills.filter((skill) => skill.name !== options.systemSkill),
       diagnostics: current.diagnostics,

@@ -6,6 +6,7 @@ import {
   EFFECT_PROFILES,
   OUTPUT_MODES,
   RUN_CONTINUITY_MODES,
+  SPECIALIST_CATALOGUE_SCOPES,
   type ModelClass,
   type OutputMode,
   type FailureReasonCode,
@@ -40,6 +41,7 @@ function validationReasonCodeForKey(key: string): FailureReasonCode {
       return "invalid_expected_skill_sha256";
     case "skill_name":
     case "system_skill_name":
+    case "specialist_catalogue_scope":
       return "invalid_skill";
     case "continuity.mode":
     case "continuity.session_id":
@@ -301,6 +303,11 @@ export async function validateAndResolveRequest(
 
   const skill = resolveSkillBinding(request, prompt);
   const systemSkill = validateSkillName(request.system_skill_name, "system_skill_name");
+  const specialistCatalogueScope = validateChoice(
+    request.specialist_catalogue_scope,
+    "specialist_catalogue_scope",
+    SPECIALIST_CATALOGUE_SCOPES,
+  );
   if (systemSkill && systemSkill === skill) {
     throw new ValidationError(
       "system_skill_name must differ from skill_name so the governing body is not duplicated as a specialist invocation",
@@ -313,8 +320,16 @@ export async function validateAndResolveRequest(
       "effect_profile_unsupported",
     );
   }
+  if (specialistCatalogueScope && !systemSkill) {
+    throw new ValidationError(
+      "specialist_catalogue_scope requires system_skill_name",
+      "invalid_skill",
+    );
+  }
 
-  const taskRoot = isEffectScopedAuthoringProfile(effectProfile) ? await fs.realpath(cwd) : cwd;
+  const taskRoot = isEffectScopedAuthoringProfile(effectProfile) || effectProfile === "task_root_read_only_v1"
+    ? await fs.realpath(cwd)
+    : cwd;
   const allowedOutputPaths = normalizeAllowedOutputPaths(
     request.allowed_output_paths,
     taskRoot,
@@ -330,6 +345,7 @@ export async function validateAndResolveRequest(
     continuity,
     skill,
     systemSkill,
+    specialistCatalogueScope,
     effectProfile,
     recursiveDelegation,
     requestedRecursiveDelegation: request.recursive_delegation ?? null,

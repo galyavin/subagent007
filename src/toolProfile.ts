@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   ActivationReceipt,
   ActivationSkillBinding,
@@ -29,6 +30,12 @@ export const WORKSPACE_READ_ONLY_TOOL_NAMES = [
   "web_search",
   "web_read",
   "request_input",
+] as const;
+export const TASK_ROOT_READ_ONLY_V1_TOOL_NAMES = [
+  "read",
+  "grep",
+  "find",
+  "ls",
 ] as const;
 export const SKILL_CREATOR_AUTHORING_V1_TOOL_NAMES = [
   "read",
@@ -67,6 +74,8 @@ export function effectProfileToolNames(effectProfile: EffectProfile): readonly s
   switch (effectProfile) {
     case "workspace_read_only":
       return WORKSPACE_READ_ONLY_TOOL_NAMES;
+    case "task_root_read_only_v1":
+      return TASK_ROOT_READ_ONLY_V1_TOOL_NAMES;
     case "task_root_authoring_v1":
       return TASK_ROOT_AUTHORING_V1_TOOL_NAMES;
     case "skill_creator_authoring_v1":
@@ -95,6 +104,8 @@ function effectProfileBindingNames(effectProfile: EffectProfile): readonly Activ
   switch (effectProfile) {
     case "workspace_read_only":
       return ["request_input", "web_read", "web_search"];
+    case "task_root_read_only_v1":
+      return TASK_ROOT_READ_ONLY_V1_TOOL_NAMES;
     case "researcher_bounded_v1":
       return ["web_read", "web_search", "researchctl"];
     case "assumption_audit_bounded_v1":
@@ -199,6 +210,96 @@ async function hashImplementationFiles(root: string, relativePaths: readonly str
 }
 
 const BOUNDED_CONTROLLER_BINDING_DOMAIN = "subagent007.bounded_controller_binding.v2\n";
+const TASK_ROOT_READ_ONLY_BINDING_DOMAIN = "subagent007.task_root_read_only_binding.v1\n";
+export const TASK_ROOT_READ_ONLY_PROVIDER_ID = "subagent007-pi/task-root-path-guard-v1";
+
+async function taskRootReadOnlyImplementationSha256(
+  runtimeModulePath: string,
+  taskRoot: string,
+): Promise<string> {
+  const extension = path.extname(runtimeModulePath);
+  if (extension !== ".js" && extension !== ".ts") {
+    throw new Error(`task_root_read_only_v1 runtime module extension is unsupported: ${extension}`);
+  }
+  const implementationNames = [
+    `piChild${extension}`,
+    `skillResources${extension}`,
+    `taskRootAuthoringTools${extension}`,
+  ];
+  const piToolsRoot = path.join(
+    path.dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))),
+    "core",
+    "tools",
+  );
+  const implementations = [
+    ...implementationNames.map((name) => ({
+      label: name,
+      filePath: path.join(path.dirname(runtimeModulePath), name),
+    })),
+    ...TASK_ROOT_READ_ONLY_V1_TOOL_NAMES.map((toolName) => ({
+      label: `pi-coding-agent/core/tools/${toolName}.js`,
+      filePath: path.join(piToolsRoot, `${toolName}.js`),
+    })),
+    {
+      label: "pi-coding-agent/core/resource-loader.js",
+      filePath: path.join(path.dirname(piToolsRoot), "resource-loader.js"),
+    },
+  ];
+  const implementationPaths = implementations.map((implementation) => implementation.filePath);
+  const [implementationStats, implementationRealPaths, canonicalTaskRoot] = await Promise.all([
+    Promise.all(implementationPaths.map((candidate) => fs.lstat(candidate))),
+    Promise.all(implementationPaths.map((candidate) => fs.realpath(candidate))),
+    fs.realpath(taskRoot),
+  ]);
+  if (implementationPaths.some((candidate, index) =>
+    implementationStats[index]!.isSymbolicLink() ||
+    !implementationStats[index]!.isFile() ||
+    implementationRealPaths[index] !== candidate
+  )) {
+    throw new Error("task_root_read_only_v1 implementation must be exact regular runtime files");
+  }
+  const taskRootStat = await fs.lstat(canonicalTaskRoot);
+  if (taskRootStat.isSymbolicLink() || !taskRootStat.isDirectory()) {
+    throw new Error("task_root_read_only_v1 task root must be an exact real directory");
+  }
+  const hash = createHash("sha256").update(TASK_ROOT_READ_ONLY_BINDING_DOMAIN);
+  for (let index = 0; index < implementationPaths.length; index += 1) {
+    hash.update(implementations[index]!.label);
+    hash.update("\0");
+    hash.update(await fs.readFile(implementationPaths[index]!));
+    hash.update("\0");
+  }
+  return hash.update(canonicalJson({
+      profile: "task_root_read_only_v1",
+      active_tool_names: TASK_ROOT_READ_ONLY_V1_TOOL_NAMES,
+      task_root: canonicalTaskRoot,
+      path_policy: "exact_real_task_root_plus_selected_skill_runtime_read_root_symlink_escape_rejected_recursive_tools_do_not_follow_symlinks",
+      ambient_instruction_scope: "none",
+      snapshot_runtime_read_scope: "selected_run_owned_or_active_validated_snapshot_runtime_root_or_none",
+    }))
+    .digest("hex");
+}
+
+export async function taskRootReadOnlyActivationBindings(
+  runtimeModulePath: string,
+  taskRoot: string,
+): Promise<ActivationToolBinding[]> {
+  const implementationSha256 = await taskRootReadOnlyImplementationSha256(runtimeModulePath, taskRoot);
+  return TASK_ROOT_READ_ONLY_V1_TOOL_NAMES.map((toolName) => ({
+    tool_name: toolName,
+    provider_id: TASK_ROOT_READ_ONLY_PROVIDER_ID,
+    implementation_sha256: implementationSha256,
+  }));
+}
+
+export function assertExactTaskRootReadOnlyActivationToolBindings(
+  expected: readonly ActivationToolBinding[] | undefined,
+  derived: readonly ActivationToolBinding[],
+): void {
+  if (!expected || JSON.stringify(expected) !== JSON.stringify(derived)) {
+    throw new Error("task-root read-only guard binding differs from parent preflight");
+  }
+}
 
 async function boundedControllerImplementationSha256(
   childEntrypoint: string,
@@ -466,7 +567,7 @@ function validatedActivationReceiptVersion(
       return undefined;
     }
     if (
-      !["request_input", "web_read", "web_search", "researchctl", "aj_switchboard"].includes(String(binding.tool_name)) ||
+      !["read", "grep", "find", "ls", "request_input", "web_read", "web_search", "researchctl", "aj_switchboard"].includes(String(binding.tool_name)) ||
       typeof binding.provider_id !== "string" || binding.provider_id.trim() === "" ||
       typeof binding.implementation_sha256 !== "string" || !SHA256_PATTERN.test(binding.implementation_sha256)
     ) {
@@ -488,6 +589,19 @@ function validatedActivationReceiptVersion(
       webRead.provider_id !== webSearch.provider_id ||
       webRead.implementation_sha256 !== webSearch.implementation_sha256
     ) {
+      return undefined;
+    }
+  }
+  if (input.effectProfile === "task_root_read_only_v1") {
+    if (
+      toolBindings.some((binding) => binding.provider_id !== TASK_ROOT_READ_ONLY_PROVIDER_ID) ||
+      toolBindings.some((binding) => binding.implementation_sha256 !== toolBindings[0]?.implementation_sha256)
+    ) {
+      return undefined;
+    }
+    try {
+      assertExactTaskRootReadOnlyActivationToolBindings(input.expectedToolBindings, toolBindings);
+    } catch {
       return undefined;
     }
   }
@@ -579,7 +693,10 @@ export function validatedProjectedActivationReceipt(input: {
   const expectedEffectScopeBinding = requiresEffectScope
     ? record(receipt.effect_scope_binding) as unknown as AuthoringEffectScopeBinding | undefined
     : undefined;
-  const expectedToolBindings = isBoundedEffectProfile(input.requestedEffectProfile) && Array.isArray(receipt.tool_bindings)
+  const expectedToolBindings = (
+    isBoundedEffectProfile(input.requestedEffectProfile) ||
+    input.requestedEffectProfile === "task_root_read_only_v1"
+  ) && Array.isArray(receipt.tool_bindings)
     ? receipt.tool_bindings as ActivationToolBinding[]
     : undefined;
   return validatedActivationReceiptVersion({
@@ -632,6 +749,38 @@ export function workspaceReadOnlyActivationReceipt(input: {
       profile: "workspace_read_only",
       activeToolNames: WORKSPACE_READ_ONLY_TOOL_NAMES,
       bindings: toolBindings,
+    }),
+    skill_binding: input.skillBinding,
+  };
+}
+
+export function taskRootReadOnlyV1ActivationReceipt(input: {
+  skillBinding: ActivationSkillBinding | null;
+  toolBindings: ActivationToolBinding[];
+}): ActivationReceipt {
+  const activeToolNames = [...TASK_ROOT_READ_ONLY_V1_TOOL_NAMES];
+  const expectedBindingNames = [...TASK_ROOT_READ_ONLY_V1_TOOL_NAMES];
+  if (
+    input.toolBindings.length !== expectedBindingNames.length ||
+    input.toolBindings.some((binding, index) =>
+      binding.tool_name !== expectedBindingNames[index] ||
+      binding.provider_id !== TASK_ROOT_READ_ONLY_PROVIDER_ID ||
+      !SHA256_PATTERN.test(binding.implementation_sha256)
+    )
+  ) {
+    throw new Error("task_root_read_only_v1 guard binding is invalid");
+  }
+  return {
+    schema_version: 1,
+    confirmed_before_prompt: true,
+    requested_effect_profile: "task_root_read_only_v1",
+    resolved_effect_profile: "task_root_read_only_v1",
+    active_tool_names: activeToolNames,
+    tool_bindings: input.toolBindings,
+    toolset_sha256: canonicalToolsetDigest({
+      profile: "task_root_read_only_v1",
+      activeToolNames,
+      bindings: input.toolBindings,
     }),
     skill_binding: input.skillBinding,
   };

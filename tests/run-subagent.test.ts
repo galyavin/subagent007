@@ -85,6 +85,7 @@ type RunSubagentMetadata = {
   requested_skill?: string | null;
   resolved_model_class?: "A" | "B" | "C" | "D" | "E" | "Z1" | "Z2" | "Z3" | "Z4" | "Z5";
   requested_system_skill?: string;
+  requested_specialist_catalogue_scope?: "selected_only";
   system_skill_activation_receipt?: {
     schema_version: 1;
     confirmed_before_prompt: true;
@@ -1470,12 +1471,12 @@ test("runSubagent is ephemeral by default and invokes the Pi child request-file 
       const logs = await readJsonl<{ request: Record<string, unknown> }>(fake.logPath);
       assert.equal(logs.length, 1);
       assert.equal(logs[0].request.sessionMode, "ephemeral");
-      assert.equal(logs[0].request.prompt, "/skill:fixture-pda-lite\n\n<prompt>\nFAST\n</prompt>");
+      assert.equal(logs[0].request.prompt, "/skill:fixture-pda-lite <prompt>\nFAST\n</prompt>");
       assert.deepEqual(logs[0].request.promptProvenance, {
         public_prompt: PUBLIC_PROMPT_REDACTED_MARKER,
         skill_name: skillName,
         skill_marker: "[server_contract] skill_name=fixture-pda-lite",
-        composed_child_prompt: "/skill:fixture-pda-lite\n\n<prompt>\nFAST\n</prompt>",
+        composed_child_prompt: "/skill:fixture-pda-lite <prompt>\nFAST\n</prompt>",
       });
       assert.equal(logs[0].request.skill, skillName);
       assert.equal(logs[0].request.skillFilePath, skillPath);
@@ -2698,13 +2699,14 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
   await connectFakeClient(async (client) => {
     const response = await client.listTools();
     const names = response.tools.map((tool) => tool.name);
-    assert.equal(names.length, 20);
+    assert.equal(names.length, 21);
     assert.deepEqual(
       [
         "start_run",
         "schedule_run",
         "get_run",
         "answer_run_input",
+        "cancel_client_start",
         "cancel_run",
         "run_subagent",
         "start_session_run",
@@ -2798,11 +2800,16 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       assert.equal(Object.hasOwn(properties, "tool_profile"), false);
       assert.equal(Object.hasOwn(properties, "effect_profile"), true);
       assert.deepEqual((properties.effect_profile as { enum?: string[] }).enum, [
-        "workspace_read_only", "task_root_authoring_v1", "skill_creator_authoring_v1", "researcher_bounded_v1", "assumption_audit_bounded_v1",
+        "workspace_read_only", "task_root_read_only_v1", "task_root_authoring_v1", "skill_creator_authoring_v1", "researcher_bounded_v1", "assumption_audit_bounded_v1",
       ]);
       assert.equal(Object.hasOwn(properties, "expected_skill_sha256"), true);
       assert.equal(Object.hasOwn(properties, "skill_snapshot_binding"), true);
       assert.equal(Object.hasOwn(properties, "system_skill_name"), true);
+      assert.equal(Object.hasOwn(properties, "specialist_catalogue_scope"), true);
+      assert.deepEqual(
+        (properties.specialist_catalogue_scope as { enum?: string[] }).enum,
+        ["selected_only"],
+      );
       assert.equal(Object.hasOwn(properties, "allowed_output_paths"), true);
     }
     const getRunTool = response.tools.find((tool) => tool.name === "get_run");
@@ -2816,6 +2823,12 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.ok(cancelRunTool);
     assert.match(cancelRunTool.description ?? "", /explicit user intent.*caller-owned stop condition/i);
     assert.match(cancelRunTool.description ?? "", /silence.*not.*authoriz/i);
+    const cancelClientStartTool = response.tools.find((tool) => tool.name === "cancel_client_start");
+    assert.ok(cancelClientStartTool);
+    assert.deepEqual(cancelClientStartTool.inputSchema.required, ["client_start_id"]);
+    assert.equal(cancelClientStartTool.inputSchema.additionalProperties, false);
+    assert.match(cancelClientStartTool.description ?? "", /non-creating.*fence.*delayed.*cannot launch/i);
+    assert.match(cancelClientStartTool.description ?? "", /typed unknown/i);
     const runSubagentSessionTool = response.tools.find((tool) => tool.name === "run_subagent_session");
     assert.ok(runSubagentSessionTool);
     assert.equal(
@@ -2832,6 +2845,7 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       assert.equal(Object.hasOwn(properties, "expected_skill_sha256"), false);
       assert.equal(Object.hasOwn(properties, "skill_snapshot_binding"), false);
       assert.equal(Object.hasOwn(properties, "system_skill_name"), false);
+      assert.equal(Object.hasOwn(properties, "specialist_catalogue_scope"), false);
       assert.equal(Object.hasOwn(properties, "allowed_output_paths"), false);
     }
     for (const toolName of [
@@ -2886,6 +2900,16 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
       tools?: {
         start?: string[];
         session_start?: string[];
+        cancel_client_start?: string;
+      };
+      idempotent_start?: {
+        containment_tool?: string;
+        containment_contract?: string;
+        containment_is_non_creating?: boolean;
+        unbound_containment?: string;
+        bound_containment?: string;
+        unknown_containment?: string;
+        fenced_reason_code?: string;
       };
       input_mailbox?: {
         waiting_status_terminal?: boolean;
@@ -2908,6 +2932,15 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
         source?: string;
         catalogue?: string;
         selected_specialist_field?: string;
+        specialist_catalogue_scope?: {
+          request_field?: string;
+          values?: string[];
+          omission?: string;
+          selected_only?: string;
+          recursive_inheritance?: string;
+          enforcement?: string;
+          claim_ceiling?: string;
+        };
         recursive_inheritance?: string;
         persistence?: string;
         receipt?: { result_field?: string; event_type?: string; required_before_prompt?: boolean; observation_scope?: string };
@@ -2977,14 +3010,44 @@ test("MCP server exposes run_subagent names and not old run_codex names", async 
     assert.equal(contract.capabilities?.includes("explicit_recursive_delegation"), true);
     assert.equal(contract.capabilities?.includes("terminal_recursive_subtree_closure"), true);
     assert.equal(contract.capabilities?.includes("system_skill_governing_prompt"), true);
+    assert.equal(contract.capabilities?.includes("selected_only_specialist_catalogue"), true);
     assert.equal(contract.capabilities?.includes("event_driven_get_run_wait"), true);
+    assert.equal(contract.capabilities?.includes("client_start_containment_fence"), true);
     assert.equal(contract.capabilities?.includes("exact_root_runtime_bundle_validation"), true);
     assert.equal(contract.capabilities?.includes("snapshot_bound_launch"), true);
+    assert.equal(contract.tools?.cancel_client_start, "cancel_client_start");
+    assert.deepEqual(contract.idempotent_start, {
+      request_field: "client_start_id",
+      supported_tool: "start_run",
+      request_hash: "canonical_validated_request_excluding_client_start_id",
+      binding_field: "client_start_binding",
+      binding_persistence: "atomic_before_child_spawn",
+      binding_durability: "file_and_parent_directory_fsync",
+      replay: "same_run_across_process_restart",
+      conflict_reason_code: "client_start_id_conflict",
+      fenced_reason_code: "client_start_id_fenced",
+      containment_tool: "cancel_client_start",
+      containment_contract: "subagent007.client_start_containment.v1",
+      containment_is_non_creating: true,
+      unbound_containment: "durable_fence_before_child_launch",
+      bound_containment: "cancel_exact_bound_attempt",
+      unknown_containment: "typed_run_liveness_unknown",
+      lost_owner_terminal: "restart_drift",
+    });
     assert.equal(contract.system_skill?.request_field, "system_skill_name");
     assert.equal(contract.system_skill?.named_sessions, "unsupported");
     assert.equal(contract.system_skill?.source, "canonical_current_catalogue_skill");
     assert.equal(contract.system_skill?.catalogue, "normal_minus_governing_skill");
     assert.equal(contract.system_skill?.selected_specialist_field, "skill_name");
+    assert.deepEqual(contract.system_skill?.specialist_catalogue_scope, {
+      request_field: "specialist_catalogue_scope",
+      values: ["selected_only"],
+      omission: "normal_minus_governing_skill",
+      selected_only: "exact_selected_skill_or_none",
+      recursive_inheritance: "trusted_caller_context_non_widenable",
+      enforcement: "pi_resource_loader_exact_match_before_prompt",
+      claim_ceiling: "pi_specialist_resource_catalogue_not_filesystem_or_tool_sandbox",
+    });
     assert.equal(contract.system_skill?.recursive_inheritance, "trusted_caller_context_non_widenable");
     assert.equal(contract.system_skill?.persistence, "no_prompt_snapshot_copy_or_version_ledger");
     assert.equal(contract.system_skill?.receipt?.result_field, "system_skill_activation_receipt");
@@ -3867,6 +3930,7 @@ test("system skill is inherited through trusted recursion while the selected spe
         cwd: projectDir,
         prompt: "RECURSIVE_DELEGATE_FAST",
         system_skill_name: "governor-skill",
+        specialist_catalogue_scope: "selected_only",
         skill_name: "specialist-skill",
         recursive_delegation: "enabled",
         wait_ms: 2_000,
@@ -3878,6 +3942,7 @@ test("system skill is inherited through trusted recursion while the selected spe
     assert.equal(root.status, "completed", JSON.stringify(root));
     assert.equal(root.requested_skill, "specialist-skill");
     assert.equal(root.requested_system_skill, "governor-skill");
+    assert.equal(root.requested_specialist_catalogue_scope, "selected_only");
     assert.equal(root.system_skill_activation_receipt?.system_skill_name, "governor-skill");
     assert.equal(root.system_skill_activation_receipt?.resolved_skill_path, systemSkillPath);
     assert.equal(root.system_skill_activation_receipt?.content_sha256, expectedSystemSha256);
@@ -3892,6 +3957,7 @@ test("system skill is inherited through trusted recursion while the selected spe
       delegated: RunSubagentMetadata;
     };
     assert.equal(rootOutput.delegated.requested_system_skill, "governor-skill");
+    assert.equal(rootOutput.delegated.requested_specialist_catalogue_scope, "selected_only");
     assert.equal(rootOutput.delegated.system_skill_activation_receipt?.content_sha256, expectedSystemSha256);
     assert.equal(rootOutput.delegated.requested_skill, null);
 
@@ -3900,14 +3966,26 @@ test("system skill is inherited through trusted recursion while the selected spe
       expectedSystemSkillPath?: string;
       skill?: string;
       prompt: string;
-      recursiveControl?: { system_skill_name?: string };
+      specialistCatalogueScope?: string;
+      recursiveControl?: {
+        system_skill_name?: string;
+        specialist_catalogue_scope?: string;
+      };
     } }>(fakeLogPath);
     assert.equal(logs.length, 2);
     assert.deepEqual(logs.map((entry) => entry.request.systemSkill), ["governor-skill", "governor-skill"]);
     assert.deepEqual(logs.map((entry) => entry.request.expectedSystemSkillPath), [systemSkillPath, systemSkillPath]);
     assert.equal(logs[0]?.request.skill, "specialist-skill");
-    assert.equal(logs[0]?.request.prompt.startsWith("/skill:specialist-skill\n"), true);
+    assert.equal(logs[0]?.request.prompt.startsWith("/skill:specialist-skill "), true);
     assert.equal(logs[0]?.request.recursiveControl?.system_skill_name, "governor-skill");
+    assert.deepEqual(
+      logs.map((entry) => entry.request.specialistCatalogueScope),
+      ["selected_only", "selected_only"],
+    );
+    assert.equal(
+      logs[0]?.request.recursiveControl?.specialist_catalogue_scope,
+      "selected_only",
+    );
     assert.equal(logs[1]?.request.skill, undefined);
     assert.match(await fs.readFile(specialistPath, "utf8"), /# specialist-skill/);
   }, { env: { SUBAGENT007_PI_SKILL_PATHS: skillsRoot } });
@@ -3924,6 +4002,7 @@ test("governed recursion privately inherits the root class while generic delegat
         prompt: "GOVERNED_RECURSIVE_TWO_HOP_ROOT",
         model_class: "D",
         system_skill_name: "governor-skill",
+        specialist_catalogue_scope: "selected_only",
         recursive_delegation: "enabled",
         wait_ms: 2_000,
       },
@@ -3940,11 +4019,13 @@ test("governed recursion privately inherits the root class while generic delegat
       delegated: RunSubagentMetadata & { primary_output?: string };
     }).delegated;
     assert.equal(governedChild.resolved_model_class, "D");
+    assert.equal(governedChild.requested_specialist_catalogue_scope, "selected_only");
     assert.ok(governedChild.primary_output);
     const governedGrandchild = (JSON.parse(governedChild.primary_output!) as {
       delegated: RunSubagentMetadata;
     }).delegated;
     assert.equal(governedGrandchild.resolved_model_class, "D");
+    assert.equal(governedGrandchild.requested_specialist_catalogue_scope, "selected_only");
 
     const beforeForged = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
     const forgedResponse = await client.callTool({
@@ -3968,6 +4049,33 @@ test("governed recursion privately inherits the root class while generic delegat
     assert.equal(forged.reason_code, "recursive_control_invalid");
     const afterForged = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
     assert.equal(afterForged.length, beforeForged.length + 1, "forged governed selector must not admit a child");
+
+    const scopeForgedResponse = await client.callTool({
+      name: "schedule_run",
+      arguments: {
+        cwd: projectDir,
+        prompt: "GOVERNED_FORGED_CATALOGUE_SCOPE",
+        model_class: "D",
+        system_skill_name: "governor-skill",
+        specialist_catalogue_scope: "selected_only",
+        recursive_delegation: "enabled",
+        wait_ms: 2_000,
+      },
+    });
+    assert.notEqual(scopeForgedResponse.isError, true);
+    const scopeForgedRoot = scopeForgedResponse.structuredContent as RunSubagentMetadata;
+    assert.equal(scopeForgedRoot.status, "completed");
+    const scopeForged = (JSON.parse(await fs.readFile(outputPathFor(scopeForgedRoot), "utf8")) as {
+      delegated: RunSubagentMetadata;
+    }).delegated;
+    assert.equal(scopeForged.status, "rejected");
+    assert.equal(scopeForged.reason_code, "recursive_control_invalid");
+    const afterScopeForged = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
+    assert.equal(
+      afterScopeForged.length,
+      afterForged.length + 1,
+      "forged catalogue scope must not admit a child",
+    );
 
     const genericResponse = await client.callTool({
       name: "schedule_run",

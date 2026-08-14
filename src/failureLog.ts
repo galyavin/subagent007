@@ -16,6 +16,7 @@ export type FailureLogTool =
   | "list_model_classes"
   | "get_run"
   | "cancel_run"
+  | "cancel_client_start"
   | "answer_run_input";
 type FailureRecordSource = "production" | "test" | "unknown";
 type FailureCwdClass = "missing" | "relative" | "temp" | "absolute";

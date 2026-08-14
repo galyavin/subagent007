@@ -201,6 +201,9 @@ async function checkSystemSkillFacts(readme) {
   if (!systemSkillSource) return [];
   const required = [
     "system_skill_name",
+    "specialist_catalogue_scope",
+    "selected_only_specialist_catalogue",
+    "pi_specialist_resource_catalogue_not_filesystem_or_tool_sandbox",
     "system_skill_activation_receipt",
     "after_all_other_before_agent_start_handlers",
     "pi_system_prompt_after_before_agent_start_not_provider_payload_or_model_obedience",
@@ -232,6 +235,25 @@ async function checkAuthoringEffectScopeFacts(readme) {
     : [`README is missing current authoring effect-scope contract facts:\n${formatList(missing)}`];
 }
 
+async function checkTaskRootReadOnlyFacts(readme) {
+  const [profileSource, contractSource] = await Promise.all([
+    readOptionalText("src/toolProfile.ts"),
+    readOptionalText("src/durableRunContract.ts"),
+  ]);
+  if (!profileSource?.includes("task_root_read_only_v1") || !contractSource) return [];
+  const required = [
+    "task_root_read_only_v1_effect_profile",
+    "exact real `cwd`",
+    "one selected immutable runtime bundle",
+    "inode-provenance proof",
+    "Pi tool-dispatch/path/resource-loader boundary",
+  ];
+  const missing = required.filter((term) => !readme.includes(term));
+  return missing.length === 0
+    ? []
+    : [`README is missing current task-root read-only contract facts:\n${formatList(missing)}`];
+}
+
 const readme = await readText("README.md");
 const modelSource = await readText("src/modelAllowlist.ts");
 const failures = [
@@ -240,6 +262,7 @@ const failures = [
   ...await checkRetiredPublicSnapshotTerms(),
   ...await checkTerminalOutputReferenceFacts(readme),
   ...await checkAuthoringEffectScopeFacts(readme),
+  ...await checkTaskRootReadOnlyFacts(readme),
   ...await checkSystemSkillFacts(readme),
 ];
 

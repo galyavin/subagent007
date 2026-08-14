@@ -2,23 +2,28 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import {
   AuthStorage,
   createAgentSession,
   ModelRegistry,
   SessionManager,
+  SettingsManager,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { createInputRequest } from "./inputMailbox.js";
-import { terminateOwnedProcessGroupOnControlLoss } from "./controlChannel.js";
-import { CHILD_OWNER_COMMIT_RELEASE_FRAME } from "./processRunner.js";
+import {
+  createEpisodeBashToolDefinition,
+} from "./episodeBash.js";
+import { createPiChildControl, type PiChildControl } from "./piChildControl.js";
 import { resolvePiAgentDir } from "./piAgentDir.js";
 import { createRecursiveDelegateTool, createRecursiveRejoinTool } from "./recursiveDelegateTool.js";
-import { createSkillScopedResourceLoader } from "./skillResources.js";
+import {
+  assertSpecialistCatalogueScope,
+  createSkillScopedResourceLoader,
+} from "./skillResources.js";
 import { createTaskRootAuthoringTools } from "./taskRootAuthoringTools.js";
 import {
   assertResolvedBoundedControllerPython,
@@ -32,6 +37,7 @@ import {
   activateAllRegisteredTools,
   activateEffectProfileTools,
   assertExactBoundedActivationToolBindings,
+  assertExactTaskRootReadOnlyActivationToolBindings,
   boundedAuthoringActivationReceipt,
   boundedControllerActivationBindings,
   boundedControllerScriptPath,
@@ -43,6 +49,9 @@ import {
   resolveWorkspaceReadOnlyWebProvider,
   skillCreatorAuthoringV1ActivationReceipt,
   skillOnlyActivationReceipt,
+  TASK_ROOT_READ_ONLY_V1_TOOL_NAMES,
+  taskRootReadOnlyActivationBindings,
+  taskRootReadOnlyV1ActivationReceipt,
   taskRootAuthoringV1ActivationReceipt,
   workspaceReadOnlyActivationReceipt,
 } from "./toolProfile.js";
@@ -57,6 +66,7 @@ import type {
   PromptProvenance,
   SkillSnapshotActivationReceipt,
   SkillSnapshotLaunchBinding,
+  SpecialistCatalogueScope,
   SystemSkillActivationReceipt,
   ThinkingLevel,
 } from "./types.js";
@@ -101,6 +111,7 @@ interface PiChildRequest {
   expectedEffectScopeBinding?: AuthoringEffectScopeBinding;
   systemSkill?: string;
   expectedSystemSkillPath?: string;
+  specialistCatalogueScope?: SpecialistCatalogueScope;
 }
 
 class ChildContractError extends Error {
@@ -159,115 +170,6 @@ const requestInputParameters = Type.Object({
   options: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
   freeform: Type.Optional(Type.Boolean()),
 });
-
-interface InputResponse {
-  requestId: string;
-  responseId: string;
-  answer: string;
-  receivedAt: string;
-}
-
-interface InputControl {
-  waitForOwnerCommitRelease(): Promise<void>;
-  waitForResponse(requestId: string, timeoutMs: number): Promise<InputResponse>;
-  dispose(): void;
-}
-
-function createInputControl(runId: string): InputControl {
-  const buffered = new Map<string, InputResponse>();
-  const waiters = new Map<string, (response: InputResponse) => void>();
-  const reader = createInterface({ input: process.stdin, crlfDelay: Infinity });
-  let releaseOwnerCommit!: () => void;
-  const ownerCommitRelease = new Promise<void>((resolve) => {
-    releaseOwnerCommit = resolve;
-  });
-  let ownerCommitReleased = false;
-  let disposed = false;
-  reader.on("close", () => {
-    if (!disposed) {
-      terminateOwnedProcessGroupOnControlLoss();
-    }
-  });
-  reader.on("line", (line) => {
-    try {
-      const message = JSON.parse(line) as {
-        type?: unknown;
-        request_id?: unknown;
-        response_id?: unknown;
-        answer?: unknown;
-      };
-      if (
-        !ownerCommitReleased &&
-        `${line}\n` === CHILD_OWNER_COMMIT_RELEASE_FRAME
-      ) {
-        ownerCommitReleased = true;
-        releaseOwnerCommit();
-        return;
-      }
-      if (
-        message.type !== "subagent007.input_response" ||
-        typeof message.request_id !== "string" ||
-        typeof message.response_id !== "string" ||
-        typeof message.answer !== "string"
-      ) {
-        return;
-      }
-      const response: InputResponse = {
-        requestId: message.request_id,
-        responseId: message.response_id,
-        answer: message.answer,
-        receivedAt: new Date().toISOString(),
-      };
-      const waiter = waiters.get(response.requestId);
-      if (waiter) {
-        waiters.delete(response.requestId);
-        waiter(response);
-        return;
-      }
-      buffered.set(response.requestId, response);
-    } catch {
-      // The parent owns this private control channel. Malformed frames cannot become tool input.
-    }
-  });
-
-  return {
-    waitForOwnerCommitRelease() {
-      return ownerCommitRelease;
-    },
-    waitForResponse(requestId, timeoutMs) {
-      const accept = (response: InputResponse): InputResponse => {
-        writeEvent({
-          type: "subagent007.input_response_accepted",
-          run_id: runId,
-          request_id: response.requestId,
-          response_id: response.responseId,
-        });
-        return response;
-      };
-      const alreadyReceived = buffered.get(requestId);
-      if (alreadyReceived) {
-        buffered.delete(requestId);
-        return Promise.resolve(accept(alreadyReceived));
-      }
-      return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          waiters.delete(requestId);
-          reject(new Error(`input request timed out: ${requestId}`));
-        }, timeoutMs);
-        waiters.set(requestId, (response) => {
-          clearTimeout(timeout);
-          resolve(accept(response));
-        });
-      });
-    },
-    dispose() {
-      disposed = true;
-      reader.close();
-      waiters.clear();
-      buffered.clear();
-    },
-  };
-}
 
 function writeEvent(event: unknown): void {
   process.stdout.write(`${JSON.stringify(event)}\n`);
@@ -330,7 +232,7 @@ function resolveRequestedModel(modelRef: string, registry: ModelRegistry): Model
 
 function createRequestInputTool(
   request: PiChildRequest,
-  inputControl: InputControl,
+  inputControl: PiChildControl,
 ): ToolDefinition<typeof requestInputParameters> {
   return {
     name: "request_input",
@@ -413,7 +315,7 @@ async function readRequest(): Promise<PiChildRequest> {
 
 async function main(): Promise<void> {
   const request = await readRequest();
-  const inputControl = createInputControl(request.runId);
+  const inputControl = createPiChildControl({ runId: request.runId, writeEvent });
   try {
     await inputControl.waitForOwnerCommitRelease();
     writeEvent({ type: "subagent007.lifecycle", event: "child_bridge_started" });
@@ -462,6 +364,7 @@ async function main(): Promise<void> {
     throw new ChildContractError("unexpected system skill source expectation", "system_skill_activation_failed");
   }
   const isWorkspaceReadOnly = request.effectProfile === "workspace_read_only";
+  const isTaskRootReadOnly = request.effectProfile === "task_root_read_only_v1";
   const boundedProfile = isBoundedEffectProfile(request.effectProfile) ? request.effectProfile : undefined;
   const isBounded = boundedProfile !== undefined;
   let effectScopeBinding: AuthoringEffectScopeBinding | undefined;
@@ -527,6 +430,21 @@ async function main(): Promise<void> {
         throw asChildContractError(error, "effect_profile_activation_failed");
       })
     : undefined;
+  const taskRootReadOnlyBindings = isTaskRootReadOnly
+    ? await taskRootReadOnlyActivationBindings(fileURLToPath(import.meta.url), request.cwd).catch((error) => {
+        throw asChildContractError(error, "effect_profile_activation_failed");
+      })
+    : undefined;
+  if (taskRootReadOnlyBindings) {
+    try {
+      assertExactTaskRootReadOnlyActivationToolBindings(
+        request.expectedActivationToolBindings,
+        taskRootReadOnlyBindings,
+      );
+    } catch (error) {
+      throw asChildContractError(error, "effect_profile_activation_failed");
+    }
+  }
   if (boundedBindings) {
     try {
       // The parent receipt is mandatory evidence; child-derived values may only
@@ -583,6 +501,7 @@ async function main(): Promise<void> {
     skill: request.skill,
     skillFilePath: request.skillFilePath,
     systemSkill: request.systemSkill,
+    specialistCatalogueScope: request.specialistCatalogueScope,
     ...(inlineExtensions.length > 0 ? { extensionFactories: inlineExtensions } : {}),
     ...(request.effectProfile
       ? {
@@ -590,9 +509,11 @@ async function main(): Promise<void> {
           explicitExtensionPaths: explicitWebProviderExtensionPaths(request.effectProfile, webProvider),
         }
       : {}),
+    ...(isTaskRootReadOnly ? { noAmbientInstructions: true } : {}),
   });
   const authStorage = AuthStorage.create(path.join(agentDir, "auth.json"));
   const modelRegistry = ModelRegistry.create(authStorage, path.join(agentDir, "models.json"));
+  const settingsManager = SettingsManager.create(request.cwd, agentDir);
   const model = resolveRequestedModel(request.model, modelRegistry);
   const sessionManager =
     request.sessionMode === "ephemeral"
@@ -613,12 +534,29 @@ async function main(): Promise<void> {
       request.effectProfile ? "effect_profile_activation_failed" : "unknown_error",
     );
   });
+  try {
+    assertSpecialistCatalogueScope(request, resourceLoader.getSkills().skills);
+  } catch (error) {
+    throw asChildContractError(error, "system_skill_activation_failed");
+  }
   const skillBinding = await verifiedSkillBinding(request);
-  const customTools: ToolDefinition<any>[] = [
+  const customTools: ToolDefinition<any, any, any>[] = [
+    createEpisodeBashToolDefinition({
+      cwd: request.cwd,
+      commandPrefix: settingsManager.getShellCommandPrefix(),
+      shellPath: settingsManager.getShellPath(),
+      registerProcessGroup: (registration) => inputControl.registerProcessGroup(registration),
+    }),
     ...(request.effectProfile === undefined || isWorkspaceReadOnly
       ? [createRequestInputTool(request, inputControl)]
       : []),
-    ...(request.effectProfile === "skill_creator_authoring_v1" || request.effectProfile === "task_root_authoring_v1" || isBounded
+    ...(isTaskRootReadOnly
+      ? createTaskRootAuthoringTools(
+          request.cwd,
+          request.skillFilePath,
+          TASK_ROOT_READ_ONLY_V1_TOOL_NAMES,
+        )
+      : request.effectProfile === "skill_creator_authoring_v1" || request.effectProfile === "task_root_authoring_v1" || isBounded
       ? createTaskRootAuthoringTools(
           request.cwd,
           expectedSnapshotReceipt?.resolved_skill_path,
@@ -651,6 +589,7 @@ async function main(): Promise<void> {
     modelRegistry,
     authStorage,
     sessionManager,
+    settingsManager,
     resourceLoader,
     customTools,
     ...(request.effectProfile ? { tools: [...effectProfileToolNames(request.effectProfile)] } : {}),
@@ -699,6 +638,14 @@ async function main(): Promise<void> {
       throw asChildContractError(error, "effect_profile_activation_failed");
     }
     writeEvent({ type: "subagent007.activation_confirmed", receipt });
+  } else if (request.effectProfile === "task_root_read_only_v1" && taskRootReadOnlyBindings) {
+    writeEvent({
+      type: "subagent007.activation_confirmed",
+      receipt: taskRootReadOnlyV1ActivationReceipt({
+        skillBinding,
+        toolBindings: taskRootReadOnlyBindings,
+      }),
+    });
   } else if (request.effectProfile === "skill_creator_authoring_v1") {
     writeEvent({ type: "subagent007.activation_confirmed", receipt: skillCreatorAuthoringV1ActivationReceipt(skillBinding) });
   } else if (request.effectProfile === "task_root_authoring_v1") {

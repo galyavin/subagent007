@@ -9,7 +9,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { createFakePiChild } from "./helpers/fakePiChild.js";
 import { readJsonl, withEnv } from "./helpers/testUtils.js";
 import * as clientStartAdmissionApi from "../src/clientStartAdmission.js";
-import { cancelRunTask, getRunTask, startRunTask } from "../src/runTask.js";
+import { cancelClientStartTask, cancelRunTask, getRunTask, startRunTask } from "../src/runTask.js";
 import * as runTaskApi from "../src/runTask.js";
 import { skillOnlyActivationReceipt } from "../src/toolProfile.js";
 
@@ -38,6 +38,7 @@ type RunView = {
   queue_wait_ms?: number;
   client_start_binding?: { client_start_id: string; request_sha256: string; run_id: string };
   requested_system_skill?: string;
+  requested_specialist_catalogue_scope?: "selected_only";
   system_skill_activation_receipt?: { system_skill_name?: string };
   recent_events?: Array<{
     kind?: string;
@@ -50,6 +51,20 @@ type RunView = {
 type RunOwnerRecord = RunView & {
   record_name?: string;
   launch_observation?: Record<string, unknown>;
+};
+
+type ClientStartContainmentView = {
+  contract_name: "subagent007.client_start_containment";
+  contract_version: 1;
+  client_start_id: string;
+  containment_status: "fenced" | "terminal" | "unknown";
+  contained: boolean;
+  terminal: boolean;
+  fenced_at?: string;
+  run_id?: string;
+  run_status?: string;
+  run?: RunView;
+  reason_code?: string;
 };
 
 function persistedRunView(value: unknown): RunView {
@@ -786,6 +801,12 @@ test("client start identity is strict, schema-normalized, and deterministically 
     clientStartAdmissionApi.canonicalClientStartRequestSha256(left as never),
     clientStartAdmissionApi.canonicalClientStartRequestSha256(governed as never),
   );
+  const selectedOnly = { ...governed, specialist_catalogue_scope: "selected_only" };
+  assert.equal(normalize(selectedOnly).specialist_catalogue_scope, "selected_only");
+  assert.notEqual(
+    clientStartAdmissionApi.canonicalClientStartRequestSha256(governed as never),
+    clientStartAdmissionApi.canonicalClientStartRequestSha256(selectedOnly as never),
+  );
   assert.notEqual(
     clientStartAdmissionApi.canonicalClientStartRequestSha256(governed as never),
     clientStartAdmissionApi.canonicalClientStartRequestSha256({
@@ -803,7 +824,82 @@ test("client start identity is strict, schema-normalized, and deterministically 
 });
 
 describe("live client-start admission", { concurrency: 2 }, () => {
-test("client_start_id binds system_skill_name through activation and rejects governor drift", async () => {
+test("cancel_client_start fences an unbound token and exact replay cannot launch", async () => {
+  const f = await fixture();
+  try {
+    await withServer(f, async (client) => {
+      const first = (await client.callTool({
+        name: "cancel_client_start",
+        arguments: { client_start_id: "fence-before-admission" },
+      })).structuredContent as ClientStartContainmentView;
+      assert.equal(first.containment_status, "fenced");
+      assert.equal(first.contained, true);
+      assert.equal(first.terminal, true);
+      assert.match(first.fenced_at ?? "", /^\d{4}-\d{2}-\d{2}T/);
+
+      const repeated = (await client.callTool({
+        name: "cancel_client_start",
+        arguments: { client_start_id: "fence-before-admission" },
+      })).structuredContent as ClientStartContainmentView;
+      assert.deepEqual(repeated, first, "a lost cancellation response must be exactly replayable");
+
+      const rejected = (await client.callTool({
+        name: "start_run",
+        arguments: { cwd: f.project, prompt: "FAST", client_start_id: "fence-before-admission" },
+      })).structuredContent as RunView;
+      assert.equal(rejected.kind, "preflight_rejected");
+      assert.equal(rejected.reason_code, "client_start_id_fenced");
+      assert.equal(rejected.child_started, false);
+      assert.equal((await readFakeLog(f.fakeLog)).length, 0, "a fenced token must reject before child launch");
+    });
+  } finally {
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test("cancel_client_start cancels the exact bound attempt and completion may win", async () => {
+  const f = await fixture();
+  try {
+    await withServer(f, async (client) => {
+      const active = (await client.callTool({
+        name: "start_run",
+        arguments: { cwd: f.project, prompt: "WAIT_FOR_CANCEL", client_start_id: "bound-cancel" },
+      })).structuredContent as RunView;
+      const cancelled = (await client.callTool({
+        name: "cancel_client_start",
+        arguments: { client_start_id: "bound-cancel" },
+      })).structuredContent as ClientStartContainmentView;
+      assert.equal(cancelled.containment_status, "terminal");
+      assert.equal(cancelled.run_id, active.run_id);
+      assert.equal(cancelled.run_status, "cancelled");
+      assert.equal(cancelled.run?.status, "cancelled");
+      const replay = (await client.callTool({
+        name: "cancel_client_start",
+        arguments: { client_start_id: "bound-cancel" },
+      })).structuredContent as ClientStartContainmentView;
+      assert.deepEqual(replay, cancelled);
+
+      const fast = (await client.callTool({
+        name: "start_run",
+        arguments: { cwd: f.project, prompt: "FAST", client_start_id: "completion-wins" },
+      })).structuredContent as RunView;
+      const completed = await waitTerminal(client, fast.run_id);
+      assert.equal(completed.status, "completed");
+      const afterCompletion = (await client.callTool({
+        name: "cancel_client_start",
+        arguments: { client_start_id: "completion-wins" },
+      })).structuredContent as ClientStartContainmentView;
+      assert.equal(afterCompletion.containment_status, "terminal");
+      assert.equal(afterCompletion.run_id, fast.run_id);
+      assert.equal(afterCompletion.run_status, "completed");
+      assert.equal(afterCompletion.run?.status, "completed");
+    });
+  } finally {
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test("client_start_id binds governed specialist scope through activation and rejects scope drift", async () => {
   const f = await fixture();
   const skillsRoot = path.join(f.root, "skills");
   await Promise.all([
@@ -817,6 +913,7 @@ test("client_start_id binds system_skill_name through activation and rejects gov
         prompt: "FAST",
         client_start_id: "governed-client-start",
         system_skill_name: "governor-skill",
+        specialist_catalogue_scope: "selected_only",
       };
       const firstResponse = await client.callTool({ name: "start_run", arguments: request });
       assert.notEqual(firstResponse.isError, true, JSON.stringify(firstResponse.content));
@@ -830,22 +927,52 @@ test("client_start_id binds system_skill_name through activation and rejects gov
 
       const driftResponse = await client.callTool({
         name: "start_run",
-        arguments: { ...request, system_skill_name: "alternate-governor" },
+        arguments: { ...request, specialist_catalogue_scope: undefined },
       });
       assert.notEqual(driftResponse.isError, true, JSON.stringify(driftResponse.content));
       const drift = driftResponse.structuredContent as RunView;
       assert.equal(drift.kind, "preflight_rejected");
       assert.equal(drift.reason_code, "client_start_id_conflict");
       assert.equal(drift.child_started, false);
-      assert.equal("run_id" in drift, false, "governor drift must not create another run");
+      assert.equal("run_id" in drift, false, "catalogue-scope drift must not create another run");
+
+      const governorDriftResponse = await client.callTool({
+        name: "start_run",
+        arguments: { ...request, system_skill_name: "alternate-governor" },
+      });
+      assert.notEqual(governorDriftResponse.isError, true, JSON.stringify(governorDriftResponse.content));
+      const governorDrift = governorDriftResponse.structuredContent as RunView;
+      assert.equal(governorDrift.kind, "preflight_rejected");
+      assert.equal(governorDrift.reason_code, "client_start_id_conflict");
+      assert.equal(governorDrift.child_started, false);
+      assert.equal("run_id" in governorDrift, false, "governor drift must not create another run");
 
       const terminal = await waitTerminal(client, first.run_id);
       assert.equal(terminal.status, "completed", JSON.stringify(terminal));
       assert.equal(terminal.requested_system_skill, "governor-skill");
+      assert.equal(terminal.requested_specialist_catalogue_scope, "selected_only");
       assert.equal(terminal.system_skill_activation_receipt?.system_skill_name, "governor-skill");
-      const logs = await readJsonl<{ request: { systemSkill?: string } }>(f.fakeLog);
-      assert.equal(logs.length, 1, "exact replay and governor drift must not admit another child");
+      const ownerRecord = await readRunOwnerRecord(
+        path.join(f.root, "state", "run-tasks", `${first.run_id}.json`),
+      );
+      assert.equal(
+        (ownerRecord as { declarations?: { specialistCatalogueScope?: string } })
+          .declarations?.specialistCatalogueScope,
+        "selected_only",
+      );
+      assert.equal(
+        (ownerRecord.launch_observation as {
+          activation_expectation?: { specialist_catalogue_scope?: string };
+        } | undefined)?.activation_expectation?.specialist_catalogue_scope,
+        "selected_only",
+      );
+      const logs = await readJsonl<{ request: {
+        systemSkill?: string;
+        specialistCatalogueScope?: string;
+      } }>(f.fakeLog);
+      assert.equal(logs.length, 1, "exact replay and governed-request drift must not admit another child");
       assert.equal(logs[0]?.request.systemSkill, "governor-skill");
+      assert.equal(logs[0]?.request.specialistCatalogueScope, "selected_only");
     }, { SUBAGENT007_PI_SKILL_PATHS: skillsRoot });
   } finally {
     await fs.rm(f.root, { recursive: true, force: true });
@@ -1097,6 +1224,65 @@ test("current claim retains launch grant evidence and rejects forged accepted co
         () => getRunTask(started.run_id),
         /run claim|owner record|run_liveness_unknown|client_start_id_conflict|snapshot/i,
       );
+    });
+  } finally {
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test("corrupted token containment is typed unknown rather than false cancellation", async () => {
+  const f = await fixture();
+  const runTasksDir = path.join(f.root, "state", "run-tasks");
+  const clientStartId = "corrupted-containment";
+  const recordPath = path.join(
+    runTasksDir,
+    "client-start-ids",
+    `${createHash("sha256").update(clientStartId).digest("hex")}.json`,
+  );
+  try {
+    await fs.mkdir(path.dirname(recordPath), { recursive: true });
+    await fs.writeFile(recordPath, "{not-json\n");
+    await withEnv({ SUBAGENT007_RUN_TASKS_DIR: runTasksDir }, async () => {
+      const result = await cancelClientStartTask(clientStartId);
+      assert.equal(result.containment_status, "unknown");
+      assert.equal(result.contained, false);
+      assert.equal(result.terminal, false);
+      assert.equal(result.reason_code, "run_liveness_unknown");
+    });
+  } finally {
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test("start and token cancellation contention settles without launching after cancellation wins", async () => {
+  const f = await fixture();
+  const barrier = path.join(f.root, "promotion-barrier");
+  const state = path.join(f.root, "state");
+  try {
+    await withEnv({
+      SUBAGENT007_CONFIG_PATH: f.config,
+      SUBAGENT007_PI_CHILD_PATH: f.fakeChild,
+      FAKE_PI_LOG_PATH: f.fakeLog,
+      SUBAGENT007_FAILURE_LOG: "off",
+      SUBAGENT007_RUN_TASKS_DIR: path.join(state, "run-tasks"),
+      SUBAGENT007_INPUT_REQUESTS_DIR: path.join(state, "input-requests"),
+      SUBAGENT007_ACTIVE_CHILDREN_DIR: path.join(state, "active-children"),
+      SUBAGENT007_QUEUED_RUNS_DIR: path.join(state, "queued-runs"),
+      SUBAGENT007_TEST_CLIENT_START_PROMOTION_BARRIER: barrier,
+    }, async () => {
+      const startedPromise = startRunTask({
+        cwd: f.project,
+        prompt: "FAST",
+        client_start_id: "start-cancel-contention",
+      });
+      await waitForPath(`${barrier}.ready`);
+      const cancelledPromise = cancelClientStartTask("start-cancel-contention");
+      await fs.writeFile(`${barrier}.continue`, "continue\n", { flag: "wx" });
+      const [started, cancelled] = await Promise.all([startedPromise, cancelledPromise]);
+      assert.equal(cancelled.containment_status, "terminal");
+      assert.equal(cancelled.run_id, started.run_id);
+      assert.equal(cancelled.run_status, "cancelled");
+      assert.equal((await readFakeLog(f.fakeLog)).length, 0, "cancellation before launch guard must prevent the child");
     });
   } finally {
     await fs.rm(f.root, { recursive: true, force: true });

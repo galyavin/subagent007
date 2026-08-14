@@ -108,7 +108,7 @@ test("system-skill mode keeps the full specialist catalogue except the governor 
   assert.equal(loader.getExtensions().extensions.at(-1)?.path, "<inline:subagent007-system-skill-finalizer>");
 
   const specialistPrompt = composePrompt({ prompt: "Use the bounded specialist", skill: "selected-skill" });
-  assert.match(specialistPrompt, /^\/skill:selected-skill\n/);
+  assert.match(specialistPrompt, /^\/skill:selected-skill /);
   const composed = appendSystemSkillToPrompt({ currentSystemPrompt: "PI BASE\n\nAMBIENT TRANSFORM", source });
   assert.ok(composed.systemPrompt.indexOf("AMBIENT TRANSFORM") < composed.systemPrompt.indexOf(source.content));
   assert.equal(composed.systemPrompt.includes("SNAPSHOT SELECTED FULL BODY"), false);
@@ -198,6 +198,21 @@ test("fresh and raw-resume launches reread the current governing source without 
 
 test("system_skill_name must differ from the ordinary specialist and is absent from model-controlled delegate parameters", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-system-skill-validation-"));
+  await assert.rejects(
+    validateAndResolveRequest({
+      prompt: "Do work",
+      cwd: tmp,
+      specialist_catalogue_scope: "selected_only",
+    }, { default_model_class: "C" }),
+    /requires system_skill_name/,
+  );
+  const selectedOnly = await validateAndResolveRequest({
+    prompt: "Do work",
+    cwd: tmp,
+    system_skill_name: "governor-skill",
+    specialist_catalogue_scope: "selected_only",
+  }, { default_model_class: "C" });
+  assert.equal(selectedOnly.specialistCatalogueScope, "selected_only");
   await assert.rejects(
     validateAndResolveRequest({
       prompt: "Do work",

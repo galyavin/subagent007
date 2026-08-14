@@ -220,9 +220,10 @@ test("runtime readiness returns a ready snapshot for a clean current build", asy
   assert.equal(snapshot.capabilities.public_tools.includes("publish_skill_snapshots"), true);
   assert.equal(snapshot.capabilities.public_tools.includes("close_skill_snapshot_references"), true);
   assert.equal(snapshot.capabilities.public_tools.includes("resolve_retained_skill_snapshot_source"), true);
+  assert.equal(snapshot.capabilities.public_tools.includes("cancel_client_start"), true);
   assert.equal(snapshot.capabilities.public_tools.includes("materialize_retained_skill_snapshot" as never), false);
   assert.equal(snapshot.capabilities.public_tools.includes("list_allowed_models" as never), false);
-  assert.equal(snapshot.capabilities.public_tools.length, 20);
+  assert.equal(snapshot.capabilities.public_tools.length, 21);
   assert.equal(snapshot.capabilities.durable_run.includes("batch_skill_binding_verification"), true);
   assert.equal(snapshot.capabilities.durable_run.includes("batch_skill_binding_resolution"), true);
   assert.equal(snapshot.capabilities.durable_run.includes("researcher_bounded_v1_effect_profile"), true);
@@ -230,6 +231,7 @@ test("runtime readiness returns a ready snapshot for a clean current build", asy
   assert.equal(snapshot.capabilities.durable_run.includes("explicit_recursive_delegation"), true);
   assert.equal(snapshot.capabilities.durable_run.includes("terminal_recursive_subtree_closure"), true);
   assert.equal(snapshot.capabilities.durable_run.includes("event_driven_get_run_wait"), true);
+  assert.equal(snapshot.capabilities.durable_run.includes("client_start_containment_fence"), true);
   assert.equal(snapshot.contract.observation.resident_wait, "owner_publication_event_driven");
   assert.equal(snapshot.contract.observation.nonresident_wait, "immediate_persisted_snapshot");
   assert.equal(snapshot.build.child_entrypoint.exists, true);

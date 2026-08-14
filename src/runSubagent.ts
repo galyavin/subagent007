@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { assertConfiguredChildEntrypointAvailable } from "./childEntrypoint.js";
 import { loadConfig } from "./config.js";
 import {
@@ -61,6 +62,7 @@ import type {
   RunSubagentResult,
   SkillSnapshotActivationReceipt,
   SkillSnapshotLaunchBinding,
+  SpecialistCatalogueScope,
   SystemSkillActivationReceipt,
 } from "./types.js";
 import { ValidationError } from "./types.js";
@@ -74,6 +76,7 @@ import {
   boundedControllerScriptPath,
   isBoundedEffectProfile,
   resolveWorkspaceReadOnlyWebProvider,
+  taskRootReadOnlyActivationBindings,
   validatedActivationReceipt,
 } from "./toolProfile.js";
 import {
@@ -92,6 +95,7 @@ import {
   validatedSystemSkillActivationReceipt,
   type ResolvedSystemSkillSource,
 } from "./systemSkill.js";
+import { captureSkillRuntimeBundle } from "./skillRuntimeBundle.js";
 
 const DEFAULT_RUN_SUBAGENT_TIMEOUT_MS = 110_000;
 export const RUN_SUBAGENT_TIMEOUT_RECOVERY_HINT =
@@ -151,6 +155,7 @@ interface PiChildRequestFile {
   expectedEffectScopeBinding?: AuthoringEffectScopeBinding;
   systemSkill?: string;
   expectedSystemSkillPath?: string;
+  specialistCatalogueScope?: SpecialistCatalogueScope;
 }
 
 export interface ChildInputResponseAccepted {
@@ -253,16 +258,36 @@ async function writeChildRequestFile(request: PiChildRequestFile): Promise<{
   if (request.skillBinding && request.skillFilePath && !request.skillSnapshotBinding) {
     const skillSnapshotDir = path.join(dir, "skill-snapshot");
     const skillSnapshotPath = path.join(skillSnapshotDir, "SKILL.md");
-    await fs.mkdir(skillSnapshotDir, { recursive: true });
     try {
-      await fs.copyFile(request.skillFilePath, skillSnapshotPath);
+      if (request.effectProfile === "task_root_read_only_v1") {
+        const captured = await captureSkillRuntimeBundle(path.dirname(request.skillBinding.path));
+        const canonicalSkillPath = await fs.realpath(request.skillBinding.path);
+        const capturedSkill = captured.files.find((file) => file.relative_path === "SKILL.md");
+        if (
+          captured.resolved_skill_path !== canonicalSkillPath ||
+          capturedSkill?.content_sha256 !== request.skillBinding.content_sha256
+        ) {
+          throw new Error("selected skill bundle does not match its admitted SKILL.md binding");
+        }
+        await fs.mkdir(skillSnapshotDir, { recursive: true, mode: 0o700 });
+        for (const file of captured.files) {
+          const content = captured.contents.get(file.relative_path);
+          if (!content) throw new Error(`selected skill bundle bytes are absent for ${file.relative_path}`);
+          const target = path.join(skillSnapshotDir, ...file.relative_path.split("/"));
+          await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+          await fs.writeFile(target, content, { flag: "wx", mode: file.executable ? 0o500 : 0o400 });
+        }
+      } else {
+        await fs.mkdir(skillSnapshotDir, { recursive: true });
+        await fs.copyFile(request.skillFilePath, skillSnapshotPath);
+        await fs.chmod(skillSnapshotPath, 0o400);
+      }
     } catch (error) {
       throw new ValidationError(
-        `resolved skill content could not be snapshotted before child launch: ${(error as Error).message}`,
+        `resolved selected skill runtime could not be snapshotted before child launch: ${(error as Error).message}`,
         "skill_content_mismatch",
       );
     }
-    await fs.chmod(skillSnapshotPath, 0o400);
     persistedRequest = { ...request, skillFilePath: skillSnapshotPath };
   }
   await fs.writeFile(requestPath, `${JSON.stringify(persistedRequest, null, 2)}\n`, {
@@ -786,6 +811,7 @@ export async function runSubagentCore(
       resolvedRecursiveDelegation: ResolvedRunSubagentRequest["recursiveDelegation"];
       systemSkillName?: string;
       systemSkillPath?: string;
+      specialistCatalogueScope?: SpecialistCatalogueScope;
       governingModelClass?: ModelClass;
     }) => void | Promise<void>;
   } = {},
@@ -835,7 +861,21 @@ export async function runSubagentCore(
       snapshotActivation,
       childEntrypoint,
     });
-    const expectedActivationToolBindings = boundedActivation?.toolBindings;
+    let taskRootReadOnlyBindings: ActivationToolBinding[] | undefined;
+    if (resolved.effectProfile === "task_root_read_only_v1") {
+      try {
+        taskRootReadOnlyBindings = await taskRootReadOnlyActivationBindings(
+          fileURLToPath(import.meta.url),
+          resolved.cwd,
+        );
+      } catch (error) {
+        throw new ValidationError(
+          `task_root_read_only_v1 could not bind its path guard: ${error instanceof Error ? error.message : String(error)}`,
+          "effect_profile_activation_failed",
+        );
+      }
+    }
+    const expectedActivationToolBindings = taskRootReadOnlyBindings ?? boundedActivation?.toolBindings;
     const diskReserve = await assertDiskReserveAvailable(options.runsDir);
     const timeoutBudget = computeTimeoutBudget(
       resolved.timeoutMs ?? (options.allowTimeout ? undefined : defaultRunSubagentTimeoutMs()),
@@ -867,6 +907,9 @@ export async function runSubagentCore(
       ...(systemSkillSource ? {
         systemSkillName: systemSkillSource.name,
         systemSkillPath: systemSkillSource.path,
+        ...(resolved.specialistCatalogueScope
+          ? { specialistCatalogueScope: resolved.specialistCatalogueScope }
+          : {}),
         governingModelClass: resolved.modelClass,
       } : {}),
     });
@@ -900,6 +943,7 @@ export async function runSubagentCore(
               rootRunId: options.rootRunId,
               recursionDepth: options.recursionDepth,
               systemSkillName: systemSkillSource?.name,
+              specialistCatalogueScope: resolved.specialistCatalogueScope,
               governingModelClass: systemSkillSource ? resolved.modelClass : undefined,
             }),
           }
@@ -925,6 +969,9 @@ export async function runSubagentCore(
       ...(systemSkillSource ? {
         systemSkill: systemSkillSource.name,
         expectedSystemSkillPath: systemSkillSource.path,
+        ...(resolved.specialistCatalogueScope
+          ? { specialistCatalogueScope: resolved.specialistCatalogueScope }
+          : {}),
       } : {}),
     };
     childRequest = await writeChildRequestFile(childPayload);
@@ -1186,6 +1233,9 @@ export async function runSubagentCore(
       resolved_recursive_delegation: resolved.recursiveDelegation,
       ...(recursiveDelegationReceipt ? { recursive_delegation_receipt: recursiveDelegationReceipt } : {}),
       ...(systemSkillSource ? { requested_system_skill: systemSkillSource.name } : {}),
+      ...(resolved.specialistCatalogueScope
+        ? { requested_specialist_catalogue_scope: resolved.specialistCatalogueScope }
+        : {}),
       ...(systemSkillActivationReceipt ? { system_skill_activation_receipt: systemSkillActivationReceipt } : {}),
       requested_output_mode: resolved.outputMode,
       written_output_mode: writtenOutputMode,

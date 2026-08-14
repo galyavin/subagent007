@@ -114,9 +114,9 @@ async function resolveAuthoringRoots(taskRoot: string, snapshotSkillFilePath?: s
   const resolvedTaskRoot = await fs.realpath(taskRoot);
   if (!snapshotSkillFilePath) return { taskRoot: resolvedTaskRoot };
 
-  // Pi reaches this only after the snapshot binding has revalidated skillFilePath.
-  // Its real parent is the exact immutable runtime bundle root, never its snapshot
-  // container or any caller-provided source root.
+  // Pi reaches this only after the selected SKILL.md binding has revalidated
+  // skillFilePath. Its real parent is the exact immutable selected runtime
+  // bundle root, never its owner container or any caller-provided source root.
   const resolvedSkillFilePath = await fs.realpath(snapshotSkillFilePath);
   const snapshotRuntimeRoot = await fs.realpath(path.dirname(snapshotSkillFilePath));
   if (!isWithin(snapshotRuntimeRoot, resolvedSkillFilePath) || path.basename(resolvedSkillFilePath) !== "SKILL.md") {
@@ -127,8 +127,8 @@ async function resolveAuthoringRoots(taskRoot: string, snapshotSkillFilePath?: s
 
 /**
  * Enforces exact real roots before a task-root authoring dispatch. Relative paths
- * always resolve from the task root; snapshot access requires an absolute path
- * within the already-validated immutable runtime root.
+ * always resolve from the task root; selected-skill support access requires a
+ * path within the already-validated immutable runtime root.
  */
 export async function assertTaskRootAuthoringPath(
   taskRoot: string,
@@ -258,7 +258,7 @@ function guardTaskRootTool(
  * Pi custom-tool overrides for the Skill Creator authoring ceiling. The built-in
  * implementations retain their bounded rendering/search behavior. Writes and
  * edits stay beneath the exact real run cwd; read tools additionally receive the
- * exact real immutable runtime root only for a validated snapshot-bound launch.
+ * exact real immutable runtime root of the one validated selected skill, when present.
  */
 export function createTaskRootAuthoringTools(
   taskRoot: string,

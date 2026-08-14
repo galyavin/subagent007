@@ -27,6 +27,7 @@ import {
 import { assertConfiguredChildEntrypointAvailable } from "./childEntrypoint.js";
 import {
   answerRunTaskInput,
+  cancelClientStartTask,
   cancelRunTask,
   getRunTask,
   governingModelClassForRecursiveDelegate,
@@ -79,6 +80,7 @@ import {
   type PreflightRejectedResult,
   RESUME_MODES,
   RECURSIVE_DELEGATIONS,
+  SPECIALIST_CATALOGUE_SCOPES,
   RUN_KINDS,
   SESSION_PACKET_POLICIES,
   ValidationError,
@@ -359,6 +361,10 @@ const constrainedRunInputSchema = {
     .regex(SKILL_NAME_PATTERN, "system_skill_name must be a canonical bare skill name")
     .optional()
     .describe(SYSTEM_SKILL_NAME_INPUT_DESCRIPTION),
+  specialist_catalogue_scope: z
+    .enum(SPECIALIST_CATALOGUE_SCOPES)
+    .optional()
+    .describe("With system_skill_name, expose only skill_name as an ordinary specialist, or none when unbound; omission preserves the normal catalogue minus the governor."),
   allowed_output_paths: z
     .array(z.string().min(1))
     .max(MAX_ALLOWED_OUTPUT_PATHS)
@@ -431,6 +437,15 @@ const startRunInputSchema = z.strictObject({
     .describe("Optional caller idempotency key. Exact replay returns the same run; reuse with a changed validated request is rejected."),
 }, {
   error: (issue) => rawSessionIdSchemaError("start_run", issue),
+});
+
+const cancelClientStartInputSchema = z.strictObject({
+  client_start_id: z
+    .string()
+    .min(1)
+    .max(200)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/)
+    .describe("Exact client start token to fence before admission or cancel after binding."),
 });
 
 const scheduleRunInputSchema = z.strictObject({
@@ -837,6 +852,19 @@ server.registerTool(
 );
 
 server.registerTool(
+  "cancel_client_start",
+  {
+    title: "Cancel Client Start",
+    description:
+      "Non-creating containment for one exact client_start_id. If unbound, durably fence the token so a delayed start_run cannot launch; if bound, cancel only that attempt and return its stable terminal view. Corrupt or unobservable containment returns typed unknown rather than claiming cancellation.",
+    inputSchema: cancelClientStartInputSchema,
+  },
+  withFailureLogging("cancel_client_start", async (request) =>
+    jsonObjectToolResult(await cancelClientStartTask(request.client_start_id)),
+  ),
+);
+
+server.registerTool(
   "cancel_run",
   {
     title: "Cancel Run",
@@ -905,6 +933,7 @@ await startRecursiveControlServer({
     recursionDepth: caller.recursion_depth,
   };
   const inheritedSystemSkillName = caller.system_skill_name;
+  const inheritedSpecialistCatalogueScope = caller.specialist_catalogue_scope;
   const governingModelClass = governingModelClassForRecursiveDelegate(callerLineage);
   if (
     (inheritedSystemSkillName === undefined) !== (governingModelClass === undefined) ||
@@ -929,7 +958,8 @@ await startRecursiveControlServer({
   }
   if (
     (inheritedSystemSkillName === undefined) !== (parentSystemSkillReceipt === undefined) ||
-    (inheritedSystemSkillName !== undefined && parentSystemSkillReceipt?.system_skill_name !== inheritedSystemSkillName)
+    (inheritedSystemSkillName !== undefined && parentSystemSkillReceipt?.system_skill_name !== inheritedSystemSkillName) ||
+    inheritedSpecialistCatalogueScope !== parent.requested_specialist_catalogue_scope
   ) {
     throw new ValidationError(
       "recursive system-skill authority does not match the confirmed parent activation",
@@ -974,6 +1004,9 @@ await startRecursiveControlServer({
       ...(params.timeout_ms !== undefined ? { timeout_ms: params.timeout_ms } : {}),
       ...(params.wait_ms !== undefined ? { wait_ms: params.wait_ms } : {}),
       ...(inheritedSystemSkillName ? { system_skill_name: inheritedSystemSkillName } : {}),
+      ...(inheritedSpecialistCatalogueScope
+        ? { specialist_catalogue_scope: inheritedSpecialistCatalogueScope }
+        : {}),
       recursive_delegation: "enabled",
     },
     {

@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { AgentSession } from "@earendil-works/pi-coding-agent";
 import { defaultConfigPath, loadConfig, loadConfigRecord } from "../src/config.js";
 import { modelHealthForClass } from "../src/modelHealth.js";
 import { runOutputPath, stripAnsiAndControls, writeRunOutput } from "../src/output.js";
@@ -421,9 +422,9 @@ test("resolves model classes to calibrated model and thinking level", async () =
     ["C", "openai-codex/gpt-5.6-luna", "xhigh"],
     ["D", "openai-codex/gpt-5.6-terra", "high"],
     ["E", "openai-codex/gpt-5.6-sol", "high"],
-    ["Z1", "openrouter/deepseek/deepseek-v4-pro", "xhigh"],
+    ["Z1", "openrouter/deepseek/deepseek-v4-pro-0813", "xhigh"],
     ["Z2", "openrouter/z-ai/glm-5.2", "xhigh"],
-    ["Z3", "openrouter/anthropic/claude-sonnet-5", "xhigh"],
+    ["Z3", "openrouter/qwen/qwen3.8-2.4t-a95b", "xhigh"],
     ["Z4", "openrouter/moonshotai/kimi-k3", "xhigh"],
     ["Z5", "openrouter/anthropic/claude-opus-5", "xhigh"],
   ] as const) {
@@ -570,12 +571,45 @@ test("validates bare skill identifiers only", () => {
   }
 });
 
-test("composes Pi skill invocation without wrapping ordinary prompts", () => {
+test("composes Pi skill invocation with Pi's literal-space command delimiter", async () => {
   assert.equal(composePrompt({ prompt: "Do it" }), "Do it");
-  assert.equal(
-    composePrompt({ prompt: "Do it", skill: "pda-lite" }),
-    ["/skill:pda-lite", "", "<prompt>", "Do it", "</prompt>"].join("\n"),
-  );
+  const skillRoot = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-skill-expansion-"));
+  const skillPath = path.join(skillRoot, "SKILL.md");
+  await fs.writeFile(skillPath, [
+    "---",
+    "name: pda-lite",
+    "description: Parser fixture",
+    "---",
+    "",
+    "PARSER_SKILL_BODY",
+    "",
+  ].join("\n"), "utf8");
+  try {
+    const composed = composePrompt({ prompt: "Do it", skill: "pda-lite" });
+    assert.equal(composed, "/skill:pda-lite <prompt>\nDo it\n</prompt>");
+
+    // Exercise the installed Pi parser itself. It splits a skill invocation on
+    // the first literal space, not on arbitrary whitespace.
+    const expander = Object.create(AgentSession.prototype) as {
+      _resourceLoader: {
+        getSkills(): { skills: Array<{ name: string; filePath: string; baseDir: string }> };
+      };
+      _extensionRunner: { emitError(): void };
+      _expandSkillCommand(text: string): string;
+    };
+    expander._resourceLoader = {
+      getSkills: () => ({
+        skills: [{ name: "pda-lite", filePath: skillPath, baseDir: skillRoot }],
+      }),
+    };
+    expander._extensionRunner = { emitError() {} };
+    const expanded = expander._expandSkillCommand(composed);
+    assert.match(expanded, /<skill name="pda-lite"/);
+    assert.match(expanded, /PARSER_SKILL_BODY/);
+    assert.match(expanded, /<prompt>\nDo it\n<\/prompt>$/);
+  } finally {
+    await fs.rm(skillRoot, { recursive: true, force: true });
+  }
 });
 
 test("strips ANSI escape and control codes for Markdown output", () => {

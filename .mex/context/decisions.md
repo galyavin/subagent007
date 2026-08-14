@@ -12,10 +12,45 @@ edges:
     condition: when a decision relates to system structure
   - target: context/stack.md
     condition: when a decision relates to technology choice
-last_updated: 2026-07-31
+last_updated: 2026-08-12
 ---
 
 # Decisions
+
+### Selected task-root skills execute operatively with their own support closure
+**Date:** 2026-08-12
+**Status:** Active
+**Decision:** Compose ordinary `/skill:name` invocation with Pi's literal-space command delimiter so Pi expands the selected `SKILL.md` before the first model turn. For `task_root_read_only_v1`, capture that one selected skill's existing complete admitted runtime closure into the run-owned child area and admit its exact root as the only additional read root; an active owner snapshot is used directly and no selected skill means no additional root.
+**Reasoning:** Native Bendum Sculptor and Smith runs carried valid selected-skill receipts while Pi received `/skill:name` followed by a newline, which its parser treated as part of the name. Their skill bodies therefore did not expand, and the SKILL-only temporary copy omitted referenced semantic methods that the task-root tools could not reach. A selected binding must be operative, not merely catalogued.
+**Consequences:** Task-root read-only remains exactly four tools, one selected skill, exact task-root confinement, no ambient/sibling skill access, no recursion, and no public schema or workflow state. Complete bundle capture reuses the existing bounded runtime-closure owner. The activation ceiling remains Pi prompt/resource/tool dispatch and guarded paths, not provider serialization, model obedience, inode provenance, or an OS sandbox.
+
+### Client-start containment uses the admission record and the existing run owner
+**Date:** 2026-08-11
+**Status:** Active
+**Decision:** Add strict public `cancel_client_start(client_start_id)`. Under the same temporary per-token admission lock used by `start_run`, no binding atomically becomes an fsynced fence; an exact binding atomically records one stable cancellation request. The launch path holds that lock only until child-spawn observation is committed. If cancellation wins, no child launches; if launch wins, the existing resident run owner cancels that exact `run_id`. Terminal completion remains absorbing and may win the race. Corrupt state or unobservable ownership returns typed unknown.
+**Reasoning:** A caller can lose the `start_run` response after asking the provider to admit work, so `cancel_run(run_id)` may be unaddressable. Replaying `start_run` merely to discover a handle is creation-capable and therefore unsafe for stop. The admission record already owns exact token-to-attempt identity; a second ledger or caller workflow state would duplicate authority.
+**Consequences:** Exact cancellation retry returns the stable fence or terminal run view. A delayed start after an unbound fence rejects before child launch as `client_start_id_fenced`. The capability makes no Bendum decision, creates no retry series, owns no caller mission, and adds no process-survival guarantee.
+
+### Task-root read-only is a path boundary, not an inode-provenance scan
+**Date:** 2026-08-09
+**Status:** Active
+**Decision:** Add `task_root_read_only_v1` with only guarded `read`, `grep`, `find`, and `ls`. Parent and child bind the exact real task root and a digest of the construction owner, ambient-instruction suppression, path guard, Pi tool implementations, and closed configuration. Direct absolute, parent, and resolved symlink escapes reject; recursive tools retain their bound non-following behavior. Ancestor/global context and custom system append files are suppressed.
+**Reasoning:** The existing `workspace_read_only` profile is mutation-limited but not workspace-confined. A recursive pre-scan of every search subtree would add unbounded latency and reject ordinary hard-linked dependency trees without strengthening the actual path-escape boundary.
+**Consequences:** Explicit selected-skill injection remains launch configuration. Its copied or owner-issued immutable runtime root is the only non-task read root, solely for that skill's support files. The guarantee is Pi dispatch/path/resource-loader confinement, not inode provenance, filesystem immutability, OS sandboxing, or hostile-runtime TOCTOU prevention.
+
+### Governing system skills can opt into an exact selected-specialist catalogue
+**Date:** 2026-08-09
+**Status:** Active
+**Decision:** Add optional `specialist_catalogue_scope:"selected_only"` to ordinary run starts only when `system_skill_name` is present. Omission preserves the full specialist catalogue minus the governor. Selected-only mode reuses the existing `noSkills:true` loader with exactly the resolved or snapshotted `skill_name` path, or none when unbound, and the child checks that loaded set before prompt. Bind the request into client-start identity, durable launch truth, and private non-widenable recursive inheritance without changing the system-skill receipt.
+**Reasoning:** A governing workflow may require system-level doctrine while allowing ordinary skills only through explicit `skill_name`. Prompt prose cannot enforce resource discovery, while embedding the governor as user content would lose system placement, activation evidence, simultaneous specialist binding, and recursive inheritance. An additive scope at the resource-loader boundary preserves both capabilities without changing existing callers.
+**Consequences:** Older providers reject the new strict field before child launch, so callers must deploy provider support before opting in. Completion under selected-only proves the Pi specialist-resource catalogue matched the admitted binding before prompt; it does not prevent an unrestricted child from deliberately reading known skill files through filesystem or shell tools. No new effect profile, receipt schema, workflow state, or compatibility default exists.
+
+### The surviving run owner retains every Unix Pi Bash process group through episode terminality
+**Date:** 2026-08-08
+**Status:** Active
+**Decision:** Keep Pi Bash calls in separate Unix process groups because that boundary preserves per-call timeout and cancellation. Replace Pi's forgetful local Bash launcher inside `piChild` with an equivalent launcher that blocks command execution until the existing outer `processRunner` has synchronously registered the exact group over the live child control pipe. The outer owner retains each identity across shell exit until targeted OS observation says its group is empty, permits background descendants to serve later calls in the same episode, and on every child terminal path settles its own Pi group plus still-registered Bash groups with the existing `SIGTERM`, kill-grace, `SIGKILL`, force-grace sequence and targeted absence observation before returning. Private ownership frames are consumed before transcript/public projection.
+**Reasoning:** Removing nested detachment would let the outer group cleanup reach descendants, but would destroy the independent group boundary Pi needs to cancel one Bash call without killing the episode. Pi's stock launcher instead untracks the group as soon as its shell leader exits, even when a background service remains. A gated live handoff to the already-surviving execution custodian is the smallest owner that observes both creation and terminality, including forced Pi-child death.
+**Consequences:** Unix background services can remain reachable during one provider episode but cannot make terminal success, failure, cancellation, or child death visible while their registered groups remain. A group that ignores graceful termination is force-settled within the existing lifecycle budget. Numeric group identities are discarded promptly after observed absence instead of being retained stale for the whole episode. No Bendum state, durable process journal, receipt, daemon, process/workspace sweep, new public field, or generic durable-service handoff exists. This is not an OS sandbox: deliberate native creation of a new session or double-fork escape is outside the registered ownership boundary. A deliberately durable service still requires an external process manager. Windows retains the prior Pi behavior until a separately sponsored platform owner can enforce the equivalent guarantee.
 
 ### Runs are execution attempts, not caller missions
 **Date:** 2026-07-23
@@ -153,7 +188,7 @@ last_updated: 2026-07-31
 **Decision:** Remove public tool alias `list_allowed_models` and input properties `skill` and `tool_profile` immediately. `list_model_classes` and `skill_name` are the only canonical surfaces. Strict MCP schemas reject retired properties before handler invocation, direct validation rejects instead of ignoring them, client-start identity refuses to canonicalize them, and current-v3 snapshots fail closed when they contain retired request residue.
 **Reasoning:** These surfaces no longer have authority or a migration sponsor. In particular, the ignored tool selector conveyed no effect ceiling, while dual skill names and a model-list alias made the current provider body inexact.
 **Alternatives considered:** Shims, aliases, dual schemas, ignored parsing, persisted-state coercion, and a migration window were rejected by the approved immediate-removal requirement.
-**Consequences:** The public inventory is exactly 20 tools. Canonical `skill_name` resolution, expected digest/snapshot evidence, `effect_profile` ceilings, recursive delegation, model-class health, owner/idempotency, sessions, and waiting semantics remain unchanged. Historical append-only MEX events may still describe the former contract but are not active guidance.
+**Consequences:** That removal left a public inventory of exactly 20 tools; the later additive `cancel_client_start` capability raises the current inventory to 21 without restoring an alias. Canonical `skill_name` resolution, expected digest/snapshot evidence, `effect_profile` ceilings, recursive delegation, model-class health, owner/idempotency, sessions, and waiting semantics remain unchanged. Historical append-only MEX events may still describe the former contract but are not active guidance.
 
 ### workspace_read_only is an additive Pi-boundary ceiling
 **Date:** 2026-07-15

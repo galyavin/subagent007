@@ -1,7 +1,7 @@
 ---
 name: run-owner-transitions
 description: Change durable-run lifecycle producers without creating stale writers, staging authority, or nested run ownership.
-last_updated: 2026-07-27
+last_updated: 2026-08-11
 ---
 
 # Run Owner Transitions
@@ -23,6 +23,7 @@ One per-run owner is the only observable state writer. Resident `RunTaskState` i
 7. Put failure logging, process waits, child/ancestor mutation, and staging-failure settlement outside the owner.
 8. For a bounded resident observation wait, register against committed resident-state publication outside the owner, notify only after owner release, and use one expiry timer. Progress may wake a condition check. Never timer-poll `getRunTask`, filesystem-poll a nonresident owner record, or add a public revision merely to wait.
 9. If a child can perform consequential work after owner loss but before durable authorization, use only the existing control-pipe release frame; EOF before release must exit.
+10. If control must address an ambiguous start by caller token, keep identity/fence intent in the existing admission record and lifecycle effects in the existing run owner. Order claim/fence under one temporary token lock, hold it only through committed spawn observation, never invoke the start path from cancellation, and return typed unknown when containment cannot be observed.
 
 ## Verification
 
@@ -31,6 +32,7 @@ One per-run owner is the only observable state writer. Resident `RunTaskState` i
 - Parent/child/grandchild restart convergence with compatible heartbeat progress
 - Input registration/acceptance/cancellation ordering and restart replay
 - Resident actionable wake, truthful expiry, omission/zero immediacy, and nonresident immediate-snapshot ceiling
+- Fence-before-admission, exact bound cancellation, completion-wins, lost-response retry, and claim/cancel contention
 - `npm run typecheck`
 - `npm run build`
 - `npm test`

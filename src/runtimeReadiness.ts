@@ -42,6 +42,7 @@ const PUBLIC_TOOL_SURFACE = [
   "start_run",
   "get_run",
   "answer_run_input",
+  "cancel_client_start",
   "cancel_run",
   "run_subagent",
   "start_session_run",
