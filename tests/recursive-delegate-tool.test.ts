@@ -1,11 +1,20 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { canonicalJson } from "../src/clientStartAdmission.js";
 import { createRecursiveDelegateTool } from "../src/recursiveDelegateTool.js";
-import type { RecursiveControlChildConfig } from "../src/recursiveControl.js";
+import {
+  callRecursiveDelegate,
+  recursiveControlConfigForChild,
+  startRecursiveControlServer,
+  type RecursiveControlChildConfig,
+  type RecursiveDelegateRejectedResult,
+} from "../src/recursiveControl.js";
+import { ValidationError } from "../src/types.js";
 
 async function observeDelegateParams(
   params: Record<string, unknown>,
@@ -103,4 +112,70 @@ test("recursive delegate guidance distinguishes observation from termination aut
   const properties = (tool.parameters as unknown as { properties: Record<string, unknown> }).properties;
   assert.equal(Object.hasOwn(properties, "hard_timeout_ms"), true);
   assert.equal(Object.hasOwn(properties, "timeout_ms"), false);
+});
+
+test("valid rejected recursive starts retain stable nonsecret request evidence", async () => {
+  let handlerCalls = 0;
+  await startRecursiveControlServer({
+    delegate: async () => {
+      handlerCalls += 1;
+      throw new ValidationError(
+        "local child capacity exhausted: active_children=2 max_active_children=2",
+        "local_capacity_exhausted",
+      );
+    },
+    rejoin: async () => {
+      throw new Error("rejoin is outside this fixture");
+    },
+  });
+  const recursiveControl = recursiveControlConfigForChild({
+    runId: "parent-run",
+    rootRunId: "root-run",
+    recursionDepth: 0,
+  });
+  assert.ok(recursiveControl);
+  const prompt = "Goal: return HP_SECOND_PAYLOAD_v1. Bounds: no effects.";
+  const params = {
+    prompt,
+    cwd: "/tmp/mechanical-hp",
+    skill_name: null,
+    output_mode: "final" as const,
+    wait_ms: 0,
+  };
+
+  const first = await callRecursiveDelegate(recursiveControl, params) as RecursiveDelegateRejectedResult;
+  const second = await callRecursiveDelegate(recursiveControl, params) as RecursiveDelegateRejectedResult;
+  assert.equal(handlerCalls, 2);
+  for (const result of [first, second]) {
+    assert.equal(result.status, "rejected");
+    assert.equal(result.kind, "recursive_delegate_rejected");
+    assert.equal(result.reason_code, "local_capacity_exhausted");
+    assert.match(result.request_id ?? "", /^[0-9a-f]{12}$/);
+    assert.match(result.request_sha256 ?? "", /^[0-9a-f]{64}$/);
+    assert.equal(result.task_sha256, createHash("sha256").update(prompt).digest("hex"));
+    assert.equal(result.task_size_bytes, Buffer.byteLength(prompt));
+    assert.deepEqual(result.public_request, {
+      method: "delegate",
+      parent_run_id: "parent-run",
+      root_run_id: "root-run",
+      recursion_depth: 0,
+      task_sha256: result.task_sha256,
+      task_size_bytes: result.task_size_bytes,
+      cwd: "/tmp/mechanical-hp",
+      skill_name: null,
+      output_mode: "final",
+      wait_ms: 0,
+    });
+    assert.equal(Object.hasOwn(result.public_request ?? {}, "prompt"), false);
+    assert.equal(Object.hasOwn(result.public_request ?? {}, "governing_model_class"), false);
+    assert.equal(
+      result.request_sha256,
+      createHash("sha256")
+        .update("subagent007.recursive_delegate_request.v1\n")
+        .update(canonicalJson(result.public_request))
+        .digest("hex"),
+    );
+  }
+  assert.notEqual(first.request_id, second.request_id);
+  assert.equal(first.request_sha256, second.request_sha256);
 });
