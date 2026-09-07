@@ -56,14 +56,14 @@ test("loaded Pi OpenRouter transport emits the capped Z3 and Z4 completion allow
     import fs from "node:fs/promises";
     import os from "node:os";
     import path from "node:path";
-    import { AuthStorage, createAgentSession } from "@earendil-works/pi-coding-agent";
+    import { ModelRuntime, createAgentSession } from "@earendil-works/pi-coding-agent";
     const models = ${JSON.stringify(models)};
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-payload-cap-"));
     const cwd = path.join(root, "cwd");
     const agentDir = path.join(root, "agent");
     await fs.mkdir(cwd); await fs.mkdir(agentDir);
-    const authStorage = AuthStorage.create(path.join(agentDir, "auth.json"));
-    authStorage.setRuntimeApiKey("openrouter", "offline-fixture-key");
+    const modelRuntime = await ModelRuntime.create({ authPath: path.join(agentDir, "auth.json"), modelsPath: null });
+    await modelRuntime.setRuntimeApiKey("openrouter", "offline-fixture-key");
     const payloads = [];
     globalThis.fetch = async (_input, init) => {
       payloads.push(JSON.parse(String(init?.body)));
@@ -75,7 +75,7 @@ test("loaded Pi OpenRouter transport emits the capped Z3 and Z4 completion allow
     };
     let session;
     try {
-      ({ session } = await createAgentSession({ cwd, agentDir, authStorage, model: models[0], thinkingLevel: "xhigh", tools: [] }));
+      ({ session } = await createAgentSession({ cwd, agentDir, modelRuntime, model: models[0], thinkingLevel: "xhigh", tools: [] }));
       await session.prompt("Z3 offline payload fixture");
       await session.setModel(models[1]);
       await session.prompt("Z4 offline payload fixture");

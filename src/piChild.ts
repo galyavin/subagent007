@@ -4,7 +4,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
-  AuthStorage,
+  ModelRuntime,
   createAgentSession,
   ModelRegistry,
   SessionManager,
@@ -513,8 +513,11 @@ async function main(): Promise<void> {
       : {}),
     ...(isTaskRootReadOnly ? { noAmbientInstructions: true } : {}),
   });
-  const authStorage = AuthStorage.create(path.join(agentDir, "auth.json"));
-  const modelRegistry = ModelRegistry.create(authStorage, path.join(agentDir, "models.json"));
+  const modelRuntime = await ModelRuntime.create({
+    authPath: path.join(agentDir, "auth.json"),
+    modelsPath: path.join(agentDir, "models.json"),
+  });
+  const modelRegistry = new ModelRegistry(modelRuntime);
   const settingsManager = SettingsManager.create(request.cwd, agentDir);
   const model = modelWithOutputTokenCap(
     resolveRequestedModel(request.model, modelRegistry),
@@ -591,8 +594,7 @@ async function main(): Promise<void> {
     agentDir,
     model,
     thinkingLevel: request.thinkingLevel,
-    modelRegistry,
-    authStorage,
+    modelRuntime,
     sessionManager,
     settingsManager,
     resourceLoader,

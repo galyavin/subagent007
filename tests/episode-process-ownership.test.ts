@@ -293,7 +293,7 @@ test("a real Pi session installs and executes the episode-owned Bash override", 
       { command: "printf installed-episode-bash" },
       undefined,
       undefined,
-      {} as never,
+      { sessionManager: session.sessionManager } as never,
     );
     assert.equal(registrations, 1, "the installed Bash call must cross the ownership gate");
   } finally {

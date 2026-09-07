@@ -13,7 +13,7 @@ edges:
     condition: when specific technology versions or library details are needed
   - target: context/architecture.md
     condition: when understanding how components connect during setup
-last_updated: 2026-07-31
+last_updated: 2026-09-07
 ---
 
 # Setup
@@ -56,6 +56,7 @@ last_updated: 2026-07-31
 - `mex check`, `mex sync`, `mex log` — project memory drift, sync, and rationale notes.
 
 ## Common Issues
+- **Pi dependency updates:** Update both direct Pi packages together and regenerate the lockfile. Version 0.85.1 uses awaited `ModelRuntime.create({authPath, modelsPath})`, a `ModelRegistry` facade for exact lookup, and the same runtime passed into `createAgentSession`. Run typecheck, full tests, the offline output-cap payload test, and one isolated live model-class probe before claiming availability.
 - **Stale build:** Runtime readiness blocks when `src/` is newer than `dist/`; run `npm run build`.
 - **Dirty source blocks readiness:** Use the default clean source policy for release checks; use `--source-state-policy allow_dirty` only for exploratory local checks.
 - **Missing Pi auth in MCP process:** Register through `zsh -ic "exec node ..."` if auth is loaded by shell startup files.

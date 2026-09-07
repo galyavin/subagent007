@@ -28,8 +28,8 @@
     "failure-log:archive": "node scripts/archive-failure-log.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.78.1",
-    "@earendil-works/pi-coding-agent": "^0.80.6",
+    "@earendil-works/pi-ai": "^0.85.1",
+    "@earendil-works/pi-coding-agent": "^0.85.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "typebox": "^1.1.38",
     "zod": "^4.4.3"
