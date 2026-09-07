@@ -3590,6 +3590,7 @@ test("MCP run_subagent uses the configured fake Pi child", async () => {
         cwd: projectDir,
         prompt: "FAST",
         run_kind: "quick_noninteractive",
+        max_output_tokens: 32_768,
       },
     });
     assert.notEqual(response.isError, true);
@@ -3604,8 +3605,9 @@ test("MCP run_subagent uses the configured fake Pi child", async () => {
     assert.equal(await fs.readFile(outputPathFor(metadata), "utf8"), "FAST FINAL");
 
     const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
-    assert.equal(logs[0].request.model, "openai-codex/gpt-5.6-luna");
+    assert.equal(logs[0].request.model, "openai-codex/gpt-5.6-terra");
     assert.equal(logs[0].request.thinkingLevel, "xhigh");
+    assert.equal(logs[0].request.maxOutputTokens, 32_768);
     assert.equal(logs[0].request.skill, undefined);
     assert.equal(Object.hasOwn(logs[0].request, "toolProfile"), false);
   });
@@ -4547,6 +4549,36 @@ test("MCP start_run/get_run completes asynchronously with the same child contrac
     assert.equal(Object.hasOwn(terminal, "output_path"), false);
     assert.equal(Object.hasOwn(terminal.output_references?.[0] ?? {}, "path"), false);
     assert.equal(await hasActiveLeaseForRun(activeChildrenDir!, started.run_id), false);
+  });
+});
+
+test("MCP start_run preserves an opt-in completion cap for calibrated external classes", async () => {
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    const expected = [
+      ["Z3", "openrouter/qwen/qwen3.8-2.4t-a95b"],
+      ["Z4", "openrouter/x-ai/grok-4.6"],
+    ] as const;
+    for (const [modelClass] of expected) {
+      const response = await client.callTool({
+        name: "start_run",
+        arguments: {
+          cwd: projectDir,
+          prompt: "FAST",
+          model_class: modelClass,
+          max_output_tokens: 32_768,
+          client_start_id: `cap-${modelClass.toLowerCase()}-fixture`,
+        },
+      });
+      assert.notEqual(response.isError, true);
+      const started = response.structuredContent as RunSubagentMetadata;
+      assert.equal((await waitForTerminalRun(client, started.run_id)).success, true);
+    }
+
+    const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
+    assert.deepEqual(
+      logs.map(({ request }) => [request.model, request.maxOutputTokens]),
+      expected.map(([, model]) => [model, 32_768]),
+    );
   });
 });
 

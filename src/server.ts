@@ -333,6 +333,12 @@ const baseRunInputSchema = {
 
 const constrainedRunInputSchema = {
   ...baseRunInputSchema,
+  max_output_tokens: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Optional upper bound for each provider completion made by this run. Omit to use the calibrated model maximum; this is not a whole-task output budget."),
   effect_profile: z
     .enum(EFFECT_PROFILES)
     .optional()

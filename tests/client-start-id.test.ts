@@ -814,6 +814,12 @@ test("client start identity is strict, schema-normalized, and deterministically 
       system_skill_name: "alternate-governor",
     } as never),
   );
+  const capped = { ...left, max_output_tokens: 32_768 };
+  assert.equal(normalize(capped).max_output_tokens, 32_768);
+  assert.notEqual(
+    clientStartAdmissionApi.canonicalClientStartRequestSha256(left as never),
+    clientStartAdmissionApi.canonicalClientStartRequestSha256(capped as never),
+  );
   for (const retired of [
     { ...left, skill: "retired-skill" },
     { ...left, tool_profile: "all" },

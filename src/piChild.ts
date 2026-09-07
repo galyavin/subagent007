@@ -12,6 +12,7 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
+import { modelWithOutputTokenCap } from "./modelOutputCap.js";
 import { Type } from "typebox";
 import { createInputRequest } from "./inputMailbox.js";
 import {
@@ -87,6 +88,7 @@ interface PiChildRequest {
   cwd: string;
   model: string;
   thinkingLevel: ThinkingLevel;
+  maxOutputTokens?: number;
   skill?: string;
   skillFilePath?: string;
   outputMode: OutputMode;
@@ -514,7 +516,10 @@ async function main(): Promise<void> {
   const authStorage = AuthStorage.create(path.join(agentDir, "auth.json"));
   const modelRegistry = ModelRegistry.create(authStorage, path.join(agentDir, "models.json"));
   const settingsManager = SettingsManager.create(request.cwd, agentDir);
-  const model = resolveRequestedModel(request.model, modelRegistry);
+  const model = modelWithOutputTokenCap(
+    resolveRequestedModel(request.model, modelRegistry),
+    request.maxOutputTokens,
+  );
   const sessionManager =
     request.sessionMode === "ephemeral"
       ? SessionManager.inMemory(request.cwd)

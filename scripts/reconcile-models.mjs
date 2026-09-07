@@ -136,7 +136,11 @@ for (const modelRef of CURATED_EXACT_MODEL_REFS) {
   let sourceVerified = false;
   let sourcePresent = false;
   let sourceError;
-  if (provider === "openrouter") {
+  if (provider === "openai-codex") {
+    sourceVerified = piResult.ok;
+    sourcePresent = piPresent;
+    sourceError = piResult.error;
+  } else if (provider === "openrouter") {
     sourceVerified = openRouterIds !== undefined;
     sourcePresent = Boolean(openRouterIds?.has(model));
     sourceError = openRouterResult.ok ? undefined : openRouterResult.error;

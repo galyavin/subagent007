@@ -73,6 +73,7 @@ export type FailureReasonCode =
   | "skill_snapshot_reference_closed"
   | "skill_snapshot_activation_failed"
   | "invalid_timeout_ms"
+  | "invalid_max_output_tokens"
   | "invalid_wait_ms"
   | "local_capacity_exhausted"
   | "local_queue_exhausted"
@@ -121,6 +122,8 @@ interface SubagentRequestBase {
   prompt: string;
   cwd: string;
   model_class?: ModelClass;
+  /** Optional upper bound for each provider completion made for this run. */
+  max_output_tokens?: number;
   timeout_ms?: number;
   skill_name?: string | null;
   output_mode?: OutputMode;
@@ -171,6 +174,7 @@ export interface ResolvedRunSubagentRequest {
   modelClass: ModelClass;
   model: string;
   thinkingLevel: ThinkingLevel;
+  maxOutputTokens?: number;
   timeoutMs?: number;
   continuity: RunContinuity;
   skill?: string;

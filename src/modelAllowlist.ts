@@ -7,13 +7,15 @@ export const OPENAI_CODEX_GPT54_PLUS_REF = "openai-codex/gpt-5.4+";
 const OPENAI_CODEX_MIN_GPT5_MINOR = 4;
 
 export const CURATED_EXACT_MODEL_REFS = [
+  "openai-codex/gpt-5.3-codex-spark",
+  "openai-codex/gpt-6-astra",
   "openrouter/deepseek/deepseek-v4-flash",
   "openrouter/deepseek/deepseek-v4-pro-0813",
-  "openrouter/moonshotai/kimi-k3",
   "openrouter/anthropic/claude-sonnet-5",
-  "openrouter/anthropic/claude-opus-5",
+  "openrouter/google/gemini-3.7-flash",
   "openrouter/qwen/qwen3.8-2.4t-a95b",
-  "openrouter/z-ai/glm-5.2",
+  "openrouter/x-ai/grok-4.6",
+  "openrouter/z-ai/glm-5.3-flash",
 ] as const;
 
 /**
@@ -29,23 +31,29 @@ export const MODEL_RUNTIME_FALLBACKS = {
     contextWindow: 1_048_576,
     maxTokens: 384_000,
   },
-  "openrouter/moonshotai/kimi-k3": {
-    template: "openrouter/z-ai/glm-5.2",
-    name: "MoonshotAI: Kimi K3",
-    contextWindow: 1_000_000,
-    maxTokens: 131_072,
-  },
-  "openrouter/anthropic/claude-opus-5": {
-    template: "openrouter/anthropic/claude-sonnet-5",
-    name: "Claude Opus 5",
-    contextWindow: 1_000_000,
-    maxTokens: 128_000,
+  "openrouter/google/gemini-3.7-flash": {
+    template: "openrouter/google/gemini-3.5-flash",
+    name: "Google: Gemini 3.7 Flash",
+    contextWindow: 1_048_576,
+    maxTokens: 65_536,
   },
   "openrouter/qwen/qwen3.8-2.4t-a95b": {
     template: "openrouter/z-ai/glm-5.2",
     name: "Qwen: Qwen3.8 2.4T A95B",
     contextWindow: 1_048_576,
     maxTokens: 262_144,
+  },
+  "openrouter/x-ai/grok-4.6": {
+    template: "openrouter/x-ai/grok-4.5",
+    name: "SpaceXAI: Grok 4.6",
+    contextWindow: 500_000,
+    maxTokens: 450_000,
+  },
+  "openrouter/z-ai/glm-5.3-flash": {
+    template: "openrouter/z-ai/glm-5.2",
+    name: "Z.ai: GLM 5.3 Flash",
+    contextWindow: 1_310_720,
+    maxTokens: 131_072,
   },
 } as const;
 
@@ -65,28 +73,28 @@ export const MODEL_CLASS_CALIBRATIONS: Record<ModelClass, {
   description: string;
 }> = {
   A: {
-    model: "openai-codex/gpt-5.6-luna",
-    thinkingLevel: "low",
+    model: "openai-codex/gpt-5.3-codex-spark",
+    thinkingLevel: "medium",
     description: "Lowest-complexity class for narrow read-only audits, low-risk probes, and concise first-pass judgment.",
   },
   B: {
-    model: "openai-codex/gpt-5.6-luna",
-    thinkingLevel: "medium",
+    model: "openai-codex/gpt-5.3-codex-spark",
+    thinkingLevel: "xhigh",
     description: "Simple coding, review, or search tasks with limited ambiguity.",
   },
   C: {
-    model: "openai-codex/gpt-5.6-luna",
+    model: "openai-codex/gpt-5.6-terra",
     thinkingLevel: "xhigh",
     description: "Default class for bounded implementation, repo-grounded fixes, and ordinary technical reasoning.",
   },
   D: {
-    model: "openai-codex/gpt-5.6-terra",
-    thinkingLevel: "high",
+    model: "openai-codex/gpt-5.6-sol",
+    thinkingLevel: "medium",
     description: "Complex multi-file debugging, planning, synthesis, and high-abstraction work.",
   },
   E: {
-    model: "openai-codex/gpt-5.6-sol",
-    thinkingLevel: "high",
+    model: "openai-codex/gpt-6-astra",
+    thinkingLevel: "low",
     description: "Highest-abstraction, highest-difficulty work requiring the deepest technical judgment.",
   },
   Z1: {
@@ -95,7 +103,7 @@ export const MODEL_CLASS_CALIBRATIONS: Record<ModelClass, {
     description: "External expert class for maximum-difficulty work requiring an independent frontier-model perspective.",
   },
   Z2: {
-    model: "openrouter/z-ai/glm-5.2",
+    model: "openrouter/z-ai/glm-5.3-flash",
     thinkingLevel: "xhigh",
     description: "External expert class for maximum-difficulty work requiring an independent technical perspective.",
   },
@@ -105,12 +113,12 @@ export const MODEL_CLASS_CALIBRATIONS: Record<ModelClass, {
     description: "External expert class for maximum-difficulty work requiring deep synthesis and independent judgment.",
   },
   Z4: {
-    model: "openrouter/moonshotai/kimi-k3",
+    model: "openrouter/x-ai/grok-4.6",
     thinkingLevel: "xhigh",
     description: "External expert class for maximum-difficulty work requiring an independent frontier-model perspective.",
   },
   Z5: {
-    model: "openrouter/anthropic/claude-opus-5",
+    model: "openrouter/google/gemini-3.7-flash",
     thinkingLevel: "xhigh",
     description: "External expert class for maximum-difficulty work requiring the deepest independent synthesis.",
   },

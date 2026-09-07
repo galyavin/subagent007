@@ -44,6 +44,7 @@ const clientStartIdentitySchema = z.strictObject({
   prompt: z.string().min(1),
   cwd: z.string().min(1),
   model_class: z.enum(MODEL_CLASSES).optional(),
+  max_output_tokens: z.number().int().positive().optional(),
   skill_name: z.string().nullable().optional(),
   output_mode: z.enum(OUTPUT_MODES).optional(),
   effect_profile: z.enum(EFFECT_PROFILES).optional(),

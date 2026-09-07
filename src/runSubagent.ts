@@ -131,6 +131,7 @@ interface PiChildRequestFile {
   cwd: string;
   model: string;
   thinkingLevel: string;
+  maxOutputTokens?: number;
   skill?: string;
   skillFilePath?: string;
   outputMode: OutputMode;
@@ -921,6 +922,7 @@ export async function runSubagentCore(
       cwd: resolved.cwd,
       model: resolved.model,
       thinkingLevel: resolved.thinkingLevel,
+      ...(resolved.maxOutputTokens !== undefined ? { maxOutputTokens: resolved.maxOutputTokens } : {}),
       skill: resolved.skill,
       skillFilePath: childSkillFilePath,
       outputMode: resolved.outputMode,

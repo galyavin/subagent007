@@ -52,6 +52,8 @@ function validationReasonCodeForKey(key: string): FailureReasonCode {
       return "cwd_not_absolute";
     case "timeout_ms":
       return "invalid_timeout_ms";
+    case "max_output_tokens":
+      return "invalid_max_output_tokens";
     default:
       return "unknown_validation_error";
   }
@@ -218,6 +220,22 @@ export async function validateAndResolveRequest(
   const modelClass = validateModelClass(request.model_class) ?? config.default_model_class ?? DEFAULT_MODEL_CLASS;
   const resolvedModelClass = resolveModelClass(modelClass);
 
+  let maxOutputTokens: number | undefined;
+  if (request.max_output_tokens !== undefined) {
+    if (
+      typeof request.max_output_tokens !== "number" ||
+      !Number.isFinite(request.max_output_tokens) ||
+      request.max_output_tokens <= 0 ||
+      !Number.isInteger(request.max_output_tokens)
+    ) {
+      throw new ValidationError(
+        "max_output_tokens must be a positive integer when provided",
+        "invalid_max_output_tokens",
+      );
+    }
+    maxOutputTokens = request.max_output_tokens;
+  }
+
   let timeoutMs: number | undefined;
   if (request.timeout_ms !== undefined) {
     if (
@@ -341,6 +359,7 @@ export async function validateAndResolveRequest(
     modelClass,
     model: resolvedModelClass.model,
     thinkingLevel: resolvedModelClass.thinkingLevel,
+    maxOutputTokens,
     timeoutMs,
     continuity,
     skill,
