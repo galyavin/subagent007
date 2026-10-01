@@ -12,10 +12,17 @@ edges:
     condition: when a decision relates to system structure
   - target: context/stack.md
     condition: when a decision relates to technology choice
-last_updated: 2026-08-12
+last_updated: 2026-09-30
 ---
 
 # Decisions
+
+### Founder model recalibration and Z5 retirement
+**Date:** 2026-09-30
+**Status:** Active
+**Decision:** A/B use GPT-6 Luna at medium/xhigh; C/D/E use GPT-6.1 Sol at medium/high/xhigh. Z1–Z4 use DeepSeek V4.1 Flash, Qwen3.8 2.4T A95B, Grok 4.7, and Gemini 3.8 Flash, retaining xhigh. Remove Z5; C remains the default.
+**Reasoning:** The founder explicitly replaced the calibration and retired Z5. Exact model IDs remain internal calibration; public callers select one of the nine supported classes.
+**Consequences:** Source enums, MCP schemas/listings, scripts, tests, README, and current memory must agree. Native local Pi definitions and configured auth exist for all six models, and provider inventory confirms the four exact OpenRouter IDs. This evidence proves inventory/auth readiness only. An existing MCP owner retains its leased release until reconnection.
 
 ### Selected task-root skills execute operatively with their own support closure
 **Date:** 2026-08-12
@@ -273,7 +280,7 @@ last_updated: 2026-08-12
 ### Public model input is model_class, not concrete model ids
 **Date:** 2026-06-25
 **Status:** Active
-**Decision:** Callers choose capability classes `A` through `E` or external expert classes `Z1` through `Z5`; concrete model ids and thinking levels remain internal calibration.
+**Decision:** Callers choose capability classes `A` through `E` or external expert classes `Z1` through `Z4`; concrete model ids and thinking levels remain internal calibration.
 **Reasoning:** Model/provider inventory changes independently of the public API, and class names keep callers from depending on volatile concrete ids.
 **Alternatives considered:** Public `model` and `thinking_level` inputs (rejected because they leak calibration and make migrations harder).
 **Consequences:** Config migration, model reconciliation, and model-health probing must preserve the class abstraction. Public MCP results, failure logs, session ledgers, observed-campaign summaries, and README should expose model classes and class-level health/migration actions, not concrete model IDs or thinking-level calibration values.

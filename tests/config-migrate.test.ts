@@ -54,7 +54,7 @@ test("config:migrate does not rewrite unsupported legacy model pairs", async () 
   assert.equal(result.json.status, "unrepairable_model_class");
   assert.equal(result.json.default_model, "anthropic/claude-sonnet-4.5");
   assert.equal(result.json.default_thinking_level, "medium");
-  assert.equal(result.json.allowed_model_classes, "A, B, C, D, E, Z1, Z2, Z3, Z4, Z5");
+  assert.equal(result.json.allowed_model_classes, "A, B, C, D, E, Z1, Z2, Z3, Z4");
   assert.equal(await fs.readFile(configPath, "utf8"), original);
 });
 
@@ -77,8 +77,8 @@ test("config:migrate does not rewrite retired legacy class calibrations", async 
 test("config:migrate migrates legacy model and thinking defaults to model class", async () => {
   const { configPath } = await createConfigDir();
   const original = `${JSON.stringify({
-    default_model: "openai-codex/gpt-5.6-terra",
-    default_thinking_level: "xhigh",
+    default_model: "openai-codex/gpt-6.1-sol",
+    default_thinking_level: "medium",
     extra: "preserved",
   }, null, 2)}\n`;
   await fs.writeFile(configPath, original, "utf8");
@@ -88,8 +88,8 @@ test("config:migrate migrates legacy model and thinking defaults to model class"
   assert.equal(result.ok, true);
   assert.equal(result.json.status, "migrated");
   assert.deepEqual(result.json.from, {
-    default_model: "openai-codex/gpt-5.6-terra",
-    default_thinking_level: "xhigh",
+    default_model: "openai-codex/gpt-6.1-sol",
+    default_thinking_level: "medium",
   });
   assert.equal(result.json.to, "C");
   const migrated = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<string, unknown>;

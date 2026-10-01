@@ -61,11 +61,6 @@ export const MODEL_CLASS_CALIBRATIONS: Record<ModelClass, {
     thinkingLevel: "xhigh",
     description: "Z4",
   },
-  Z5: {
-    model: "openrouter/anthropic/claude-opus-5",
-    thinkingLevel: "xhigh",
-    description: "Z5",
-  },
 };
 `;
 
@@ -84,7 +79,6 @@ function fixtureReadme(envKeys: string[]): string {
 | \`Z2\` | Z2 |
 | \`Z3\` | Z3 |
 | \`Z4\` | Z4 |
-| \`Z5\` | Z5 |
 
 Environment overrides:
 

@@ -1,6 +1,6 @@
 export const THINKING_LEVELS = ["low", "medium", "high", "xhigh"] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
-export const MODEL_CLASSES = ["A", "B", "C", "D", "E", "Z1", "Z2", "Z3", "Z4", "Z5"] as const;
+export const MODEL_CLASSES = ["A", "B", "C", "D", "E", "Z1", "Z2", "Z3", "Z4"] as const;
 export type ModelClass = (typeof MODEL_CLASSES)[number];
 export const OUTPUT_MODES = ["final", "transcript"] as const;
 export type OutputMode = (typeof OUTPUT_MODES)[number];

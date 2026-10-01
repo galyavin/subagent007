@@ -90,9 +90,9 @@ mkdir -p ~/.codex/subagent007-pi
 printf '%s\n' '{"default_model_class":"C"}' > ~/.codex/subagent007-pi/config.json
 ```
 
-Use model classes instead of concrete model IDs. The default class is `C`; callers may pass `model_class` when a specific capability tier or external expert perspective matters. Classes `Z1` through `Z5` are independent OpenRouter-backed external expert classes for maximum-difficulty work. Concrete model and `thinking_level` selection is internal calibration and is not part of the public MCP contract.
+Use model classes instead of concrete model IDs. The default class is `C`; callers may pass `model_class` when a specific capability tier or external expert perspective matters. Classes `Z1` through `Z4` are independent OpenRouter-backed external expert classes for maximum-difficulty work. Concrete model and `thinking_level` selection is internal calibration and is not part of the public MCP contract.
 
-Using `Z1` through `Z5` requires authenticated OpenRouter access in the Pi process. Run the class-specific health probe before relying on an external expert for one-shot work.
+Using `Z1` through `Z4` requires authenticated OpenRouter access in the Pi process. Run the class-specific health probe before relying on an external expert for one-shot work.
 
 | Class | Use when |
 | --- | --- |
@@ -105,7 +105,6 @@ Using `Z1` through `Z5` requires authenticated OpenRouter access in the Pi proce
 | `Z2` | External expert for maximum-difficulty work requiring an independent technical perspective. |
 | `Z3` | External expert for maximum-difficulty work requiring deep synthesis and independent judgment. |
 | `Z4` | External expert for maximum-difficulty work requiring an independent frontier-model perspective. |
-| `Z5` | External expert for maximum-difficulty work requiring the deepest independent synthesis. |
 
 Run `npm run models:reconcile` to compare calibrated concrete models with fresh source data from `pi --list-models`, OpenRouter `GET /api/v1/models`, and local Ollama `GET /api/tags`. The command exits nonzero when a calibrated model is missing or has drifted from a source; unavailable sources are reported as unverified instead of drift. Inventory reconciliation is separate from one-shot health.
 
@@ -149,7 +148,7 @@ Do not pass secrets unless the child model/tools may receive them and child outp
 
 Optional common fields:
 
-- `model_class`: capability tier `A` through `E`, or external expert class `Z1` through `Z5`; omit for configured `default_model_class` or `C`; concrete `model` and `thinking_level` are unsupported
+- `model_class`: capability tier `A` through `E`, or external expert class `Z1` through `Z4`; omit for configured `default_model_class` or `C`; concrete `model` and `thinking_level` are unsupported
 - `skill_name`: bare skill name only, such as `pda-lite` or `google-drive:google-docs`; null or omission means no skill
 - `output_mode`: `final` or `transcript`; default is `final`; use `transcript` for debugging or audit trails
 

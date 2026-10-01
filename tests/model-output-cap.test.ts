@@ -47,10 +47,10 @@ test("request output cap never raises a concrete model maximum", () => {
   assert.equal(modelWithOutputTokenCap(model).maxTokens, 65_536);
 });
 
-test("loaded Pi OpenRouter transport emits the capped Z3 and Z4 completion allowance", async () => {
+test("loaded Pi OpenRouter transport emits the capped Z2 and Z3 completion allowance", async () => {
   const models = [
-    modelWithOutputTokenCap(openRouterModel("qwen/qwen3.8-2.4t-a95b", 262_144), 32_768),
-    modelWithOutputTokenCap(openRouterModel("x-ai/grok-4.6", 450_000), 32_768),
+    modelWithOutputTokenCap(openRouterModel("qwen/qwen3.8-2.4t-a95b", 131_072), 32_768),
+    modelWithOutputTokenCap(openRouterModel("x-ai/grok-4.7", 450_000), 32_768),
   ];
   const script = `
     import fs from "node:fs/promises";
@@ -76,9 +76,9 @@ test("loaded Pi OpenRouter transport emits the capped Z3 and Z4 completion allow
     let session;
     try {
       ({ session } = await createAgentSession({ cwd, agentDir, modelRuntime, model: models[0], thinkingLevel: "xhigh", tools: [] }));
-      await session.prompt("Z3 offline payload fixture");
+      await session.prompt("Z2 offline payload fixture");
       await session.setModel(models[1]);
-      await session.prompt("Z4 offline payload fixture");
+      await session.prompt("Z3 offline payload fixture");
       console.log(JSON.stringify(payloads.map((payload) => ({ model: payload.model, max_completion_tokens: payload.max_completion_tokens, reasoning: payload.reasoning }))));
     } finally {
       session?.dispose();
@@ -94,7 +94,7 @@ test("loaded Pi OpenRouter transport emits the capped Z3 and Z4 completion allow
     payloads.map((payload) => [payload.model, payload.max_completion_tokens, payload.reasoning]),
     [
       ["qwen/qwen3.8-2.4t-a95b", 32_768, { effort: "high" }],
-      ["x-ai/grok-4.6", 32_768, { effort: "high" }],
+      ["x-ai/grok-4.7", 32_768, { effort: "high" }],
     ],
   );
   assert.equal(payloads.every((payload) => Object.hasOwn(payload, "max_tokens") === false), true);

@@ -12,6 +12,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import type { SkillBindingVerificationResult } from "../src/types.js";
 import { createInputRequest, listInputRequests } from "../src/inputMailbox.js";
 import { PUBLIC_PROMPT_REDACTED_MARKER } from "../src/prompt.js";
+import { resolveModelClass } from "../src/modelAllowlist.js";
 import {
   extractSubagentSessionId,
   partialOutputAvailableForRun,
@@ -83,7 +84,7 @@ type RunSubagentMetadata = {
   effective_wait_ms?: number;
   wait_truncated?: boolean;
   requested_skill?: string | null;
-  resolved_model_class?: "A" | "B" | "C" | "D" | "E" | "Z1" | "Z2" | "Z3" | "Z4" | "Z5";
+  resolved_model_class?: "A" | "B" | "C" | "D" | "E" | "Z1" | "Z2" | "Z3" | "Z4";
   requested_system_skill?: string;
   requested_specialist_catalogue_scope?: "selected_only";
   system_skill_activation_receipt?: {
@@ -3353,6 +3354,27 @@ test("MCP run_subagent and start_run preflight reject when the Pi child entrypoi
   );
 });
 
+test("MCP execution schemas reject retired Z5 before invoking a child", async () => {
+  await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
+    for (const name of ["run_subagent", "start_run", "schedule_run", "start_session_run", "run_subagent_session"]) {
+      const response = await client.callTool({
+        name,
+        arguments: {
+          cwd: projectDir,
+          prompt: "FAST",
+          model_class: "Z5",
+          ...(name === "run_subagent" ? { run_kind: "quick_noninteractive" } : {}),
+          ...(name.includes("session") ? { session_key: "retired-class" } : {}),
+        },
+      });
+      assert.equal(response.isError, true, name);
+      assert.equal(response.structuredContent, undefined, name);
+      assert.match(JSON.stringify(response.content), /model_class/, name);
+    }
+    await assert.rejects(fs.stat(fakeLogPath), /ENOENT/);
+  });
+});
+
 test("MCP list_model_classes exposes curated model classes", async () => {
   await connectFakeClient(async (client) => {
     const response = await client.callTool({
@@ -3388,7 +3410,7 @@ test("MCP list_model_classes exposes curated model classes", async () => {
       model_health_probe_command: string;
     };
     assertNoPublicCalibrationFields(metadata);
-    assert.deepEqual(metadata.model_classes.map((entry) => entry.class), ["A", "B", "C", "D", "E", "Z1", "Z2", "Z3", "Z4", "Z5"]);
+    assert.deepEqual(metadata.model_classes.map((entry) => entry.class), ["A", "B", "C", "D", "E", "Z1", "Z2", "Z3", "Z4"]);
     assert.equal(metadata.model_classes.every((entry) => entry.description.length > 0), true);
     assert.equal(
       metadata.model_classes.every((entry) =>
@@ -3542,7 +3564,7 @@ test("MCP list_model_classes exposes cached healthy one-shot health basis", asyn
         {
           schema_version: 1,
           model_class: "C",
-          resolved_model: "openai-codex/gpt-5.6-luna",
+          resolved_model: resolveModelClass("C").model,
           surface: "run_subagent_one_shot",
           checked_at: "2026-06-11T00:00:00.000Z",
           usable_for_one_shot: true,
@@ -3605,8 +3627,8 @@ test("MCP run_subagent uses the configured fake Pi child", async () => {
     assert.equal(await fs.readFile(outputPathFor(metadata), "utf8"), "FAST FINAL");
 
     const logs = await readJsonl<{ request: Record<string, unknown> }>(fakeLogPath);
-    assert.equal(logs[0].request.model, "openai-codex/gpt-5.6-terra");
-    assert.equal(logs[0].request.thinkingLevel, "xhigh");
+    assert.equal(logs[0].request.model, "openai-codex/gpt-6.1-sol");
+    assert.equal(logs[0].request.thinkingLevel, "medium");
     assert.equal(logs[0].request.maxOutputTokens, 32_768);
     assert.equal(logs[0].request.skill, undefined);
     assert.equal(Object.hasOwn(logs[0].request, "toolProfile"), false);
@@ -3625,7 +3647,7 @@ test("skill-bound run_subagent remains strict one-shot and uses the one-shot hea
           {
             schema_version: 1,
             model_class: "A",
-            resolved_model: "openai-codex/gpt-5.6-luna",
+            resolved_model: resolveModelClass("A").model,
             surface: "run_subagent_one_shot",
             checked_at: "2026-06-11T00:00:00.000Z",
             usable_for_one_shot: false,
@@ -3776,7 +3798,7 @@ test("MCP run_subagent fails fast for known unhealthy one-shot model class", asy
         {
           schema_version: 1,
           model_class: "A",
-          resolved_model: "openai-codex/gpt-5.6-luna",
+          resolved_model: resolveModelClass("A").model,
           surface: "run_subagent_one_shot",
           checked_at: "2026-06-11T00:00:00.000Z",
           usable_for_one_shot: false,
@@ -4555,8 +4577,8 @@ test("MCP start_run/get_run completes asynchronously with the same child contrac
 test("MCP start_run preserves an opt-in completion cap for calibrated external classes", async () => {
   await connectFakeClient(async (client, { projectDir, fakeLogPath }) => {
     const expected = [
-      ["Z3", "openrouter/qwen/qwen3.8-2.4t-a95b"],
-      ["Z4", "openrouter/x-ai/grok-4.6"],
+      ["Z2", "openrouter/qwen/qwen3.8-2.4t-a95b"],
+      ["Z3", "openrouter/x-ai/grok-4.7"],
     ] as const;
     for (const [modelClass] of expected) {
       const response = await client.callTool({

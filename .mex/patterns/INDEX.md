@@ -13,6 +13,7 @@ For a multi-section pattern, add one row per task anchor.
 |---------|----------|
 | [effect-profile-boundary.md](effect-profile-boundary.md) | Adding or changing an enforced Pi callable-tool ceiling and its activation receipt |
 | [governed-recursion-class-inheritance.md](governed-recursion-class-inheritance.md) | Changing private model-class inheritance beneath system-skill recursion |
+| [model-class-calibration.md](model-class-calibration.md) | Replacing model/thinking calibrations or retiring a public model class |
 | [observed-campaign-saf.md](observed-campaign-saf.md) | Running customer-style observed MCP campaigns and turning findings into SAF repairs |
 | [recursive-rejection-attribution.md](recursive-rejection-attribution.md) | Changing fail-fast recursive delegate rejection evidence before run admission |
 | [recursive-result-rejoin.md](recursive-result-rejoin.md) | Adding private lineage-authorized recursive descendant result retrieval after a bounded delegate wait |

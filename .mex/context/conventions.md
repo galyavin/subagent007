@@ -11,7 +11,7 @@ triggers:
 edges:
   - target: context/architecture.md
     condition: when a convention depends on understanding the system structure
-last_updated: 2026-07-30
+last_updated: 2026-09-30
 ---
 
 # Conventions
@@ -21,7 +21,7 @@ last_updated: 2026-07-30
 - Public JSON fields and reason codes use snake_case, for example `reason_code`, `child_started`, and `local_capacity_exhausted`.
 - Environment variables use the `SUBAGENT007_*` prefix except Pi-native compatibility names such as `PI_CODING_AGENT_DIR`.
 - Durable run identity is `run_id`; mailbox identity is `run_id` plus `request_id`.
-- Public model tiers are named model classes `A`, `B`, `C`, `D`, `E`, plus external expert classes `Z1` through `Z5`.
+- Public model tiers are named model classes `A`, `B`, `C`, `D`, `E`, plus external expert classes `Z1` through `Z4`.
 
 ## Structure
 - `src/server.ts` owns MCP registration and handler-level result shaping.
@@ -44,7 +44,7 @@ last_updated: 2026-07-30
 - Public event views and transcripts must stay sanitized; never expose raw thinking, private tool payloads, caller prompt text, full composed prompts, or answer values. Use the shared public prompt projection marker instead of writing `request.prompt` into public events or transcript provenance.
 - Public MCP result projection must also omit backend Pi session identifiers, internal mailbox filesystem paths, and every final/partial output pathname. Terminal child output uses exactly one primary reference and may add one Researcher packet reference; each has a canonical single-component `relative_path`, bounded `size_bytes`, and lowercase `content_sha256`. Callers derive bytes only from their configured runs root and select roles by `name`, not list position.
 - Recursive parent public events are part of the caller contract: descendant registration/finalization should project through sanitized `recursive_child_started` and `recursive_child_finished` events whose child ids match the direct `child_run_ids`/delegated run id and whose metadata contains only lineage/status/success fields.
-- Public model calibration must stay class-level on caller surfaces: expose `model_class`/`resolved_model_class` and health/migration actions, not concrete model IDs or thinking-level calibration values in MCP results, failure logs, session ledgers, observed campaign summaries, or README. Z1-Z5 are external expert classes, not aliases for A-E.
+- Public model calibration must stay class-level on caller surfaces: expose `model_class`/`resolved_model_class` and health/migration actions, not concrete model IDs or thinking-level calibration values in MCP results, failure logs, session ledgers, observed campaign summaries, or README. Z1-Z4 are external expert classes, not aliases for A-E.
 - Required named-session packet failures use distinct reason codes: missing packet -> `packet_required_missing`, malformed packet -> `packet_required_invalid`, parse-valid not-ready packet -> `packet_required_not_ready`.
 - Session terminal failures logged after durable task creation must preserve caller context: `tool` matches the public entrypoint (`start_session_run` or `run_subagent_session`), `run_id` matches the public durable run, and `task_kind` is `session`.
 - Requested `final` output must not silently degrade to successful transcript output. A clean child exit without a captured final message is a typed `missing_final_output` terminal failure; keep run result metadata, session projection, failure logs, README, and tests synchronized.

@@ -65,8 +65,8 @@ test("legacy default model and thinking config maps to default model class", asy
   await fs.writeFile(
     configPath,
     JSON.stringify({
-      default_model: "openai-codex/gpt-5.6-terra",
-      default_thinking_level: "xhigh",
+      default_model: "openai-codex/gpt-6.1-sol",
+      default_thinking_level: "medium",
     }),
   );
 
@@ -92,8 +92,8 @@ test("malformed legacy model config does not block class defaults", async () => 
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-cwd-"));
   const resolved = await validateAndResolveRequest({ prompt: "x", cwd }, config);
   assert.equal(resolved.modelClass, "C");
-  assert.equal(resolved.model, "openai-codex/gpt-5.6-terra");
-  assert.equal(resolved.thinkingLevel, "xhigh");
+  assert.equal(resolved.model, "openai-codex/gpt-6.1-sol");
+  assert.equal(resolved.thinkingLevel, "medium");
 });
 
 test("model health records reject unsupported model classes", async () => {
@@ -158,7 +158,7 @@ test("rejects unsupported config model classes", async () => {
     JSON.stringify({ default_model_class: "Z" }),
   );
 
-  await assert.rejects(loadConfig(configPath), /default_model_class must be one of: A, B, C, D, E, Z1, Z2, Z3, Z4, Z5/);
+  await assert.rejects(loadConfig(configPath), /default_model_class must be one of: A, B, C, D, E, Z1, Z2, Z3, Z4/);
 });
 
 test("missing config file is allowed until defaults are needed", async () => {
@@ -204,8 +204,8 @@ test("resolves caller fields over config defaults", async () => {
   assert.equal(resolved.prompt, "say hi");
   assert.deepEqual(resolved.continuity, { mode: "resume", session_id: sessionFile });
   assert.equal(resolved.modelClass, "D");
-  assert.equal(resolved.model, "openai-codex/gpt-5.6-sol");
-  assert.equal(resolved.thinkingLevel, "medium");
+  assert.equal(resolved.model, "openai-codex/gpt-6.1-sol");
+  assert.equal(resolved.thinkingLevel, "high");
   assert.equal(resolved.maxOutputTokens, 32_768);
   assert.equal(resolved.skill, "pda-lite");
   assert.equal(resolved.outputMode, "final");
@@ -419,16 +419,15 @@ test("expected_skill_sha256 is lowercase SHA-256 paired with canonical skill_nam
 test("resolves model classes to calibrated model and thinking level", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-model-"));
   for (const [modelClass, model, thinkingLevel] of [
-    ["A", "openai-codex/gpt-5.3-codex-spark", "medium"],
-    ["B", "openai-codex/gpt-5.3-codex-spark", "xhigh"],
-    ["C", "openai-codex/gpt-5.6-terra", "xhigh"],
-    ["D", "openai-codex/gpt-5.6-sol", "medium"],
-    ["E", "openai-codex/gpt-6-astra", "low"],
-    ["Z1", "openrouter/deepseek/deepseek-v4-pro-0813", "xhigh"],
-    ["Z2", "openrouter/z-ai/glm-5.3-flash", "xhigh"],
-    ["Z3", "openrouter/qwen/qwen3.8-2.4t-a95b", "xhigh"],
-    ["Z4", "openrouter/x-ai/grok-4.6", "xhigh"],
-    ["Z5", "openrouter/google/gemini-3.7-flash", "xhigh"],
+    ["A", "openai-codex/gpt-6-luna", "medium"],
+    ["B", "openai-codex/gpt-6-luna", "xhigh"],
+    ["C", "openai-codex/gpt-6.1-sol", "medium"],
+    ["D", "openai-codex/gpt-6.1-sol", "high"],
+    ["E", "openai-codex/gpt-6.1-sol", "xhigh"],
+    ["Z1", "openrouter/deepseek/deepseek-v4.1-flash", "xhigh"],
+    ["Z2", "openrouter/qwen/qwen3.8-2.4t-a95b", "xhigh"],
+    ["Z3", "openrouter/x-ai/grok-4.7", "xhigh"],
+    ["Z4", "openrouter/google/gemini-3.8-flash", "xhigh"],
   ] as const) {
     const resolved = await validateAndResolveRequest(
       { prompt: "x", cwd, model_class: modelClass },
@@ -442,13 +441,15 @@ test("resolves model classes to calibrated model and thinking level", async () =
 
 test("rejects invalid model class and old public model fields", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "subagent007-pi-model-"));
-  await assert.rejects(
-    validateAndResolveRequest(
-      { prompt: "x", cwd, model_class: "Z" as never },
-      {},
-    ),
-    /model_class must be one of: A, B, C, D, E, Z1, Z2, Z3, Z4, Z5/,
-  );
+  for (const modelClass of ["Z", "Z5"]) {
+    await assert.rejects(
+      validateAndResolveRequest(
+        { prompt: "x", cwd, model_class: modelClass as never },
+        {},
+      ),
+      /model_class must be one of: A, B, C, D, E, Z1, Z2, Z3, Z4$/,
+    );
+  }
   await assert.rejects(
     validateAndResolveRequest(
       { prompt: "x", cwd, model: "openrouter/z-ai/glm-5.2" } as never,
@@ -498,7 +499,7 @@ test("rejects invalid preflight input before any child spawn is possible", async
       { prompt: "x", cwd, model_class: "minimal" as never },
       {},
     ),
-    /model_class must be one of: A, B, C, D, E, Z1, Z2, Z3, Z4, Z5/,
+    /model_class must be one of: A, B, C, D, E, Z1, Z2, Z3, Z4/,
   );
 
   await withEnv(

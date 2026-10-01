@@ -39,7 +39,7 @@ test("model-health probe rejects unsupported model classes", async () => {
 
   assert.equal(result.ok, false);
   assert.equal(result.code, 2);
-  assert.match(result.stderr, /--model-class must be one of: A, B, C, D, E, Z1, Z2, Z3, Z4, Z5/);
+  assert.match(result.stderr, /--model-class must be one of: A, B, C, D, E, Z1, Z2, Z3, Z4/);
 });
 
 test("model-health probe can record a healthy class without running a child", async () => {
@@ -60,7 +60,7 @@ test("model-health probe can record a healthy class without running a child", as
     };
   };
   assert.equal(parsed.record.model_class, "C");
-  assert.equal(parsed.record.resolved_model, "openai-codex/gpt-5.6-terra");
+  assert.equal(parsed.record.resolved_model, "openai-codex/gpt-6.1-sol");
   assert.equal(parsed.record.usable_for_one_shot, true);
   assert.equal(parsed.record.last_success_latency_ms, 123);
 
